@@ -189,13 +189,59 @@ If the task has 2+ independent parts → spawn one worker per part simultaneousl
 
 ### Parallel by default
 
+**CRITICAL: Never do work sequentially that can be done in parallel. If you catch yourself thinking "I'll do A, then B, then C", stop — if A, B, C are independent, spawn all three at once.**
+
 When a task has multiple independent parts, spawn all workers at once. Do not do them sequentially unless there is an explicit dependency. Example:
 
 ```bash
-# Good: all three spawn immediately, run in parallel
+# GOOD: all three spawn immediately, run in parallel
 git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --dir /tmp/w1 --model fireworks/kimi-k2.5
 git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --dir /tmp/w2 --model fireworks/kimi-k2.5
 git worktree add /tmp/w3 HEAD && $BIN spawn --task "write tests for X and Y" --dir /tmp/w3 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+
+# BAD: sequential spawning wastes time when tasks are independent
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --dir /tmp/w1 --model fireworks/kimi-k2.5
+# <wait for w1 to finish>
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --dir /tmp/w2 --model fireworks/kimi-k2.5
+```
+
+**Before spawning anything, scan the full task list and identify which subtasks are independent. Spawn all independent tasks in a single batch.**
+
+## Parallel First, Sequential Only When Needed
+
+Default assumption: **tasks are independent → spawn in parallel.**
+
+Only go sequential when task B genuinely needs output or artifacts from task A. Ask yourself: *"Does B need A's result to even start?"* If no — parallelize.
+
+| Situation | Strategy |
+|---|---|
+| Two features touching different files | Spawn both at once |
+| Feature + its tests (tests need the feature) | Spawn feature first, use `--depends-on` for tests |
+| Research + implementation | Spawn plan worker; spawn build worker after reviewing plan |
+| Three bug fixes in different modules | Spawn all three simultaneously |
+| DB migration + app code using it | Sequential — app needs the migration |
+
+**Anti-pattern — never do this:**
+```bash
+# WRONG: spawning one-at-a-time when tasks are independent
+$BIN spawn --task "fix bug A" --dir /tmp/w1 ...
+# ... wait, read output, kill ...
+$BIN spawn --task "fix bug B" --dir /tmp/w2 ...   # B didn't need A's result!
+```
+
+**Correct pattern — spawn all independent workers in one batch:**
+```bash
+# RIGHT: identify all independent tasks upfront, spawn simultaneously
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "fix bug A" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "fix bug B" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w3 HEAD && $BIN spawn --task "fix bug C" --dir /tmp/w3 --model fireworks/kimi-k2.5
+# Now monitor all three concurrently
+```
+
+Then use `--depends-on` only for tasks that truly require prior results:
+```bash
+# Integration worker waits for both feature workers
+$BIN spawn --task "integrate A and B" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
 ```
 
 ## Away Mode
@@ -306,6 +352,8 @@ $BIN loop-clear --pane %ID    # clear loop history so detection resets
 - In away mode: queue uncertain decisions, do not auto-approve irreversible actions
 - Check `$BIN loop-status` regularly — do not ignore detected loops
 - Use `run-pending` after killing workers so queued dependents start automatically
+- **Spawn parallel workers simultaneously — never one-at-a-time if tasks are independent**
+- **Always scan the full task list and identify parallelizable subtasks before spawning any**
 
 ## Task Dependencies
 
@@ -383,6 +431,18 @@ Monitor state (stall counts, output hashes, recovery attempts) is persisted in `
 - **Long-running tasks**: Start `monitor` in a separate pane when workers will run for hours.
 - **Unattended runs**: Use it when you step away so workers don't silently block on prompts.
 - **Background supervision**: Run it with `--interval 120` for low-overhead continuous oversight.
+
+## Auto-Watch
+
+The `watch` subcommand is a higher-level supervisor that auto-manages all panes — approving safe permission prompts, sending follow-up messages, and cleaning up finished workers without manual intervention.
+
+```bash
+$BIN watch                   # auto-manage all panes (default 60s interval)
+$BIN watch --interval 30     # check every 30 seconds
+$BIN watch --pane %ID        # watch a specific pane only
+```
+
+Use `watch` when you want fully hands-off supervision: it combines health checking, permission approval, and cleanup into a single long-running command. For finer control or away-mode use, prefer `monitor` + manual `send`/`kill`.
 
 $TASK
 "##;
