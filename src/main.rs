@@ -7,6 +7,7 @@ mod pending_tasks;
 mod setup;
 mod state;
 mod tmux;
+mod watch;
 
 use clap::Parser;
 use state::StateManager;
@@ -185,6 +186,17 @@ enum Command {
         /// Number of consecutive unchanged checks before a pane is considered stalled
         #[arg(long, default_value_t = 3)]
         stall_threshold: u32,
+    },
+
+    /// Auto follow-up and review loop: cleanup done panes, approve safe prompts, nudge stalled panes
+    Watch {
+        /// Seconds between each check cycle (default 30)
+        #[arg(short, long, default_value_t = 30)]
+        interval: u64,
+
+        /// Specific pane ID to watch (watches all panes if omitted)
+        #[arg(short, long)]
+        pane: Option<String>,
     },
 
     /// One-shot health snapshot for pane(s) — returns structured JSON per pane
@@ -531,6 +543,10 @@ fn main() -> anyhow::Result<()> {
             stall_threshold,
         }) => {
             monitor::run(interval, pane.as_deref(), stall_threshold)?;
+        }
+
+        Some(Command::Watch { interval, pane }) => {
+            watch::run(interval, pane.as_deref())?;
         }
 
         Some(Command::Healthcheck { pane, interval }) => {

@@ -239,10 +239,24 @@ pub fn spawn(
         _ => task.to_string(),
     };
 
-    let cmd = format!(
+    // The opencode command itself (no auto-kill wrapper yet — we need the pane ID first).
+    let opencode_cmd = format!(
         "opencode{model_flag} --prompt {}",
         shell_escape(&effective_task)
     );
+
+    // We wrap opencode so that when it exits the pane auto-kills itself.
+    // The wrapper uses tmux display-message to get the pane's own ID at runtime,
+    // then invokes `superharness kill --pane <id>` after opencode finishes.
+    // We resolve the superharness binary path at spawn time so the worker pane
+    // can always find it even if PATH is different inside the new bash session.
+    let sh_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "superharness".to_string());
+
+    let cmd =
+        format!("{opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')");
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
