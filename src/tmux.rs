@@ -85,9 +85,17 @@ fn configure_session(bin_path: &str) -> Result<()> {
     ])?;
 
     // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'.
-    // Must be a single string containing the raw ESC byte so tmux forwards it as one
-    // unambiguous CSI sequence (\x1b[127;5u) instead of two separate keystrokes.
-    tmux_ok(&["bind-key", "-n", "C-BSpace", "send-keys", "\x1b[127;5u"])?;
+    // Use -l (literal) so tmux sends the exact bytes without any translation.
+    // Also bind C-h as an alias because some terminals send Ctrl+H for Ctrl+Backspace.
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "C-BSpace",
+        "send-keys",
+        "-l",
+        "\x1b[127;5u",
+    ])?;
+    tmux_ok(&["bind-key", "-n", "C-h", "send-keys", "-l", "\x1b[127;5u"])?;
 
     // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences).
     tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "\x1b[1;5D"])?;
