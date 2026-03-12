@@ -4,85 +4,65 @@ use std::path::Path;
 
 const AGENTS_MD: &str = r##"# SuperHarness Orchestrator
 
-You are an orchestrator managing multiple opencode worker instances via tmux panes. Use **superharness** CLI as your primary interface - only fall back to raw tmux commands for layout management.
+You are an orchestrator managing opencode workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
 
-## SuperHarness Commands (Primary)
-
-```bash
-# Spawn a worker (returns JSON with pane ID)
-superharness spawn --task "description" --dir /path/to/project --name "worker-name"
-
-# Monitor worker output
-superharness read --pane %ID --lines 50
-
-# Send input to worker (when it's asking questions)
-superharness send --pane %ID --text "your response"
-
-# Kill a worker pane
-superharness kill --pane %ID
-
-# List all workers
-superharness list
-```
-
-## Raw Tmux (Layout Management Only)
-
-Use tmux directly only for visual organization:
+## Commands
 
 ```bash
-# Resize panes
-tmux resize-pane -t %ID -D 10   # grow down
-tmux resize-pane -t %ID -R 20   # grow right
-
-# Layout presets
-tmux select-layout -t superharness tiled
-tmux select-layout -t superharness even-vertical
-
-# Join worker to main view
-tmux join-pane -s %5 -t %0 -h -d    # show worker alongside main pane
-tmux break-pane -t %5 -d             # move back to own tab
-
-# Tabs
-tmux new-window -t superharness -n "name"
-tmux select-window -t superharness:0
+$BIN spawn --task "description" --dir /path  # spawn worker pane
+$BIN list                                     # list all panes (JSON)
+$BIN read --pane %ID --lines 50               # read worker output
+$BIN send --pane %ID --text "response"        # send input to worker
+$BIN kill --pane %ID                          # kill worker
+$BIN hide --pane %ID --name "worker-1"        # move pane to background tab
+$BIN show --pane %ID --split h                # surface pane (h or v)
+$BIN resize --pane %ID --direction R --amount 20  # resize (U/D/L/R)
+$BIN layout --name tiled                      # apply layout preset
 ```
 
-## Workflow
+Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
 
-1. **Break down** tasks into independent subtasks
-2. **Spawn** workers for parallel execution (use `--dir` for each)
-3. **Monitor** every 30-60s with `superharness read`
-4. **Respond** to questions with `superharness send`
-5. **Organize** with tabs when you have >4 workers
-6. **Keep** finished panes for review (don't auto-kill)
-7. **Report** progress to user
+## Your Job
+
+You must actively manage workers. Do not spawn and forget.
+
+1. **Decompose** the task into independent subtasks
+2. **Spawn** workers with clear, scoped tasks and `--dir`
+3. **Poll** each worker every 30-60s with `superharness read`
+4. **Respond** immediately when a worker asks a question or needs input
+5. **Hide** workers to background tabs when you have too many visible
+6. **Surface** workers back when they need attention
+7. **Kill** workers when they finish — don't leave stale panes
+8. **Report** progress and results back to the user
+9. **Handle failures** — read output, diagnose, retry or fix
 
 ## Rules
 
-- Always use `--dir` to set correct working directory
+- Always use `--dir` to set the correct working directory
 - Don't spawn workers that edit the same file simultaneously
 - Workers should use git worktrees for isolation when needed
-- Never kill your own pane (%0)
-- If worker fails, read output, diagnose, then retry or handle
+- Never kill your own pane
+- If a worker is stuck or looping, kill it and respawn with a better prompt
 
 $TASK
 "##;
 
-pub fn write_config(dir: &str) -> Result<()> {
+pub fn write_config(dir: &str, bin: &str) -> Result<()> {
     let base = Path::new(dir);
+    let content = AGENTS_MD.replace("$BIN", bin);
 
     let agents_path = base.join("AGENTS.md");
     if agents_path.exists() {
         let existing = fs::read_to_string(&agents_path)?;
         if !existing.contains("SuperHarness Orchestrator") {
-            let combined = format!("{existing}\n{AGENTS_MD}");
+            let combined = format!("{existing}\n{content}");
             fs::write(&agents_path, combined).context("failed to update AGENTS.md")?;
             eprintln!("updated {}", agents_path.display());
         } else {
             eprintln!("AGENTS.md already configured");
         }
     } else {
-        fs::write(&agents_path, AGENTS_MD).context("failed to write AGENTS.md")?;
+        fs::write(&agents_path, &content).context("failed to write AGENTS.md")?;
         eprintln!("wrote {}", agents_path.display());
     }
 

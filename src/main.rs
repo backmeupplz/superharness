@@ -15,11 +15,15 @@ struct Cli {
     /// Working directory (for default init)
     #[arg(short, long, default_value = ".")]
     dir: String,
+
+    /// Path to superharness binary (for dev mode)
+    #[arg(long)]
+    bin: Option<String>,
 }
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Spawn a new opencode worker in its own tmux window
+    /// Spawn a new opencode worker as a pane
     Spawn {
         /// Task/prompt to give the worker
         #[arg(short, long)]
@@ -29,7 +33,7 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         dir: String,
 
-        /// Window name (shown in tmux tab bar)
+        /// Label (unused, reserved)
         #[arg(short, long)]
         name: Option<String>,
     },
@@ -65,6 +69,50 @@ enum Command {
         #[arg(short, long)]
         pane: String,
     },
+
+    /// Hide a pane to its own background tab
+    Hide {
+        /// Pane ID
+        #[arg(short, long)]
+        pane: String,
+
+        /// Tab name
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Surface a background pane back into the main window
+    Show {
+        /// Pane ID
+        #[arg(short, long)]
+        pane: String,
+
+        /// Split direction: "h" (horizontal) or "v" (vertical)
+        #[arg(short, long, default_value = "h")]
+        split: String,
+    },
+
+    /// Resize a pane
+    Resize {
+        /// Pane ID
+        #[arg(short, long)]
+        pane: String,
+
+        /// Direction: U, D, L, R
+        #[arg(short, long)]
+        direction: String,
+
+        /// Number of cells
+        #[arg(short, long, default_value_t = 10)]
+        amount: u32,
+    },
+
+    /// Apply a layout preset to the session
+    Layout {
+        /// Layout name: tiled, main-vertical, main-horizontal, even-vertical, even-horizontal
+        #[arg(short, long, default_value = "tiled")]
+        name: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,7 +120,13 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            setup::write_config(&cli.dir)?;
+            let bin = cli.bin.unwrap_or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| "superharness".to_string())
+            });
+            setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
         Some(Command::Spawn { task, dir, name }) => {
@@ -98,6 +152,30 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Kill { pane }) => {
             tmux::kill(&pane)?;
             let out = serde_json::json!({ "pane": pane, "killed": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Hide { pane, name }) => {
+            tmux::hide(&pane, name.as_deref())?;
+            let out = serde_json::json!({ "pane": pane, "hidden": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Show { pane, split }) => {
+            tmux::show(&pane, &split)?;
+            let out = serde_json::json!({ "pane": pane, "visible": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Resize {
+            pane,
+            direction,
+            amount,
+        }) => {
+            tmux::resize(&pane, &direction, amount)?;
+            let out = serde_json::json!({ "pane": pane, "resized": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Layout { name }) => {
+            tmux::layout(&name)?;
+            let out = serde_json::json!({ "layout": name });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
     }
