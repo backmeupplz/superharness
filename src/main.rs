@@ -33,7 +33,7 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         dir: String,
 
-        /// Label (unused, reserved)
+        /// Label/title for the pane (shown in pane border)
         #[arg(short, long)]
         name: Option<String>,
 
@@ -133,7 +133,12 @@ fn main() -> anyhow::Result<()> {
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
-        Some(Command::Spawn { task, dir, name, model }) => {
+        Some(Command::Spawn {
+            task,
+            dir,
+            name,
+            model,
+        }) => {
             let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref())?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);

@@ -71,11 +71,33 @@ fn configure_session() -> Result<()> {
     // Bind Shift+Enter to send escape sequence that opencode expects for multi-line input
     tmux_ok(&["bind-key", "-n", "S-Enter", "send-keys", "Escape", "[13;2u"])?;
 
+    // Enable pane border status at top and show pane title
+    tmux_ok(&["set-option", "-t", SESSION, "pane-border-status", "top"])?;
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "pane-border-format",
+        "#{pane_title}",
+    ])?;
+
     Ok(())
 }
 
+/// Color palette for pane backgrounds (ANSI 256-color indices, distinct colors)
+const PANE_COLORS: &[u8] = &[
+    24,  // dark blue
+    22,  // dark green
+    52,  // dark red
+    54,  // dark purple
+    58,  // dark olive/yellow
+    23,  // dark teal
+    88,  // dark crimson
+    130, // dark orange
+];
+
 /// Spawn a new opencode worker as a pane in the superharness window.
-pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) -> Result<String> {
+pub fn spawn(task: &str, dir: &str, name: Option<&str>, model: Option<&str>) -> Result<String> {
     ensure_session()?;
 
     let abs_dir =
@@ -99,8 +121,30 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
+
+    // Determine pane title: use name if provided, otherwise first 30 chars of task
+    let title = match name {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => {
+            let truncated: String = task.chars().take(30).collect();
+            truncated
+        }
+    };
+
+    // Set pane title
+    let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &title]);
+
+    // Get pane index to pick a color from the palette
+    let pane_index_str =
+        tmux(&["display-message", "-t", &pane_id, "-p", "#{pane_index}"]).unwrap_or_default();
+    let pane_index: usize = pane_index_str.trim().parse().unwrap_or(0);
+    let color = PANE_COLORS[pane_index % PANE_COLORS.len()];
+    let style = format!("bg=colour{color}");
+    let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
     // Auto-layout so panes stay usable
     let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
@@ -124,6 +168,7 @@ pub struct PaneInfo {
     pub window: String,
     pub command: String,
     pub path: String,
+    pub title: String,
 }
 
 /// List all panes across all windows in the session.
@@ -138,19 +183,20 @@ pub fn list() -> Result<Vec<PaneInfo>> {
         SESSION,
         "-a",
         "-F",
-        "#{pane_id}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}",
+        "#{pane_id}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
     ])?;
 
     let panes = output
         .lines()
         .filter(|l| !l.is_empty())
         .map(|line| {
-            let parts: Vec<&str> = line.splitn(4, '\t').collect();
+            let parts: Vec<&str> = line.splitn(5, '\t').collect();
             PaneInfo {
                 id: parts.first().unwrap_or(&"").to_string(),
                 window: parts.get(1).unwrap_or(&"").to_string(),
                 command: parts.get(2).unwrap_or(&"").to_string(),
                 path: parts.get(3).unwrap_or(&"").to_string(),
+                title: parts.get(4).unwrap_or(&"").to_string(),
             }
         })
         .collect();
@@ -240,7 +286,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
