@@ -436,7 +436,18 @@ Use unique paths per worker (e.g. `/tmp/worker-1`, `/tmp/worker-2`). Workers can
 
 Workers should manage git themselves. When instructing a worker, include this guidance in the task prompt if relevant:
 
-> "You are working in a git worktree at `/tmp/worker-N`. Create a branch, commit your work, and push or prepare a patch. Do not push to main without permission."
+> "You are working in a git worktree at `/tmp/worker-N`. Create a branch, commit your work frequently (after every logical unit of work — do not wait until the end), and push or prepare a patch. Do not push to main without permission."
+
+**CRITICAL: Workers must commit frequently.** The tmux session and workers can crash at any time (OOM, system restart, etc.). Any uncommitted work is permanently lost when a crash occurs. Instruct every worker to:
+
+- Create a branch immediately: `git checkout -b worker-N-task-name`
+- Commit after every logical change (file edited, function added, bug fixed) — not just at the end
+- Use `git add -A && git commit -m "wip: <what was just done>"` liberally
+- Never batch multiple changes into one final commit
+
+Include this in every worker task prompt:
+
+> "**Commit after every logical unit of work** — do not wait until the task is done. Run `git add -A && git commit -m 'wip: <description>'` after each file you edit or each subtask you complete. The session can crash at any time and uncommitted work will be lost."
 
 ### Merging worker branches
 
