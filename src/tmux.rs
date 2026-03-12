@@ -309,6 +309,9 @@ pub fn spawn(
     // Auto-layout so panes stay usable
     let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
 
+    // Auto-compact: if the main window has more than 4 worker panes, move excess to background
+    let _ = auto_compact();
+
     Ok(pane_id)
 }
 
@@ -392,6 +395,136 @@ pub fn show(pane: &str, split: &str) -> Result<()> {
     tmux_ok(&["join-pane", "-s", pane, "-t", &target, flag, "-d"])?;
     let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
     Ok(())
+}
+
+/// Surface a background pane back into the main window with horizontal split and auto-layout.
+/// Equivalent to `show(pane, "h")`.
+pub fn surface(pane: &str) -> Result<()> {
+    show(pane, "h")
+}
+
+/// Auto-compact the main window: if more than 4 worker panes are visible,
+/// move excess panes (highest pane_index, never %0) to background tabs.
+/// Called automatically after each `spawn`.
+pub fn auto_compact() -> Result<()> {
+    // List panes in main window (window 0) with their indices and titles
+    let output = match tmux(&[
+        "list-panes",
+        "-t",
+        &format!("{SESSION}:0"),
+        "-F",
+        "#{pane_id}\t#{pane_index}\t#{pane_title}",
+    ]) {
+        Ok(o) => o,
+        Err(_) => return Ok(()), // Session or window not available yet
+    };
+
+    let mut panes: Vec<(String, u32, String)> = Vec::new();
+    for line in output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let id = parts[0].to_string();
+        let index: u32 = parts[1].parse().unwrap_or(0);
+        let title = parts[2].to_string();
+        panes.push((id, index, title));
+    }
+
+    // Exclude %0 (orchestrator), sort remaining by pane_index ascending
+    let mut workers: Vec<(String, u32, String)> =
+        panes.into_iter().filter(|(id, _, _)| id != "%0").collect();
+    workers.sort_by_key(|(_, idx, _)| *idx);
+
+    const MAX_WORKERS_VISIBLE: usize = 4;
+
+    if workers.len() > MAX_WORKERS_VISIBLE {
+        let excess = workers.len() - MAX_WORKERS_VISIBLE;
+        // Move the highest-index panes (last in sorted order) to background
+        let to_move: Vec<_> = workers.into_iter().rev().take(excess).collect();
+        for (id, _, title) in to_move {
+            let tab_name: String = title.chars().take(20).collect();
+            let tab_name = tab_name.trim().to_string();
+            let tab_name = if tab_name.is_empty() {
+                "worker".to_string()
+            } else {
+                tab_name
+            };
+            let _ = tmux_ok(&["break-pane", "-t", &id, "-d", "-n", &tab_name]);
+        }
+    }
+
+    Ok(())
+}
+
+/// Compact the main window: move any pane (except %0) with WIDTH < 80 or HEIGHT < 20
+/// to a background tab. Returns (moved_count, remaining_visible_count).
+pub fn compact_panes() -> Result<(usize, usize)> {
+    // List all panes across all windows with dimensions and window index
+    let output = match tmux(&[
+        "list-panes",
+        "-t",
+        SESSION,
+        "-a",
+        "-F",
+        "#{pane_id}\t#{pane_width}\t#{pane_height}\t#{window_index}\t#{pane_title}",
+    ]) {
+        Ok(o) => o,
+        Err(_) => return Ok((0, 0)),
+    };
+
+    let mut to_move: Vec<(String, String)> = Vec::new(); // (id, tab_name)
+    let mut remaining = 0usize;
+
+    for line in output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(5, '\t').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let id = parts[0];
+        let width: u32 = parts[1].parse().unwrap_or(0);
+        let height: u32 = parts[2].parse().unwrap_or(0);
+        let window_index: u32 = parts[3].parse().unwrap_or(999);
+        let title = parts[4];
+
+        // Only process panes in the main window (window 0), skip orchestrator %0
+        if window_index != 0 || id == "%0" {
+            continue;
+        }
+
+        if width < 80 || height < 20 {
+            let tab_name: String = title.chars().take(20).collect();
+            let tab_name = tab_name.trim().to_string();
+            let tab_name = if tab_name.is_empty() {
+                "worker".to_string()
+            } else {
+                tab_name
+            };
+            to_move.push((id.to_string(), tab_name));
+        } else {
+            remaining += 1;
+        }
+    }
+
+    let mut moved = 0usize;
+    for (id, tab_name) in &to_move {
+        if tmux_ok(&["break-pane", "-t", id, "-d", "-n", tab_name]).is_ok() {
+            moved += 1;
+        }
+    }
+
+    // Re-apply tiled layout to main window if anything was moved
+    if moved > 0 {
+        let _ = tmux_ok(&["select-layout", "-t", &format!("{SESSION}:0"), "tiled"]);
+    }
+
+    Ok((moved, remaining))
 }
 
 /// Resize a pane.

@@ -22,6 +22,8 @@ $BIN send --pane %ID --text "response"        # send input to worker
 $BIN kill --pane %ID                          # kill worker
 $BIN hide --pane %ID --name "worker-1"        # move pane to background tab
 $BIN show --pane %ID --split h                # surface pane (h or v)
+$BIN surface --pane %ID                       # bring background pane back to main window
+$BIN compact                                  # move small/excess panes to background tabs
 $BIN resize --pane %ID --direction R --amount 20  # resize (U/D/L/R)
 $BIN layout --name tiled                      # apply layout preset
 $BIN status-human                             # human-readable status + worker health (press F3)
@@ -31,6 +33,17 @@ $BIN respawn --pane %ID --task "..." --dir /path  # kill crashed worker and resp
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
+
+## Pane Management
+
+Workers are automatically moved to background tabs when the main window gets crowded (>4 panes). Use these commands to manage visibility:
+
+```bash
+$BIN compact              # move small/excess panes to background tabs
+$BIN surface --pane %ID   # bring a background pane back to main window
+$BIN hide --pane %ID --name "label"  # manually move pane to background tab
+$BIN show --pane %ID      # alias for surface
+```
 
 ## Agent Modes
 
