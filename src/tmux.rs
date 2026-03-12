@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::loop_guard;
+
 const SESSION: &str = "superharness";
 
 /// Escape a string for safe use in a shell command
@@ -99,7 +101,9 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
 
     // Auto-layout so panes stay usable
@@ -115,7 +119,12 @@ pub fn read(pane: &str, lines: u32) -> Result<String> {
 
 /// Send text to a pane.
 pub fn send(pane: &str, text: &str) -> Result<()> {
-    tmux_ok(&["send-keys", "-t", pane, text, "Enter"])
+    tmux_ok(&["send-keys", "-t", pane, text, "Enter"])?;
+    // Record this send action for loop detection; don't fail if loop guard errors
+    if let Err(e) = loop_guard::record_action(pane, "send", text) {
+        eprintln!("loop_guard: failed to record action: {e}");
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -240,7 +249,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
