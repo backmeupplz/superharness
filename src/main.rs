@@ -1,3 +1,4 @@
+mod monitor;
 mod setup;
 mod state;
 mod tmux;
@@ -150,6 +151,21 @@ enum Command {
 
     /// Clear all pending decisions
     ClearDecisions,
+
+    /// Monitor panes for stalls and auto-recover
+    Monitor {
+        /// Seconds between each check cycle
+        #[arg(short, long, default_value_t = 60)]
+        interval: u64,
+
+        /// Specific pane ID to monitor (monitors all panes if omitted)
+        #[arg(short, long)]
+        pane: Option<String>,
+
+        /// Number of consecutive unchanged checks before a pane is considered stalled
+        #[arg(long, default_value_t = 3)]
+        stall_threshold: u32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -289,6 +305,14 @@ fn main() -> anyhow::Result<()> {
             sm.clear_decisions()?;
             let out = serde_json::json!({ "cleared": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Monitor {
+            interval,
+            pane,
+            stall_threshold,
+        }) => {
+            monitor::run(interval, pane.as_deref(), stall_threshold)?;
         }
     }
 

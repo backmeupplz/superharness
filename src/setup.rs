@@ -171,6 +171,37 @@ $BIN clear-decisions
 - If a worker is stuck or looping, kill it and respawn with a better prompt
 - In away mode: queue uncertain decisions, do not auto-approve irreversible actions
 
+## Autonomous Monitoring
+
+The `monitor` subcommand watches panes for stalls and attempts automatic recovery so you can focus on orchestration rather than babysitting workers.
+
+```bash
+$BIN monitor                                        # monitor all panes (60s interval, stall after 3 unchanged checks)
+$BIN monitor --pane %23                             # monitor a specific pane only
+$BIN monitor --interval 30                          # check every 30 seconds
+$BIN monitor --stall-threshold 5                    # require 5 unchanged checks before acting
+$BIN monitor --interval 45 --stall-threshold 4      # combine options
+```
+
+### How it works
+
+1. Every `--interval` seconds, the monitor reads each pane's output.
+2. It hashes the output and compares it to the previous check.
+3. If output is **unchanged** for `--stall-threshold` consecutive checks **and** doesn't end with a shell prompt or completion marker, the pane is considered **stalled**.
+4. Recovery attempts are made in order:
+   - **Attempt 1**: Send a bare `Enter` keypress (wakes up many blocked prompts)
+   - **Attempt 2**: Send `continue`
+   - **Attempt 3**: Send `please continue with the task`
+   - **Attempt 4+**: Log that the pane needs human attention
+
+Monitor state (stall counts, output hashes, recovery attempts) is persisted in `~/.local/share/superharness/monitor_state.json` so it survives restarts.
+
+### When to use it
+
+- **Long-running tasks**: Start `monitor` in a separate pane when workers will run for hours.
+- **Unattended runs**: Use it when you step away so workers don't silently block on prompts.
+- **Background supervision**: Run it with `--interval 120` for low-overhead continuous oversight.
+
 $TASK
 "##;
 

@@ -178,6 +178,11 @@ pub fn send(pane: &str, text: &str) -> Result<()> {
     tmux_ok(&["send-keys", "-t", pane, text, "Enter"])
 }
 
+/// Send a bare Enter keypress to a pane (no text).
+pub fn send_raw(pane: &str, _text: &str) -> Result<()> {
+    tmux_ok(&["send-keys", "-t", pane, "Enter"])
+}
+
 #[derive(Serialize)]
 pub struct PaneInfo {
     pub id: String,
