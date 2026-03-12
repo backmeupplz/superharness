@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SuperHarness — Autonomous AI Agent Orchestration</title>
+  <meta name="description" content="SuperHarness is a Rust CLI that lets you orchestrate multiple AI coding agents (Claude Code) in parallel via tmux panes — with plan/build modes, away mode, loop detection, and autonomous health checks." />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://superharness.dev" />
+  <meta property="og:title" content="SuperHarness — Autonomous AI Agent Orchestration" />
+  <meta property="og:description" content="Orchestrate multiple AI coding agents in parallel via tmux. Plan/build modes, loop detection, away mode, and autonomous monitoring." />
+  <meta property="og:image" content="https://superharness.dev/og-image.png" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://superharness.dev" />
+  <meta name="twitter:title" content="SuperHarness — Autonomous AI Agent Orchestration" />
+  <meta name="twitter:description" content="Orchestrate multiple AI coding agents in parallel via tmux. Plan/build modes, loop detection, away mode, and autonomous monitoring." />
+  <meta name="twitter:image" content="https://superharness.dev/og-image.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" />
+
+  <style>
+    /* ── Reset & Base ───────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f0e;
+      --bg-card:   #131614;
+      --bg-term:   #0a0c0b;
+      --border:    #1e2420;
+      --orange:    #e8760a;
+      --orange-lt: #f5901e;
+      --green:     #39d353;
+      --green-dim: #1a6e2e;
+      --text:      #d4d8d5;
+      --text-dim:  #6b756e;
+      --text-bright: #eef2ee;
+      --red:       #e05252;
+      --blue:      #4a9eff;
+      --font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Menlo', monospace;
+      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --radius:    8px;
+      --shadow:    0 4px 24px rgba(0,0,0,.45);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+      font-size: 16px;
+      overflow-x: hidden;
+    }
+
+    a { color: var(--orange); text-decoration: none; }
+    a:hover { color: var(--orange-lt); text-decoration: underline; }
+
+    /* ── Layout helpers ─────────────────────────────────────────── */
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    section { padding: 80px 0; }
+    section:nth-child(even) { background: var(--bg-card); }
+
+    h2 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--text-bright);
+      margin-bottom: 12px;
+    }
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 8px;
+    }
+    p { color: var(--text); }
+
+    .section-lead {
+      color: var(--text-dim);
+      font-size: 1.05rem;
+      margin-bottom: 48px;
+    }
+
+    /* ── Nav ────────────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(13,15,14,.88);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--text-bright);
+      text-decoration: none;
+    }
+    .nav-logo:hover { text-decoration: none; color: var(--text-bright); }
+
+    .nav-logo svg { flex-shrink: 0; }
+
+    .nav-links {
+      display: flex;
+      gap: 28px;
+      align-items: center;
+      font-size: 0.9rem;
+    }
+
+    .nav-links a {
+      color: var(--text-dim);
+      transition: color .15s;
+    }
+    .nav-links a:hover { color: var(--orange); text-decoration: none; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-weight: 600;
+      transition: all .15s;
+      cursor: pointer;
+      border: none;
+      text-decoration: none !important;
+    }
+
+    .btn-primary {
+      background: var(--orange);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--orange-lt); color: #fff; }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { border-color: var(--orange); color: var(--orange); }
+
+    /* ── Hero ───────────────────────────────────────────────────── */
+    #hero {
+      padding: 96px 0 72px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 50% -10%, rgba(232,118,10,.18) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 30% at 80% 80%, rgba(57,211,83,.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--green-dim);
+      background: rgba(57,211,83,.06);
+      color: var(--green);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+
+    .hero-badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: .4; transform: scale(.7); }
+    }
+
+    #hero h1 {
+      font-size: clamp(2.4rem, 6vw, 4.2rem);
+      font-weight: 800;
+      color: var(--text-bright);
+      line-height: 1.1;
+      letter-spacing: -.02em;
+      margin-bottom: 20px;
+    }
+
+    #hero h1 .accent { color: var(--orange); }
+
+    #hero .subtitle {
+      font-size: clamp(1rem, 2.5vw, 1.25rem);
+      color: var(--text-dim);
+      max-width: 580px;
+      margin: 0 auto 40px;
+    }
+
+    .hero-ctas {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 56px;
+    }
+
+    .hero-install {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--bg-term);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      max-width: 480px;
+      margin: 0 auto;
+      font-family: var(--font-mono);
+    }
+
+    .hero-install .prompt {
+      padding: 10px 14px;
+      color: var(--green);
+      font-size: 0.9rem;
+      border-right: 1px solid var(--border);
+      user-select: none;
+    }
+
+    .hero-install .cmd {
+      padding: 10px 16px;
+      color: var(--text-bright);
+      font-size: 0.9rem;
+      flex: 1;
+    }
+
+    .hero-install .copy-btn {
+      padding: 10px 14px;
+      background: none;
+      border: none;
+      border-left: 1px solid var(--border);
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: color .15s;
+      font-size: 0.85rem;
+    }
+    .hero-install .copy-btn:hover { color: var(--orange); }
+
+    /* ── Terminal Demo ──────────────────────────────────────────── */
+    .terminal {
+      background: var(--bg-term);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.55;
+    }
+
+    .term-titlebar {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      background: #111413;
+      border-bottom: 1px solid var(--border);
+      gap: 8px;
+    }
+
+    .term-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+    }
+    .term-dot.red { background: #ff5f57; }
+    .term-dot.yellow { background: #ffbd2e; }
+    .term-dot.green { background: #28c840; }
+
+    .term-title {
+      flex: 1;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+    }
+
+    .term-body {
+      padding: 18px 20px;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .c-green  { color: var(--green); }
+    .c-orange { color: var(--orange); }
+    .c-dim    { color: var(--text-dim); }
+    .c-bright { color: var(--text-bright); }
+    .c-red    { color: var(--red); }
+    .c-blue   { color: var(--blue); }
+    .c-yellow { color: #e8c840; }
+
+    /* ── Features grid ──────────────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: border-color .2s, transform .2s;
+    }
+    .feature-card:hover {
+      border-color: var(--orange);
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      font-size: 1.6rem;
+      margin-bottom: 12px;
+    }
+
+    /* ── How it works ───────────────────────────────────────────── */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      max-width: 780px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .step-num {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(232,118,10,.12);
+      border: 1px solid rgba(232,118,10,.35);
+      color: var(--orange);
+      font-size: 1rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .step-content h3 { margin-bottom: 6px; }
+    .step-content p { color: var(--text-dim); font-size: .95rem; }
+    .step-content code {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      background: var(--bg-term);
+      color: var(--green);
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    /* ── Quick Start ────────────────────────────────────────────── */
+    .qs-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 720px) {
+      .qs-grid { grid-template-columns: 1fr; }
+      .nav-links .hide-mobile { display: none; }
+    }
+
+    .qs-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    /* ── Modes section ──────────────────────────────────────────── */
+    .modes-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 32px;
+    }
+
+    @media (max-width: 640px) {
+      .modes-row { grid-template-columns: 1fr; }
+    }
+
+    .mode-card {
+      border-radius: var(--radius);
+      border: 1px solid;
+      padding: 22px 24px;
+    }
+
+    .mode-card.plan {
+      border-color: #1e3a5f;
+      background: rgba(74,158,255,.04);
+    }
+
+    .mode-card.build {
+      border-color: #1a3d22;
+      background: rgba(57,211,83,.04);
+    }
+
+    .mode-card .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .mode-card.plan .badge { background: rgba(74,158,255,.15); color: var(--blue); }
+    .mode-card.build .badge { background: rgba(57,211,83,.15); color: var(--green); }
+
+    /* ── Stats ──────────────────────────────────────────────────── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 20px;
+      text-align: center;
+    }
+
+    .stat-card {
+      padding: 28px 16px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .stat-val {
+      font-size: 2.2rem;
+      font-weight: 800;
+      color: var(--orange);
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .stat-label {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 36px 0;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+
+    footer a { color: var(--text-dim); }
+    footer a:hover { color: var(--orange); }
+
+    /* ── Utilities ──────────────────────────────────────────────── */
+    .text-center { text-align: center; }
+    .mt-4 { margin-top: 16px; }
+    .mt-8 { margin-top: 32px; }
+    .mb-0 { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────────────────── -->
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="/">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="28" height="28" rx="6" fill="#1a1d1b"/>
+        <text x="4" y="21" font-family="monospace" font-size="16" font-weight="900" fill="#e8760a">SH</text>
+      </svg>
+      SuperHarness
+    </a>
+    <div class="nav-links">
+      <a href="#features" class="hide-mobile">Features</a>
+      <a href="#how-it-works" class="hide-mobile">How it works</a>
+      <a href="#quickstart" class="hide-mobile">Quick start</a>
+      <a href="https://github.com/backmeupplz/superharness" class="btn btn-ghost" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────────────────── -->
+<section id="hero">
+  <div class="container">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      v0.2.0 · Rust · MIT License
+    </div>
+    <h1>
+      <span class="accent">SuperHarness</span><br/>
+      Autonomous AI Agent<br/>Orchestration
+    </h1>
+    <p class="subtitle">
+      Run dozens of AI coding agents in parallel — each in their own tmux pane,
+      git worktree, and mode. Spawn, monitor, recover, and coordinate. You direct; the agents build.
+    </p>
+    <div class="hero-ctas">
+      <a href="#quickstart" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Get Started
+      </a>
+      <a href="https://github.com/backmeupplz/superharness" class="btn btn-ghost" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+    <div class="hero-install">
+      <span class="prompt">$</span>
+      <span class="cmd" id="install-cmd">cargo install superharness</span>
+      <button class="copy-btn" onclick="copyInstall()" title="Copy">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ── Terminal Demo ────────────────────────────────────────────── -->
+<section id="demo" style="padding-top:0; padding-bottom:80px;">
+  <div class="container">
+    <div class="terminal">
+      <div class="term-titlebar">
+        <span class="term-dot red"></span>
+        <span class="term-dot yellow"></span>
+        <span class="term-dot green"></span>
+        <span class="term-title">superharness — orchestrator</span>
+      </div>
+      <div class="term-body"><span class="c-dim"># Spawn a plan-mode agent to analyze the codebase</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn \
+    --task "Analyze auth middleware and propose refactor plan" \
+    --dir /tmp/worker-1 \
+    --mode plan \
+    --model anthropic/claude-sonnet-4-6</span>
+<span class="c-dim">✓ Spawned pane %3 [plan] Analyze auth middleware...</span>
+
+<span class="c-dim"># Spawn three build-mode agents in parallel</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn --task "Implement JWT refresh tokens" --dir /tmp/worker-2 --mode build</span>
+<span class="c-dim">✓ Spawned pane %4 [build] Implement JWT refresh tokens</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn --task "Add rate limiting middleware"   --dir /tmp/worker-3 --mode build</span>
+<span class="c-dim">✓ Spawned pane %5 [build] Add rate limiting middleware</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn --task "Write integration tests"        --dir /tmp/worker-4 --mode build</span>
+<span class="c-dim">✓ Spawned pane %6 [build] Write integration tests</span>
+
+<span class="c-dim"># List all active workers</span>
+<span class="c-green">$</span> <span class="c-bright">superharness list</span>
+<span class="c-yellow">PANE  MODE   STATUS   TASK</span>
+<span class="c-blue">%3    plan   running  Analyze auth middleware...</span>
+<span class="c-green">%4    build  running  Implement JWT refresh tokens</span>
+<span class="c-green">%5    build  running  Add rate limiting middleware</span>
+<span class="c-green">%6    build  running  Write integration tests</span>
+
+<span class="c-dim"># Read worker output</span>
+<span class="c-green">$</span> <span class="c-bright">superharness read --pane %4 --lines 20</span>
+<span class="c-dim">  → worker: "Should I use RS256 or HS256 for JWT signing?"</span>
+<span class="c-green">$</span> <span class="c-bright">superharness send --pane %4 --text "Use RS256 with rotating keys"</span>
+<span class="c-dim">✓ Sent</span>
+
+<span class="c-dim"># Check for looping workers</span>
+<span class="c-green">$</span> <span class="c-bright">superharness loop-status</span>
+<span class="c-dim">  %3: loop_detected=false  %4: loop_detected=false</span>
+<span class="c-dim">  %5: loop_detected=false  %6: loop_detected=<span class="c-red">true</span>  (action: "run tests" x7)</span>
+<span class="c-green">$</span> <span class="c-bright">superharness kill --pane %6 && superharness loop-clear --pane %6</span>
+<span class="c-dim">✓ Killed %6  ✓ Loop history cleared</span>
+</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Stats ────────────────────────────────────────────────────── -->
+<section id="stats" style="padding: 48px 0;">
+  <div class="container">
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-val">∞</div>
+        <div class="stat-label">Parallel agents</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">2</div>
+        <div class="stat-label">Agent modes</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">100+</div>
+        <div class="stat-label">AI models supported</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">Rust</div>
+        <div class="stat-label">Zero overhead CLI</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ─────────────────────────────────────────────────── -->
+<section id="features">
+  <div class="container">
+    <h2>Everything you need to<br/>orchestrate at scale</h2>
+    <p class="section-lead">SuperHarness gives you a complete toolkit for running AI coding agents as a coordinated team.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Parallel Spawning</h3>
+        <p>Launch any number of AI coding agents simultaneously, each isolated in its own tmux pane and git worktree. No conflicts, no drama.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🎭</div>
+        <h3>Plan + Build Modes</h3>
+        <p>Plan-mode agents explore and propose (read-only, blue border). Build-mode agents implement (full access, green border). Always review before you build.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔁</div>
+        <h3>Loop Detection</h3>
+        <p>Automatic detection of stuck agents repeating the same action. <code>loop-status</code> spots oscillation patterns; <code>loop-clear</code> resets history after intervention.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌙</div>
+        <h3>Away Mode</h3>
+        <p>Step away without losing control. Queue decisions for uncertain situations, let safe work continue, and review a full decision log when you return.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">💓</div>
+        <h3>Autonomous Monitor</h3>
+        <p>Background daemon polls every N seconds, detects stalled workers, and attempts auto-recovery (Enter → "continue" → escalate to human).</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🎛️</div>
+        <h3>Pane Management</h3>
+        <p>Hide workers to background tabs, surface them on demand, resize, apply layout presets (tiled, main-vertical…), and never lose context.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌐</div>
+        <h3>100+ AI Models</h3>
+        <p>Works with Anthropic, OpenRouter, Fireworks AI, Cloudflare AI Gateway and more. Pick the right model for each worker independently.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔐</div>
+        <h3>Permission Guard</h3>
+        <p>Workers ask before running risky commands. You approve safe ops, deny destructive ones, and escalate ambiguous calls to the human in the loop.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌿</div>
+        <h3>Git Worktrees</h3>
+        <p>Each worker gets its own isolated git worktree — parallel branches, no file conflicts, clean merges when work is done.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Agent Modes ───────────────────────────────────────────────── -->
+<section id="modes">
+  <div class="container">
+    <h2>Two modes. One workflow.</h2>
+    <p class="section-lead">Use plan mode to think, build mode to act. The recommended flow prevents wasted implementation work.</p>
+    <div class="modes-row">
+      <div class="mode-card plan">
+        <span class="badge">Plan</span>
+        <h3>Read-Only Exploration</h3>
+        <p>The agent analyzes the codebase, reads files, searches for patterns, and produces a written plan — without touching a single file. Blue pane border. Use this first.</p>
+        <div class="mt-4" style="font-family:var(--font-mono);font-size:.78rem;color:var(--text-dim)">--mode plan</div>
+      </div>
+      <div class="mode-card build">
+        <span class="badge">Build</span>
+        <h3>Full Implementation Access</h3>
+        <p>The agent can create, edit, delete files and execute commands freely. Green pane border. Feed it the plan from a plan-mode agent for best results.</p>
+        <div class="mt-4" style="font-family:var(--font-mono);font-size:.78rem;color:var(--text-dim)">--mode build &nbsp;(default)</div>
+      </div>
+    </div>
+    <div class="terminal mt-8">
+      <div class="term-titlebar">
+        <span class="term-dot red"></span>
+        <span class="term-dot yellow"></span>
+        <span class="term-dot green"></span>
+        <span class="term-title">plan → build workflow</span>
+      </div>
+      <div class="term-body"><span class="c-dim"># Step 1: Let a plan-mode agent explore</span>
+<span class="c-green">$</span> <span class="c-bright">git worktree add /tmp/plan-1 HEAD</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn \
+    --task "Analyze the payment module and propose a refactor" \
+    --dir /tmp/plan-1 \
+    --mode plan \
+    --model openrouter/google/gemini-2.5-pro</span>
+<span class="c-dim">✓ Spawned pane %2 [plan] — blue border</span>
+
+<span class="c-dim"># Step 2: Read the plan, then implement</span>
+<span class="c-green">$</span> <span class="c-bright">superharness read --pane %2 --lines 60</span>
+<span class="c-dim">  [Plan output: split PaymentService into 3 modules...]</span>
+<span class="c-green">$</span> <span class="c-bright">git worktree add /tmp/build-1 HEAD</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn \
+    --task "Implement refactor: split PaymentService into Auth, Charge, Refund modules" \
+    --dir /tmp/build-1 \
+    --mode build</span>
+<span class="c-dim">✓ Spawned pane %3 [build] — green border</span>
+</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How it Works ─────────────────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="container">
+    <h2>How it works</h2>
+    <p class="section-lead">SuperHarness is the conductor. You set the direction. Workers handle the code.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h3>Decompose the task</h3>
+          <p>Break your goal into independent subtasks that can run concurrently without file conflicts. Good decomposition = maximum parallelism.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h3>Create git worktrees</h3>
+          <p>Run <code>git worktree add /tmp/worker-N HEAD</code> for each planned worker. Isolated filesystem, isolated branch — parallel work without collisions.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h3>Spawn agents</h3>
+          <p>Call <code>superharness spawn --task "..." --dir /tmp/worker-N --model MODEL</code>. Each agent runs in its own tmux pane with a clear task context and chosen AI model.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <h3>Poll &amp; respond</h3>
+          <p>Every 30–60s, <code>superharness read --pane %ID</code> to check progress. Workers ask permission for risky actions — approve, deny, or escalate. Answer questions with <code>send</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <h3>Monitor autonomously</h3>
+          <p>Start <code>superharness monitor</code> for background health checks. Stalled workers get auto-recovery attempts. Loops get flagged. You only see what needs human attention.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-content">
+          <h3>Collect &amp; merge</h3>
+          <p>When workers finish, kill the pane, cherry-pick or merge the worktree branch, remove the worktree. Clean results, ready to review.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Quick Start ──────────────────────────────────────────────── -->
+<section id="quickstart">
+  <div class="container">
+    <h2>Quick Start</h2>
+    <p class="section-lead">Up and running in under two minutes.</p>
+    <div class="qs-grid">
+      <div>
+        <div class="qs-label">1 · Install</div>
+        <div class="terminal">
+          <div class="term-body"><span class="c-green">$</span> <span class="c-bright">cargo install superharness</span>
+<span class="c-dim">   Compiling superharness v0.2.0</span>
+<span class="c-dim">   Finished in 4.2s</span>
+<span class="c-dim">   Installed ~/.cargo/bin/superharness</span>
+</div>
+        </div>
+      </div>
+      <div>
+        <div class="qs-label">2 · Initialize your repo</div>
+        <div class="terminal">
+          <div class="term-body"><span class="c-dim"># In your project directory:</span>
+<span class="c-green">$</span> <span class="c-bright">superharness init</span>
+<span class="c-dim">✓ Created AGENTS.md</span>
+<span class="c-dim">✓ tmux session "superharness" ready</span>
+</div>
+        </div>
+      </div>
+      <div>
+        <div class="qs-label">3 · Spawn your first agent</div>
+        <div class="terminal">
+          <div class="term-body"><span class="c-green">$</span> <span class="c-bright">git worktree add /tmp/w1 HEAD</span>
+<span class="c-green">$</span> <span class="c-bright">superharness spawn \
+    --task "Add dark mode to the dashboard" \
+    --dir /tmp/w1 \
+    --mode build \
+    --model anthropic/claude-sonnet-4-6</span>
+<span class="c-dim">✓ Spawned pane %2 [build]</span>
+</div>
+        </div>
+      </div>
+      <div>
+        <div class="qs-label">4 · Monitor &amp; interact</div>
+        <div class="terminal">
+          <div class="term-body"><span class="c-green">$</span> <span class="c-bright">superharness read --pane %2 --lines 30</span>
+<span class="c-green">$</span> <span class="c-bright">superharness send --pane %2 --text "y"</span>
+<span class="c-green">$</span> <span class="c-bright">superharness monitor --interval 45</span>
+<span class="c-dim">  → Watching all panes...</span>
+</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Away Mode ─────────────────────────────────────────────────── -->
+<section id="away">
+  <div class="container">
+    <h2>Step away. Come back informed.</h2>
+    <p class="section-lead">Away mode queues decisions you'd normally need to be present for, so workers keep making safe progress while you're gone.</p>
+    <div class="terminal" style="max-width: 700px;">
+      <div class="term-titlebar">
+        <span class="term-dot red"></span>
+        <span class="term-dot yellow"></span>
+        <span class="term-dot green"></span>
+        <span class="term-title">away mode workflow</span>
+      </div>
+      <div class="term-body"><span class="c-dim"># Before leaving:</span>
+<span class="c-green">$</span> <span class="c-bright">superharness away --message "Back in 2 hours"</span>
+<span class="c-dim">✓ Away mode enabled. Safe work continues; decisions queued.</span>
+
+<span class="c-dim"># Worker asks something uncertain — queued instead of auto-approved:</span>
+<span class="c-dim">  ⏳ Queued: "Should I refactor module X into Y?" (pane %4)</span>
+
+<span class="c-dim"># When you return:</span>
+<span class="c-green">$</span> <span class="c-bright">superharness present</span>
+<span class="c-dim">✓ Present mode. Pending decisions:</span>
+<span class="c-dim">  1. [%4] Refactor module X into Y? — context: breaks existing API</span>
+<span class="c-dim">  2. [%5] Use tokio or async-std?   — context: tokio has wider ecosystem</span>
+
+<span class="c-green">$</span> <span class="c-bright">superharness send --pane %4 --text "Yes, refactor it"</span>
+<span class="c-green">$</span> <span class="c-bright">superharness send --pane %5 --text "Use tokio"</span>
+<span class="c-green">$</span> <span class="c-bright">superharness clear-decisions</span>
+<span class="c-dim">✓ All decisions resolved.</span>
+</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── GitHub ────────────────────────────────────────────────────── -->
+<section id="github" class="text-center">
+  <div class="container">
+    <h2>Open Source &amp; MIT Licensed</h2>
+    <p class="section-lead mb-0">SuperHarness is free to use, modify, and extend. Built with Rust for performance and reliability.</p>
+    <div style="margin-top:36px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      <a href="https://github.com/backmeupplz/superharness" class="btn btn-primary" target="_blank" rel="noopener">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        Star on GitHub
+      </a>
+      <a href="https://github.com/backmeupplz/superharness/releases" class="btn btn-ghost" target="_blank" rel="noopener">
+        Releases
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ────────────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <p>
+      &copy; 2026 SuperHarness &mdash;
+      <a href="https://github.com/backmeupplz/superharness/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      &nbsp;&middot;&nbsp;
+      <a href="https://github.com/backmeupplz/superharness" target="_blank" rel="noopener">GitHub</a>
+      &nbsp;&middot;&nbsp;
+      Built with Rust
+    </p>
+  </div>
+</footer>
+
+<script>
+  function copyInstall() {
+    const cmd = document.getElementById('install-cmd').textContent;
+    navigator.clipboard.writeText(cmd).then(() => {
+      const btn = document.querySelector('.copy-btn');
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+      }, 2000);
+    });
+  }
+</script>
+
+</body>
+</html>
