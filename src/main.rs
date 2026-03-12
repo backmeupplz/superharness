@@ -40,6 +40,10 @@ enum Command {
         /// Model to use (e.g. "fireworks/kimi-k2.5", "anthropic/claude-sonnet-4-6")
         #[arg(short, long)]
         model: Option<String>,
+
+        /// Agent mode: build (default, full access) or plan (read-only planning)
+        #[arg(long, default_value = "build")]
+        mode: Option<String>,
     },
 
     /// Read recent output from a worker pane
@@ -133,8 +137,29 @@ fn main() -> anyhow::Result<()> {
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
-        Some(Command::Spawn { task, dir, name, model }) => {
-            let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref())?;
+        Some(Command::Spawn {
+            task,
+            dir,
+            name,
+            model,
+            mode,
+        }) => {
+            if let Some(ref m) = mode {
+                match m.as_str() {
+                    "build" | "plan" => {}
+                    other => anyhow::bail!(
+                        "invalid mode {:?}: must be 'build' (default) or 'plan' (read-only planning)",
+                        other
+                    ),
+                }
+            }
+            let pane = tmux::spawn(
+                &task,
+                &dir,
+                name.as_deref(),
+                model.as_deref(),
+                mode.as_deref(),
+            )?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

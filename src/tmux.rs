@@ -75,18 +75,36 @@ fn configure_session() -> Result<()> {
 }
 
 /// Spawn a new opencode worker as a pane in the superharness window.
-pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) -> Result<String> {
+pub fn spawn(
+    task: &str,
+    dir: &str,
+    _name: Option<&str>,
+    model: Option<&str>,
+    mode: Option<&str>,
+) -> Result<String> {
     ensure_session()?;
 
     let abs_dir =
         std::fs::canonicalize(dir).with_context(|| format!("invalid directory: {dir}"))?;
     let dir_str = abs_dir.to_string_lossy().to_string();
 
+    let effective_mode = mode.unwrap_or("build");
+
     let model_flag = match model {
         Some(m) => format!(" --model {}", shell_escape(m)),
         None => String::new(),
     };
-    let cmd = format!("opencode{model_flag} --prompt {}", shell_escape(task));
+
+    // In plan mode, prefix the task to instruct the agent not to make changes.
+    let effective_task = match effective_mode {
+        "plan" => format!("[PLAN MODE - do not make changes, only analyze and plan]: {task}"),
+        _ => task.to_string(),
+    };
+
+    let cmd = format!(
+        "opencode{model_flag} --prompt {}",
+        shell_escape(&effective_task)
+    );
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
@@ -99,8 +117,31 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
+
+    // Set pane border colour to hint the mode:
+    //   plan  → blue  (colour33)
+    //   build → green (colour34)
+    let border_colour = if effective_mode == "plan" {
+        "colour33"
+    } else {
+        "colour34"
+    };
+    let _ = tmux_ok(&[
+        "select-pane",
+        "-t",
+        &pane_id,
+        "-P",
+        &format!("fg={border_colour}"),
+    ]);
+
+    // Set a descriptive pane title so the mode is visible at a glance.
+    let short_task: String = effective_task.chars().take(60).collect();
+    let pane_title = format!("[{effective_mode}] {short_task}");
+    let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &pane_title]);
 
     // Auto-layout so panes stay usable
     let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
@@ -240,7 +281,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 

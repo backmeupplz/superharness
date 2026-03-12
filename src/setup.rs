@@ -11,6 +11,8 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 ```bash
 $BIN spawn --task "description" --dir /path                    # spawn worker pane
 $BIN spawn --task "desc" --dir /path --model fireworks/kimi-k2.5  # spawn with specific model
+$BIN spawn --task "description" --dir /path --mode plan        # spawn in plan mode (read-only)
+$BIN spawn --task "description" --dir /path --mode build       # spawn in build mode (default)
 $BIN list                                     # list all panes (JSON)
 $BIN read --pane %ID --lines 50               # read worker output
 $BIN send --pane %ID --text "response"        # send input to worker
@@ -22,6 +24,27 @@ $BIN layout --name tiled                      # apply layout preset
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
+
+## Agent Modes
+
+Use `--mode` when spawning to control how much the worker is allowed to do:
+
+- **plan** (read-only): The worker analyzes the codebase and produces a written plan but makes **no file changes**. Use this for architecture decisions, understanding unfamiliar code, or when you want to review a proposed approach before committing to it. Pane border is **blue**.
+- **build** (default, full access): The worker can create, edit, and execute code freely. Use this for implementation tasks where you trust the plan. Pane border is **green**.
+
+**Recommended workflow for complex tasks:**
+
+1. Start with a plan-mode agent to explore and produce a clear plan.
+2. Review the plan output.
+3. Spawn a build-mode agent, passing the plan as part of the task prompt.
+
+```bash
+# Step 1 — understand the problem
+$BIN spawn --task "Analyze how auth middleware works and propose a refactor plan" --dir /tmp/worker-1 --mode plan --model fireworks/kimi-k2.5
+
+# Step 2 — implement once the plan looks good
+$BIN spawn --task "Implement the refactor described here: <paste plan>" --dir /tmp/worker-2 --mode build --model fireworks/kimi-k2.5
+```
 
 ## Authenticated Providers
 
@@ -114,7 +137,9 @@ fn get_available_models() -> String {
             let models = String::from_utf8_lossy(&o.stdout);
             let lines: Vec<&str> = models.lines().filter(|l| !l.is_empty()).collect();
             if lines.is_empty() {
-                return String::from("(could not detect models — run `opencode models` to see available)");
+                return String::from(
+                    "(could not detect models — run `opencode models` to see available)",
+                );
             }
             lines.join("\n")
         }
