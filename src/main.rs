@@ -1,3 +1,4 @@
+mod monitor;
 mod setup;
 mod tmux;
 
@@ -117,6 +118,21 @@ enum Command {
         #[arg(short, long, default_value = "tiled")]
         name: String,
     },
+
+    /// Monitor panes for stalls and auto-recover
+    Monitor {
+        /// Seconds between each check cycle
+        #[arg(short, long, default_value_t = 60)]
+        interval: u64,
+
+        /// Specific pane ID to monitor (monitors all panes if omitted)
+        #[arg(short, long)]
+        pane: Option<String>,
+
+        /// Number of consecutive unchanged checks before a pane is considered stalled
+        #[arg(long, default_value_t = 3)]
+        stall_threshold: u32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -133,7 +149,12 @@ fn main() -> anyhow::Result<()> {
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
-        Some(Command::Spawn { task, dir, name, model }) => {
+        Some(Command::Spawn {
+            task,
+            dir,
+            name,
+            model,
+        }) => {
             let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref())?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -181,6 +202,13 @@ fn main() -> anyhow::Result<()> {
             tmux::layout(&name)?;
             let out = serde_json::json!({ "layout": name });
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Monitor {
+            interval,
+            pane,
+            stall_threshold,
+        }) => {
+            monitor::run(interval, pane.as_deref(), stall_threshold)?;
         }
     }
 

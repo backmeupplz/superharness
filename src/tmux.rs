@@ -99,7 +99,9 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
 
     // Auto-layout so panes stay usable
@@ -116,6 +118,11 @@ pub fn read(pane: &str, lines: u32) -> Result<String> {
 /// Send text to a pane.
 pub fn send(pane: &str, text: &str) -> Result<()> {
     tmux_ok(&["send-keys", "-t", pane, text, "Enter"])
+}
+
+/// Send a bare Enter keypress to a pane (no text).
+pub fn send_raw(pane: &str, _text: &str) -> Result<()> {
+    tmux_ok(&["send-keys", "-t", pane, "Enter"])
 }
 
 #[derive(Serialize)]
@@ -240,7 +247,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
