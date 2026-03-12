@@ -143,15 +143,23 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "#(tmux list-panes -t superharness -a 2>/dev/null | wc -l | tr -d ' ')";
 
     let status_right = format!(
-        "#[fg=colour240]│ #[fg=colour33]MODE:{mode_snippet} \
+        "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour238] F1:away F2:present F3:status F4:workers #[default]"
+         #[fg=colour240]│ #[fg=colour236] F1:away F2:present F3:status F4:workers #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "80"])?;
 
-    // Window status (centre): show window list naturally.
+    // Window status (centre): hide window index/name entirely for a clean bar.
+    tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "window-status-current-format",
+        "",
+    ])?;
     tmux_ok(&[
         "set-option",
         "-t",
