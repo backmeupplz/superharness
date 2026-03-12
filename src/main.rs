@@ -9,6 +9,7 @@ mod state;
 mod tmux;
 mod watch;
 
+use anyhow::Context as _;
 use clap::Parser;
 use state::StateManager;
 
@@ -276,6 +277,43 @@ enum Command {
         #[arg(short, long)]
         list: bool,
     },
+
+    /// Read last 20 lines of a worker pane and detect if it's asking a question
+    Ask {
+        /// Pane ID to inspect
+        #[arg(short, long)]
+        pane: String,
+    },
+
+    /// Check if a git repo directory has uncommitted changes before creating a worktree
+    GitCheck {
+        /// Directory containing the git repo to check
+        #[arg(short, long, default_value = ".")]
+        dir: String,
+    },
+
+    /// Kill a crashed worker and respawn it with crash context prepended to the task
+    Respawn {
+        /// Pane ID of the crashed worker
+        #[arg(short, long)]
+        pane: String,
+
+        /// The original task to retry
+        #[arg(short, long)]
+        task: String,
+
+        /// Working directory for the new worker
+        #[arg(short, long)]
+        dir: String,
+
+        /// Model to use (optional)
+        #[arg(short, long)]
+        model: Option<String>,
+
+        /// Agent mode: build (default) or plan
+        #[arg(long, default_value = "build")]
+        mode: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -307,6 +345,45 @@ fn main() -> anyhow::Result<()> {
                         "invalid mode {:?}: must be 'build' (default) or 'plan' (read-only planning)",
                         other
                     ),
+                }
+            }
+
+            // Warn if the target dir is a git repo with uncommitted changes.
+            // Worktrees are created from HEAD, so dirty files won't be included.
+            {
+                let check_dir =
+                    std::fs::canonicalize(&dir).unwrap_or_else(|_| std::path::PathBuf::from(&dir));
+                let check_dir_str = check_dir.to_string_lossy().to_string();
+
+                let is_git = std::process::Command::new("git")
+                    .args(["-C", &check_dir_str, "rev-parse", "--git-dir"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+
+                if is_git {
+                    let status_out = std::process::Command::new("git")
+                        .args(["-C", &check_dir_str, "status", "--porcelain"])
+                        .output();
+
+                    if let Ok(out) = status_out {
+                        let status_text = String::from_utf8_lossy(&out.stdout);
+                        let dirty_count =
+                            status_text.lines().filter(|l| !l.trim().is_empty()).count();
+                        if dirty_count > 0 {
+                            eprintln!(
+                                "WARNING: {check_dir_str} has {dirty_count} uncommitted file(s)."
+                            );
+                            eprintln!(
+                                "  If you are using a git worktree, dirty files will NOT be included."
+                            );
+                            eprintln!(
+                                "  Run 'superharness git-check --dir {check_dir_str}' for details."
+                            );
+                        }
+                    }
                 }
             }
 
@@ -661,6 +738,173 @@ fn main() -> anyhow::Result<()> {
                 "task_title": cp.task_title,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Ask { pane }) => {
+            let output = tmux::read(&pane, 20)?;
+            let lines: Vec<&str> = output.lines().collect();
+
+            // Patterns that suggest the worker is asking something
+            let question_patterns: &[&str] = &[
+                "?",
+                "y/n",
+                "Y/N",
+                "yes/no",
+                "Yes/No",
+                "[y/n]",
+                "[Y/N]",
+                "Do you want",
+                "Would you like",
+                "Should I",
+                "Can I",
+                "Please confirm",
+                "Enter ",
+                "Provide ",
+                "What ",
+                "Which ",
+                "How ",
+                "Allow",
+                "Approve",
+                "Permission",
+                "confirm",
+                "proceed",
+                "(y)",
+                "(n)",
+            ];
+
+            // Find lines that look like questions or prompts
+            let mut question_lines: Vec<(usize, &str)> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                let lower = line.to_lowercase();
+                let is_question = question_patterns
+                    .iter()
+                    .any(|p| line.contains(p) || lower.contains(&p.to_lowercase()));
+                if is_question && !line.trim().is_empty() {
+                    question_lines.push((i, line));
+                }
+            }
+
+            println!("=== Pane {} — last {} lines ===", pane, lines.len());
+            println!();
+            for line in &lines {
+                println!("  {line}");
+            }
+            println!();
+
+            if question_lines.is_empty() {
+                println!("[ No question or permission prompt detected ]");
+                println!();
+                println!("Worker appears to be working. Check back in 30-60s.");
+            } else {
+                println!("[ QUESTION / PROMPT DETECTED ]");
+                println!();
+                for (_, line) in &question_lines {
+                    println!("  >> {line}");
+                }
+                println!();
+                println!("To answer, run:");
+                println!("  superharness send --pane {pane} --text \"<your answer>\"");
+                println!();
+                println!("To approve (yes):  superharness send --pane {pane} --text \"y\"");
+                println!("To deny (no):      superharness send --pane {pane} --text \"n\"");
+            }
+        }
+
+        Some(Command::GitCheck { dir }) => {
+            let abs_dir =
+                std::fs::canonicalize(&dir).with_context(|| format!("invalid directory: {dir}"))?;
+            let dir_str = abs_dir.to_string_lossy().to_string();
+
+            // Check if it's a git repo at all
+            let is_git = std::process::Command::new("git")
+                .args(["-C", &dir_str, "rev-parse", "--git-dir"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if !is_git {
+                println!("Directory: {dir_str}");
+                println!("Status:    NOT A GIT REPO");
+                println!();
+                println!("No git check needed — this directory is not a git repository.");
+                println!("You can create worktrees only from git repos.");
+            } else {
+                // Run git status --porcelain to detect dirty files
+                let status_out = std::process::Command::new("git")
+                    .args(["-C", &dir_str, "status", "--porcelain"])
+                    .output()
+                    .with_context(|| "failed to run git status")?;
+
+                let status_text = String::from_utf8_lossy(&status_out.stdout);
+                let dirty_lines: Vec<&str> = status_text
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .collect();
+
+                println!("Directory: {dir_str}");
+
+                if dirty_lines.is_empty() {
+                    println!("Status:    CLEAN");
+                    println!();
+                    println!("Repo is clean. Safe to create a worktree from HEAD.");
+                    println!();
+                    println!("  git worktree add /tmp/worker-N HEAD");
+                } else {
+                    println!(
+                        "Status:    DIRTY ({} file(s) with uncommitted changes)",
+                        dirty_lines.len()
+                    );
+                    println!();
+                    println!("Uncommitted changes:");
+                    for line in &dirty_lines {
+                        println!("  {line}");
+                    }
+                    println!();
+                    println!("WARNING: Worktrees are created from HEAD. Dirty files will NOT");
+                    println!("be included in the worktree. You should either:");
+                    println!();
+                    println!("  Option A — Commit your changes first:");
+                    println!("    git add -A && git commit -m \"wip: save before worktree\"");
+                    println!();
+                    println!("  Option B — Stash your changes:");
+                    println!(
+                        "    git stash && git worktree add /tmp/worker-N HEAD && git stash pop"
+                    );
+                    println!();
+                    println!("  Option C — Proceed anyway (dirty files stay in main only):");
+                    println!("    git worktree add /tmp/worker-N HEAD");
+                }
+            }
+        }
+
+        Some(Command::Respawn {
+            pane,
+            task,
+            dir,
+            model,
+            mode,
+        }) => {
+            // 1. Read last 100 lines for crash context
+            let crash_context = tmux::read(&pane, 100)?;
+
+            // 2. Kill the crashed pane
+            tmux::kill(&pane)?;
+
+            // 3. Build the retry task with crash context prepended
+            let retry_task = format!(
+                "Previous attempt crashed. Context from crash:\n{crash_context}\n\nPlease retry the task, avoiding whatever caused the crash.\n\nOriginal task: {task}"
+            );
+
+            // 4. Spawn a new worker
+            let new_pane = tmux::spawn(&retry_task, &dir, None, model.as_deref(), mode.as_deref())?;
+
+            println!("Crashed pane {} killed.", pane);
+            println!("New worker spawned: {new_pane}");
+            println!();
+            println!("The new worker has been given the crash context and will retry the task.");
+            println!("Monitor with: superharness read --pane {new_pane} --lines 50");
         }
 
         Some(Command::Memory {
