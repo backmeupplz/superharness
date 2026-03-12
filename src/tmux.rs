@@ -205,10 +205,12 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F3",
         "display-popup",
         "-E",
+        "-b",
+        "rounded",
         "-w",
-        "100",
+        "110",
         "-h",
-        "36",
+        "42",
         &format!("{bin_path} status-human 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
@@ -219,10 +221,12 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F4",
         "display-popup",
         "-E",
+        "-b",
+        "rounded",
         "-w",
-        "100",
+        "110",
         "-h",
-        "30",
+        "36",
         &format!("{bin_path} workers 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
