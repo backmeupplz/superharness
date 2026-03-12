@@ -122,6 +122,16 @@ enum Command {
         split: String,
     },
 
+    /// Bring a background pane back into the main window with auto-layout (alias for show --split h)
+    Surface {
+        /// Pane ID to bring back into the main window
+        #[arg(short, long)]
+        pane: String,
+    },
+
+    /// Move small or excess panes to background tabs to keep the main window usable
+    Compact,
+
     /// Resize a pane
     Resize {
         /// Pane ID
@@ -618,6 +628,27 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Show { pane, split }) => {
             tmux::show(&pane, &split)?;
             let out = serde_json::json!({ "pane": pane, "visible": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Surface { pane }) => {
+            tmux::surface(&pane)?;
+            let out = serde_json::json!({ "pane": pane, "visible": true });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Some(Command::Compact) => {
+            let (moved, remaining) = tmux::compact_panes()?;
+            let note = if moved > 0 {
+                format!(
+                    "{moved} pane(s) moved to background tabs. {remaining} pane(s) remain visible."
+                )
+            } else {
+                "No panes needed moving — all panes meet size thresholds.".to_string()
+            };
+            let out = serde_json::json!({
+                "moved_to_background": moved,
+                "still_visible": remaining,
+                "note": note,
+            });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Some(Command::Resize {
