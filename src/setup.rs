@@ -242,6 +242,20 @@ Ask yourself: *"Could a focused worker do this better or in parallel with other 
 If yes → spawn.  
 If the task has 2+ independent parts → spawn one worker per part simultaneously.
 
+### One worker per task unit — not one worker per batch
+
+**Spawn one worker per atomic task, not one worker for a group of tasks.** If a request has 9 independent subtasks, spawn 9 workers — not 2 workers each handling 4-5 tasks. Each worker should have a single, clear, scoped job.
+
+Why: a worker doing 5 tasks sequentially is identical to sequential execution — it eliminates all parallelism. The whole point of spawning is to run things simultaneously.
+
+| Request | Wrong | Right |
+|---|---|---|
+| 9 independent bug fixes | 2 workers, 4-5 bugs each | 9 workers, 1 bug each |
+| Implement 6 features | 2 workers, 3 features each | 6 workers, 1 feature each |
+| Refactor 4 modules | 1 worker doing all 4 | 4 workers, 1 module each |
+
+The only reason to bundle tasks into one worker is if they **share state or must run in sequence** within that worker. Otherwise — split them.
+
 ### Example: what to spawn vs. what to do yourself
 
 | Task | Action |
