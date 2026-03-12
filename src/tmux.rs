@@ -84,33 +84,29 @@ fn configure_session() -> Result<()> {
         "#{pane_title}",
     ])?;
 
-    // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'
-    tmux_ok(&[
-        "bind-key",
-        "-n",
-        "C-BSpace",
-        "send-keys",
-        "Escape",
-        "[127;5u",
-    ])?;
+    // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'.
+    // Must be a single string containing the raw ESC byte so tmux forwards it as one
+    // unambiguous CSI sequence (\x1b[127;5u) instead of two separate keystrokes.
+    tmux_ok(&["bind-key", "-n", "C-BSpace", "send-keys", "\x1b[127;5u"])?;
 
-    // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences)
-    tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "Escape", "[1;5D"])?;
-    tmux_ok(&["bind-key", "-n", "C-Right", "send-keys", "Escape", "[1;5C"])?;
+    // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences).
+    tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "\x1b[1;5D"])?;
+    tmux_ok(&["bind-key", "-n", "C-Right", "send-keys", "\x1b[1;5C"])?;
 
     Ok(())
 }
 
-/// Color palette for pane backgrounds (ANSI 256-color indices, distinct colors)
-const PANE_COLORS: &[u8] = &[
-    24,  // dark blue
-    22,  // dark green
-    52,  // dark red
-    54,  // dark purple
-    58,  // dark olive/yellow
-    23,  // dark teal
-    88,  // dark crimson
-    130, // dark orange
+/// Subtle RGB background tints for pane backgrounds.
+/// Each is a very dark colour with just enough hue to be faintly distinct (~5% tint on black).
+const PANE_COLOR_HEX: &[&str] = &[
+    "#0d1117", // near-black blue-grey (GitHub dark style)
+    "#0f110d", // near-black green tint
+    "#110d0d", // near-black red tint
+    "#100d11", // near-black purple tint
+    "#11100d", // near-black amber tint
+    "#0d1011", // near-black teal tint
+    "#110d0f", // near-black rose tint
+    "#0f100d", // near-black olive tint
 ];
 
 /// Spawn a new opencode worker as a pane in the superharness window.
@@ -171,12 +167,12 @@ pub fn spawn(
     };
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &title]);
 
-    // Apply a background color from palette based on pane index
+    // Apply a subtle background tint from the palette based on pane index
     let pane_index_str =
         tmux(&["display-message", "-t", &pane_id, "-p", "#{pane_index}"]).unwrap_or_default();
     let pane_index: usize = pane_index_str.trim().parse().unwrap_or(0);
-    let color = PANE_COLORS[pane_index % PANE_COLORS.len()];
-    let style = format!("bg=colour{color}");
+    let color_hex = PANE_COLOR_HEX[pane_index % PANE_COLOR_HEX.len()];
+    let style = format!("bg={color_hex}");
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
     // Auto-layout so panes stay usable

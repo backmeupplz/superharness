@@ -77,6 +77,49 @@ git worktree remove /tmp/worker-1
 
 Use unique paths per worker (e.g. `/tmp/worker-1`, `/tmp/worker-2`). Workers can commit to branches in their worktrees without affecting the main tree.
 
+### Workers manage their own worktrees
+
+Workers should manage git themselves. When instructing a worker, include this guidance in the task prompt if relevant:
+
+> "You are working in a git worktree at `/tmp/worker-N`. Create a branch, commit your work, and push or prepare a patch. Do not push to main without permission."
+
+### Merging worker branches
+
+After workers finish, merge their branches back:
+
+```bash
+# In the main repo, cherry-pick or merge
+git merge /tmp/worker-1    # merge the branch from worktree
+# OR
+git cherry-pick <sha>       # apply specific commits
+
+# Then remove the worktree
+git worktree remove /tmp/worker-1
+```
+
+### Handling git conflicts
+
+If a worker reports a merge conflict, you have two options:
+
+**Option A — Let the worker fix it:**
+```bash
+$BIN send --pane %ID --text "You have a merge conflict. Run 'git status' and 'git diff' to see it, then resolve it manually. Edit the conflicted files to remove <<<<, ====, >>>> markers, stage the files with 'git add', and complete the merge with 'git merge --continue' or 'git rebase --continue'."
+```
+
+**Option B — Describe the conflict context and ask for resolution strategy:**
+```bash
+# Read what the conflict looks like
+$BIN read --pane %ID --lines 100
+
+# Send targeted instructions
+$BIN send --pane %ID --text "The conflict is in src/foo.rs. Keep the incoming changes from the feature branch and discard the local version. Use 'git checkout --theirs src/foo.rs' then 'git add src/foo.rs' to resolve."
+```
+
+**Preventing conflicts proactively:**
+- Assign workers to different files or modules — never two workers on the same file
+- Have workers pull latest main before starting: `git fetch origin && git rebase origin/main`
+- Use short-lived branches: workers branch off main, do one focused task, then merge back quickly
+
 ## Approving Worker Actions
 
 Workers may ask for permission to run commands or edit files. When you see a permission prompt in `superharness read` output:
@@ -115,6 +158,45 @@ You must actively manage workers. Do not spawn and forget.
 9. **Kill** workers when they finish and clean up their worktrees
 10. **Report** progress and results back to the user
 11. **Handle failures** — read output, diagnose, retry or fix
+
+## Default to Spawning Workers
+
+**For every non-trivial task, your first instinct should be to spawn a worker — not do it yourself.**
+
+You are an orchestrator. Your value is in decomposing, routing, and coordinating — not in doing the implementation work yourself. Reserve direct action only for:
+- Answering questions (information only, no files changed)
+- Running a single read-only command (e.g. `git log`, `list`, `status`)
+- Routing a one-liner response to a worker
+
+Everything else — any task that touches files, runs builds, researches code, writes features, fixes bugs — **spawn a worker for it**.
+
+### Decision rule
+
+Ask yourself: *"Could a focused worker do this better or in parallel with other things?"*  
+If yes → spawn.  
+If the task has 2+ independent parts → spawn one worker per part simultaneously.
+
+### Example: what to spawn vs. what to do yourself
+
+| Task | Action |
+|---|---|
+| "Add a flag to the spawn command" | Spawn a build worker |
+| "Fix the CI build" | Spawn a build worker |
+| "Research how X works" | Spawn a plan worker |
+| "What does `list` return?" | Answer directly (read-only) |
+| "Implement feature A and feature B" | Spawn two workers in parallel |
+| "Approve this permission prompt" | Send directly (one command) |
+
+### Parallel by default
+
+When a task has multiple independent parts, spawn all workers at once. Do not do them sequentially unless there is an explicit dependency. Example:
+
+```bash
+# Good: all three spawn immediately, run in parallel
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w3 HEAD && $BIN spawn --task "write tests for X and Y" --dir /tmp/w3 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+```
 
 ## Away Mode
 
