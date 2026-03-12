@@ -1,3 +1,4 @@
+mod health;
 mod loop_guard;
 mod monitor;
 mod setup;
@@ -170,6 +171,18 @@ enum Command {
         /// Number of consecutive unchanged checks before a pane is considered stalled
         #[arg(long, default_value_t = 3)]
         stall_threshold: u32,
+    },
+
+    /// One-shot health snapshot for pane(s) — returns structured JSON per pane
+    Healthcheck {
+        /// Specific pane ID to check (omit to check all panes)
+        #[arg(short, long)]
+        pane: Option<String>,
+
+        /// Interval hint in seconds used to estimate last_activity_ago from stall counts
+        /// (should match the interval you used when running monitor, defaults to 60)
+        #[arg(short, long, default_value_t = 60)]
+        interval: u64,
     },
 
     /// Show loop detection status for pane(s)
@@ -350,33 +363,35 @@ fn main() -> anyhow::Result<()> {
             monitor::run(interval, pane.as_deref(), stall_threshold)?;
         }
 
-        Some(Command::LoopStatus { pane }) => {
-            match pane {
-                Some(pane_id) => {
-                    let detection = loop_guard::get_loop_status(&pane_id)?;
-                    let out = serde_json::json!({
+        Some(Command::Healthcheck { pane, interval }) => {
+            health::run(pane.as_deref(), interval)?;
+        }
+
+        Some(Command::LoopStatus { pane }) => match pane {
+            Some(pane_id) => {
+                let detection = loop_guard::get_loop_status(&pane_id)?;
+                let out = serde_json::json!({
+                    "pane": pane_id,
+                    "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
+                    "details": detection
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+            None => {
+                let all_panes = loop_guard::get_all_panes()?;
+                let mut results = Vec::new();
+                for (pane_id, _count) in &all_panes {
+                    let detection = loop_guard::get_loop_status(pane_id)?;
+                    results.push(serde_json::json!({
                         "pane": pane_id,
                         "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
                         "details": detection
-                    });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    }));
                 }
-                None => {
-                    let all_panes = loop_guard::get_all_panes()?;
-                    let mut results = Vec::new();
-                    for (pane_id, _count) in &all_panes {
-                        let detection = loop_guard::get_loop_status(pane_id)?;
-                        results.push(serde_json::json!({
-                            "pane": pane_id,
-                            "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
-                            "details": detection
-                        }));
-                    }
-                    let out = serde_json::json!({ "panes": results });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                }
+                let out = serde_json::json!({ "panes": results });
+                println!("{}", serde_json::to_string_pretty(&out)?);
             }
-        }
+        },
 
         Some(Command::LoopClear { pane }) => {
             loop_guard::clear_pane(&pane)?;

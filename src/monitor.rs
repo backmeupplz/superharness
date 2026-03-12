@@ -31,7 +31,7 @@ fn dirs_home() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
-fn load_state() -> MonitorState {
+pub fn load_state() -> MonitorState {
     let path = state_path();
     if !path.exists() {
         return MonitorState::default();
