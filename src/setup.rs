@@ -16,6 +16,7 @@ $BIN spawn --task "desc" --dir /path --model fireworks/kimi-k2.5  # spawn with s
 $BIN spawn --task "description" --dir /path --mode plan        # spawn in plan mode (read-only)
 $BIN spawn --task "description" --dir /path --mode build       # spawn in build mode (default)
 $BIN list                                     # list all panes (JSON)
+$BIN workers                                  # list workers in human-readable format (press F4)
 $BIN read --pane %ID --lines 50               # read worker output
 $BIN send --pane %ID --text "response"        # send input to worker
 $BIN kill --pane %ID                          # kill worker
@@ -23,6 +24,7 @@ $BIN hide --pane %ID --name "worker-1"        # move pane to background tab
 $BIN show --pane %ID --split h                # surface pane (h or v)
 $BIN resize --pane %ID --direction R --amount 20  # resize (U/D/L/R)
 $BIN layout --name tiled                      # apply layout preset
+$BIN status-human                             # human-readable status + worker health (press F3)
 $BIN ask --pane %ID                           # detect if worker is asking a question
 $BIN git-check --dir /path                    # check if repo is clean before creating worktree
 $BIN respawn --pane %ID --task "..." --dir /path  # kill crashed worker and respawn with crash context

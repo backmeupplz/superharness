@@ -156,6 +156,12 @@ enum Command {
     /// Show current mode and any pending decisions
     Status,
 
+    /// Show current mode, decisions, and worker health in human-readable format (used by F3)
+    StatusHuman,
+
+    /// List active workers in human-readable format (used by F4)
+    Workers,
+
     /// Queue a decision for human review (useful in away mode)
     QueueDecision {
         /// Pane ID associated with this decision
@@ -590,6 +596,128 @@ fn main() -> anyhow::Result<()> {
                 "pending_decisions": s.pending_decisions,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::StatusHuman) => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let sm = StateManager::new()?;
+            let s = sm.get_state()?;
+
+            // ── MODE ──────────────────────────────────────────────────────────
+            let mode_str = s.mode.to_string().to_uppercase();
+            if matches!(s.mode, state::Mode::Away) {
+                let away_since = s.away_since.map(|ts| {
+                    // Format unix timestamp as HH:MM (local-ish via chrono if available;
+                    // otherwise just show elapsed seconds)
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let elapsed = now.saturating_sub(ts);
+                    let h = elapsed / 3600;
+                    let m = (elapsed % 3600) / 60;
+                    format!("{h}h {m}m ago (since unix:{ts})")
+                });
+                println!("Mode:    AWAY");
+                if let Some(since) = away_since {
+                    println!("Away:    {since}");
+                }
+                if let Some(ref msg) = s.away_message {
+                    println!("Message: {msg}");
+                }
+            } else {
+                println!("Mode:    {mode_str}");
+            }
+
+            // ── PENDING DECISIONS ─────────────────────────────────────────────
+            println!();
+            if s.pending_decisions.is_empty() {
+                println!("Pending decisions: none");
+            } else {
+                println!("Pending decisions: {}", s.pending_decisions.len());
+                for (i, d) in s.pending_decisions.iter().enumerate() {
+                    println!();
+                    println!("  [{}] Pane {}", i + 1, d.pane);
+                    println!("      Q: {}", d.question);
+                    if !d.context.is_empty() {
+                        println!("      Context: {}", d.context);
+                    }
+                }
+            }
+
+            // ── WORKER HEALTH ─────────────────────────────────────────────────
+            println!();
+            println!("────────────────────────────────────────────────────────");
+            println!("Workers:");
+            println!();
+
+            let monitor_state = monitor::load_state();
+            let panes = tmux::list().unwrap_or_default();
+
+            if panes.is_empty() {
+                println!("  (no workers running)");
+            } else {
+                for p in &panes {
+                    let health = health::classify_pane(&p.id, &monitor_state, 60).ok();
+                    let status_str = match &health {
+                        Some(h) => match h.status {
+                            health::HealthStatus::Working => "working ",
+                            health::HealthStatus::Idle => "idle    ",
+                            health::HealthStatus::Stalled => "STALLED ",
+                            health::HealthStatus::Waiting => "WAITING ",
+                            health::HealthStatus::Done => "done    ",
+                        },
+                        None => "unknown ",
+                    };
+                    let attn = match &health {
+                        Some(h) if h.needs_attention => "  !! NEEDS ATTENTION",
+                        _ => "",
+                    };
+                    let title = if p.title.is_empty() {
+                        &p.command
+                    } else {
+                        &p.title
+                    };
+                    let short_title: String = title.chars().take(48).collect();
+                    println!("  {}  {}  {:<48}{}", p.id, status_str, short_title, attn);
+                }
+            }
+            println!();
+        }
+
+        Some(Command::Workers) => {
+            let panes = tmux::list().unwrap_or_default();
+
+            if panes.is_empty() {
+                println!("Active Workers: none");
+                println!();
+                println!("No workers currently running.");
+                println!(
+                    "Spawn one with: superharness spawn --task \"...\" --dir /path --model <model>"
+                );
+            } else {
+                println!("Active Workers: {}", panes.len());
+                println!();
+                println!(
+                    "{:<6}  {:<8}  {:<48}  {:<28}  {}",
+                    "PANE", "CMD", "TITLE", "PATH", "WINDOW"
+                );
+                println!("{}", "─".repeat(110));
+                for p in &panes {
+                    let title = if p.title.is_empty() {
+                        &p.command
+                    } else {
+                        &p.title
+                    };
+                    let short_title: String = title.chars().take(48).collect();
+                    let short_path: String = p.path.chars().take(28).collect();
+                    println!(
+                        "{:<6}  {:<8}  {:<48}  {:<28}  {}",
+                        p.id, p.command, short_title, short_path, p.window
+                    );
+                }
+            }
         }
 
         Some(Command::QueueDecision {

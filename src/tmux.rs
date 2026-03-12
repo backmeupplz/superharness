@@ -137,11 +137,11 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour33]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour243] F1:away F2:present F3:status F4:health F5:workers #[default]"
+         #[fg=colour240]│ #[fg=colour238] F1:away F2:present F3:status F4:workers #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "90"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "80"])?;
 
     // Window status (centre): show window list naturally.
     tmux_ok(&[
@@ -182,7 +182,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         &format!("{bin_path} present 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
-    // F3 → superharness status
+    // F3 → status-human (mode + pending decisions + worker health, human-readable)
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -190,13 +190,13 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "display-popup",
         "-E",
         "-w",
-        "80",
+        "100",
         "-h",
-        "24",
-        &format!("{bin_path} status 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        "36",
+        &format!("{bin_path} status-human 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
-    // F4 → superharness healthcheck (one-shot health of all panes)
+    // F4 → workers (human-readable worker list)
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -207,21 +207,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "100",
         "-h",
         "30",
-        &format!("{bin_path} healthcheck 2>&1; echo; echo 'Press any key to close...'; read -n1"),
-    ])?;
-
-    // F5 → superharness list  (worker pane list)
-    tmux_ok(&[
-        "bind-key",
-        "-n",
-        "F5",
-        "display-popup",
-        "-E",
-        "-w",
-        "100",
-        "-h",
-        "30",
-        &format!("{bin_path} list 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        &format!("{bin_path} workers 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
     Ok(())
