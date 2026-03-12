@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::state::StateManager;
+
 const SESSION: &str = "superharness";
 
 /// Escape a string for safe use in a shell command
@@ -253,6 +255,19 @@ pub fn resize(pane: &str, direction: &str, amount: u32) -> Result<()> {
 /// Apply a layout preset.
 pub fn layout(name: &str) -> Result<()> {
     tmux_ok(&["select-layout", "-t", SESSION, name])
+}
+
+/// Check whether superharness is currently in away mode.
+#[allow(dead_code)]
+pub fn is_away() -> bool {
+    StateManager::new().map(|sm| sm.is_away()).unwrap_or(false)
+}
+
+/// Queue a decision for the human to resolve when they return (away mode).
+/// Returns the decision ID on success.
+pub fn queue_decision(pane: &str, question: &str, context: &str) -> Result<String> {
+    let sm = StateManager::new()?;
+    sm.add_pending_decision(pane, question, context)
 }
 
 /// Start the superharness session with an orchestrator opencode and attach.

@@ -93,6 +93,75 @@ You must actively manage workers. Do not spawn and forget.
 10. **Report** progress and results back to the user
 11. **Handle failures** — read output, diagnose, retry or fix
 
+## Away Mode
+
+When the human is not actively watching, use away/present mode to handle decisions responsibly.
+
+### Entering Away Mode
+
+```bash
+$BIN away                              # enter away mode
+$BIN away --message "Back in 2 hours" # with context message
+```
+
+**Before the human goes away, ask them this checklist:**
+
+> "Before you go, should I queue decisions about any of these?
+> - [ ] Architecture decisions (e.g. how to structure a new module)
+> - [ ] Dependency/library choices (e.g. which crate to use)
+> - [ ] Breaking API changes (e.g. changing function signatures)
+> - [ ] Security-sensitive operations (e.g. permissions, secrets, auth)
+> - [ ] Destructive file operations (e.g. deleting or overwriting files)
+> - [ ] Anything else you want me to flag?"
+
+This helps you calibrate what to auto-decide vs. queue while they are away.
+
+### While in Away Mode
+
+- **Queue** critical decisions instead of auto-deciding:
+  ```bash
+  $BIN queue-decision --pane %ID --question "Should I use tokio or async-std?" --context "Both work, tokio has wider ecosystem"
+  ```
+- **Continue** safe, reversible work without queuing
+- **Do NOT** make irreversible or high-impact decisions on your own
+- Workers continue running; just do not auto-approve uncertain things on their behalf
+
+### Checking Status
+
+```bash
+$BIN status   # shows mode, away_since, pending decisions
+```
+
+### Returning to Present Mode
+
+```bash
+$BIN present  # returns to present mode AND shows all pending decisions
+```
+
+Work through the pending decisions with the human, then:
+
+```bash
+$BIN clear-decisions  # clear resolved decisions
+```
+
+### Example Away Workflow
+
+```bash
+# Human says "I'll be back in an hour"
+# 1. Ask the pre-away checklist (above)
+# 2. Enter away mode:
+$BIN away --message "Human back in ~1h; queue arch decisions"
+
+# Worker asks: "Should I refactor X into Y?"
+# Queue it instead of deciding:
+$BIN queue-decision --pane %5 --question "Refactor module X into Y?" --context "Would be cleaner but breaks existing API"
+
+# Human returns:
+$BIN present
+# Shows pending decisions — review and decide with the human
+$BIN clear-decisions
+```
+
 ## Rules
 
 - Always create a git worktree per worker — never spawn in the main repo
@@ -100,6 +169,7 @@ You must actively manage workers. Do not spawn and forget.
 - Don't spawn workers that edit the same file simultaneously
 - Never kill your own pane
 - If a worker is stuck or looping, kill it and respawn with a better prompt
+- In away mode: queue uncertain decisions, do not auto-approve irreversible actions
 
 $TASK
 "##;
@@ -114,7 +184,9 @@ fn get_available_models() -> String {
             let models = String::from_utf8_lossy(&o.stdout);
             let lines: Vec<&str> = models.lines().filter(|l| !l.is_empty()).collect();
             if lines.is_empty() {
-                return String::from("(could not detect models — run `opencode models` to see available)");
+                return String::from(
+                    "(could not detect models — run `opencode models` to see available)",
+                );
             }
             lines.join("\n")
         }
