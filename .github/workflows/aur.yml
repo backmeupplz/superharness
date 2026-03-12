@@ -1,0 +1,87 @@
+name: Publish to AUR
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm git openssh curl base-devel
+
+      - name: Determine version
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download binary and compute SHA256
+        id: sha
+        run: |
+          curl -fSL -o superharness \
+            "https://github.com/backmeupplz/superharness/releases/download/${{ github.event.release.tag_name }}/superharness-x86_64-unknown-linux-gnu"
+          SHA256=$(sha256sum superharness | awk '{print $1}')
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PKGBUILD
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA256="${{ steps.sha.outputs.sha256 }}"
+          cat > PKGBUILD << 'EOF'
+          # Maintainer: Nikita Kolmogorov <ubuntu@borodutch.com>
+          pkgname=superharness-bin
+          pkgver=__VERSION__
+          pkgrel=1
+          pkgdesc='Autonomous multi-agent orchestrator for AI coding'
+          arch=('x86_64')
+          url='https://github.com/backmeupplz/superharness'
+          license=('MIT')
+          depends=('tmux')
+          provides=('superharness')
+          conflicts=('superharness')
+          source=("superharness::https://github.com/backmeupplz/superharness/releases/download/v$pkgver/superharness-x86_64-unknown-linux-gnu")
+          sha256sums=('__SHA256__')
+
+          package() {
+            install -Dm0755 superharness "$pkgdir/usr/bin/superharness"
+            install -Dm644 /dev/stdin "$pkgdir/usr/share/licenses/$pkgname/LICENSE" <<LICENSE
+          MIT License — see https://github.com/backmeupplz/superharness/blob/master/LICENSE
+          LICENSE
+          }
+          EOF
+          sed -i 's/^          //' PKGBUILD
+          sed -i "s/__VERSION__/$VERSION/" PKGBUILD
+          sed -i "s/__SHA256__/$SHA256/" PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          useradd -m builder
+          chown builder PKGBUILD
+          chown builder .
+          su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Push to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          GIT_SSH_COMMAND: "ssh -i ~/.ssh/aur -o StrictHostKeyChecking=no"
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+
+          git clone ssh://aur@aur.archlinux.org/superharness-bin.git aur-repo
+          cd aur-repo
+          git checkout master 2>/dev/null || git checkout -b master origin/master 2>/dev/null || git checkout -b master
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd ..
+          cp PKGBUILD aur-repo/PKGBUILD
+          cp .SRCINFO aur-repo/.SRCINFO
+          cd aur-repo
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.version.outputs.version }}"
+          git push origin master
