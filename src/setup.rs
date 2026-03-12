@@ -192,6 +192,33 @@ $BIN send --pane %23 --text "yes"
 - If in away mode, use `queue-decision` instead of auto-answering.
 - Check all active workers with `ask` at least every 60 seconds.
 
+### Credentials and Secret Keys
+
+When a worker needs credentials, API keys, signing keys, or passwords that only the human can provide:
+
+1. **STOP** — never guess, generate fake keys, or proceed without the real credential
+2. **Read the worker output** carefully to identify:
+   - What exactly is needed (env var name, file path, key format)
+   - Which tool/service requires it
+   - Whether it needs to be generated first
+3. **Come back to the human** and provide:
+   - What credential is needed (e.g. "GPG signing key ID")
+   - Why it is needed (e.g. "Worker %5 is building an AUR package and needs to sign it")
+   - How to get it (step-by-step, e.g. "Run: gpg --list-secret-keys to see existing keys, or gpg --gen-key to create one")
+   - How to provide it (e.g. "I will send it to the worker with: $BIN send --pane %5 --text YOUR_KEY_ID")
+4. **Wait** for the human to obtain and provide the value
+5. **Verify** if possible (run a quick check without exposing the secret)
+6. **Send to worker**: `$BIN send --pane %ID --text "the-credential-value"`
+7. **Confirm** the worker continues and monitor until it completes
+
+Example conversation flow:
+> Worker %3 needs a GPG signing key to publish to AUR.
+> To get your key ID, run: gpg --list-secret-keys --keyid-format LONG
+> If you do not have one, create it with: gpg --full-gen-key
+> Once you have the key ID, share it with me and I will pass it to the worker.
+
+**Never** put credentials in the AGENTS.md file, commit messages, or code comments.
+
 ## Worker Failure Recovery
 
 If a worker crashes, panics, or gets stuck in an unrecoverable state, use `respawn` to restart it with the crash context:
@@ -434,6 +461,35 @@ $BIN loop-clear --pane %ID    # clear loop history so detection resets
 5. **After intervening**, run `$BIN loop-clear --pane %ID` to reset detection
 
 **Oscillation detection:** The guard also catches A→B→A→B alternation patterns (e.g. approve/deny cycles) and reports them as loops.
+
+## Task Management
+
+Use the built-in task list to track what needs to be built or fixed across sessions. Unlike `pending_tasks` (which gates worker spawning), this is the human-facing todo list.
+
+```bash
+$BIN task-add "Implement dark mode" --priority high --tags "ui,frontend"
+$BIN task-add "Fix auth bug" --description "JWT tokens expire too early"
+$BIN task-list                          # show all tasks
+$BIN task-list --status pending         # filter by status
+$BIN task-list --tag ui                 # filter by tag
+$BIN task-show <id>                     # show task + subtasks detail
+$BIN task-start <id>                    # mark as in-progress
+$BIN task-done <id>                     # mark as done
+$BIN task-block <id>                    # mark as blocked
+$BIN task-cancel <id>                   # cancel task
+$BIN task-remove <id>                   # delete task
+$BIN subtask-add <task-id> "Write tests"
+$BIN subtask-done <task-id> <subtask-id>
+```
+
+Typical workflow:
+1. At session start: `$BIN task-list` to see what is pending
+2. Pick the highest priority task, spawn workers for it
+3. As workers complete subtasks, mark them done: `$BIN subtask-done <task> <sub>`
+4. When the full task is done: `$BIN task-done <id>`
+5. Repeat
+
+**Difference from `--depends-on`**: `pending_tasks` gates spawning (worker B waits for worker A). Task storage is the project-level backlog — what you are building, not how workers are sequenced.
 
 ## Rules
 
