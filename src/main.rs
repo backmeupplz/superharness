@@ -601,15 +601,22 @@ fn main() -> anyhow::Result<()> {
         Some(Command::StatusHuman) => {
             use std::time::{SystemTime, UNIX_EPOCH};
 
+            // ANSI helpers
+            const RESET: &str = "\x1b[0m";
+            const BOLD: &str = "\x1b[1m";
+            const DIM: &str = "\x1b[2m";
+            const UNDERLINE: &str = "\x1b[4m";
+            const RED: &str = "\x1b[31m";
+            const GREEN: &str = "\x1b[32m";
+            const YELLOW: &str = "\x1b[33m";
+            const BRIGHT_RED: &str = "\x1b[91m";
+
             let sm = StateManager::new()?;
             let s = sm.get_state()?;
 
             // ── MODE ──────────────────────────────────────────────────────────
-            let mode_str = s.mode.to_string().to_uppercase();
             if matches!(s.mode, state::Mode::Away) {
                 let away_since = s.away_since.map(|ts| {
-                    // Format unix timestamp as HH:MM (local-ish via chrono if available;
-                    // otherwise just show elapsed seconds)
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs())
@@ -619,60 +626,75 @@ fn main() -> anyhow::Result<()> {
                     let m = (elapsed % 3600) / 60;
                     format!("{h}h {m}m ago (since unix:{ts})")
                 });
-                println!("Mode:    AWAY");
+                println!("{BOLD}{YELLOW}Mode:{RESET}    {BOLD}{YELLOW}AWAY{RESET}");
                 if let Some(since) = away_since {
-                    println!("Away:    {since}");
+                    println!("{DIM}Away:{RESET}    {since}");
                 }
                 if let Some(ref msg) = s.away_message {
-                    println!("Message: {msg}");
+                    println!("{DIM}Message:{RESET} {msg}");
                 }
             } else {
-                println!("Mode:    {mode_str}");
+                println!("{BOLD}{GREEN}Mode:{RESET}    {BOLD}{GREEN}PRESENT{RESET}");
             }
 
             // ── PENDING DECISIONS ─────────────────────────────────────────────
             println!();
+            println!("{BOLD}{UNDERLINE}Pending Decisions{RESET}");
             if s.pending_decisions.is_empty() {
-                println!("Pending decisions: none");
+                println!("  {DIM}none{RESET}");
             } else {
-                println!("Pending decisions: {}", s.pending_decisions.len());
+                println!(
+                    "  {BOLD}{}{RESET} decision(s) queued",
+                    s.pending_decisions.len()
+                );
                 for (i, d) in s.pending_decisions.iter().enumerate() {
                     println!();
-                    println!("  [{}] Pane {}", i + 1, d.pane);
-                    println!("      Q: {}", d.question);
+                    println!("  {BOLD}[{}]{RESET} Pane {YELLOW}{}{RESET}", i + 1, d.pane);
+                    println!("      {BOLD}Q:{RESET} {}", d.question);
                     if !d.context.is_empty() {
-                        println!("      Context: {}", d.context);
+                        println!("      {DIM}Context:{RESET} {}", d.context);
                     }
                 }
             }
 
             // ── WORKER HEALTH ─────────────────────────────────────────────────
             println!();
-            println!("────────────────────────────────────────────────────────");
-            println!("Workers:");
-            println!();
+            println!("{BOLD}{UNDERLINE}Workers{RESET}");
 
             let monitor_state = monitor::load_state();
             let panes = tmux::list().unwrap_or_default();
 
             if panes.is_empty() {
-                println!("  (no workers running)");
+                println!("  {DIM}(no workers running){RESET}");
             } else {
                 for p in &panes {
                     let health = health::classify_pane(&p.id, &monitor_state, 60).ok();
-                    let status_str = match &health {
+                    let (status_colored, status_plain) = match &health {
                         Some(h) => match h.status {
-                            health::HealthStatus::Working => "working ",
-                            health::HealthStatus::Idle => "idle    ",
-                            health::HealthStatus::Stalled => "STALLED ",
-                            health::HealthStatus::Waiting => "WAITING ",
-                            health::HealthStatus::Done => "done    ",
+                            health::HealthStatus::Working => {
+                                (format!("{DIM}{GREEN}working{RESET} "), "working ")
+                            }
+                            health::HealthStatus::Idle => {
+                                (format!("{DIM}idle{RESET}    "), "idle    ")
+                            }
+                            health::HealthStatus::Stalled => {
+                                (format!("{BOLD}{RED}STALLED{RESET} "), "STALLED ")
+                            }
+                            health::HealthStatus::Waiting => {
+                                (format!("{BOLD}{YELLOW}WAITING{RESET} "), "WAITING ")
+                            }
+                            health::HealthStatus::Done => {
+                                (format!("{DIM}done{RESET}    "), "done    ")
+                            }
                         },
-                        None => "unknown ",
+                        None => (format!("{DIM}unknown{RESET} "), "unknown "),
                     };
+                    let _ = status_plain; // suppress unused warning
                     let attn = match &health {
-                        Some(h) if h.needs_attention => "  !! NEEDS ATTENTION",
-                        _ => "",
+                        Some(h) if h.needs_attention => {
+                            format!("  {BOLD}{BRIGHT_RED}!! NEEDS ATTENTION{RESET}")
+                        }
+                        _ => String::new(),
                     };
                     let title = if p.title.is_empty() {
                         &p.command
@@ -680,41 +702,71 @@ fn main() -> anyhow::Result<()> {
                         &p.title
                     };
                     let short_title: String = title.chars().take(48).collect();
-                    println!("  {}  {}  {:<48}{}", p.id, status_str, short_title, attn);
+                    println!(
+                        "  {DIM}{}{RESET}  {status_colored}  {BOLD}{:<48}{RESET}{}",
+                        p.id, short_title, attn
+                    );
                 }
             }
             println!();
         }
 
         Some(Command::Workers) => {
+            // ANSI helpers
+            const RESET: &str = "\x1b[0m";
+            const BOLD: &str = "\x1b[1m";
+            const DIM: &str = "\x1b[2m";
+            const UNDERLINE: &str = "\x1b[4m";
+            const CYAN: &str = "\x1b[36m";
+
             let panes = tmux::list().unwrap_or_default();
 
+            // Abbreviate home directory in path
+            let home = std::env::var("HOME").unwrap_or_default();
+            let abbrev_path = |path: &str| -> String {
+                if !home.is_empty() && path.starts_with(&home) {
+                    format!("~{}", &path[home.len()..])
+                } else {
+                    path.to_string()
+                }
+            };
+
             if panes.is_empty() {
-                println!("Active Workers: none");
+                println!("{BOLD}Active Workers:{RESET} none");
                 println!();
-                println!("No workers currently running.");
+                println!("{DIM}No workers currently running.{RESET}");
                 println!(
-                    "Spawn one with: superharness spawn --task \"...\" --dir /path --model <model>"
+                    "{DIM}Spawn one with:{RESET} superharness spawn --task \"...\" --dir /path --model <model>"
                 );
             } else {
-                println!("Active Workers: {}", panes.len());
+                // Column widths: PANE 6, CMD 10, STATUS 8, TITLE 40, PATH 30
+                const W_PANE: usize = 6;
+                const W_CMD: usize = 10;
+                const W_TITLE: usize = 40;
+                const W_PATH: usize = 30;
+                // total separator width
+                let sep_width = W_PANE + 2 + W_CMD + 2 + W_TITLE + 2 + W_PATH;
+
+                println!("{BOLD}Active Workers:{RESET} {}", panes.len());
                 println!();
                 println!(
-                    "{:<6}  {:<8}  {:<48}  {:<28}  {}",
-                    "PANE", "CMD", "TITLE", "PATH", "WINDOW"
+                    "{BOLD}{UNDERLINE}{:<W_PANE$}  {:<W_CMD$}  {:<W_TITLE$}  {:<W_PATH$}{RESET}",
+                    "PANE", "CMD", "TITLE", "PATH"
                 );
-                println!("{}", "─".repeat(110));
+                println!("{DIM}{}{RESET}", "─".repeat(sep_width));
                 for p in &panes {
                     let title = if p.title.is_empty() {
                         &p.command
                     } else {
                         &p.title
                     };
-                    let short_title: String = title.chars().take(48).collect();
-                    let short_path: String = p.path.chars().take(28).collect();
+                    let short_title: String = title.chars().take(W_TITLE).collect();
+                    let path_abbrev = abbrev_path(&p.path);
+                    let short_path: String = path_abbrev.chars().take(W_PATH).collect();
+                    let short_cmd: String = p.command.chars().take(W_CMD).collect();
                     println!(
-                        "{:<6}  {:<8}  {:<48}  {:<28}  {}",
-                        p.id, p.command, short_title, short_path, p.window
+                        "{DIM}{:<W_PANE$}{RESET}  {CYAN}{:<W_CMD$}{RESET}  {BOLD}{:<W_TITLE$}{RESET}  {DIM}{:<W_PATH$}{RESET}",
+                        p.id, short_cmd, short_title, short_path
                     );
                 }
             }
