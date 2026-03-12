@@ -112,7 +112,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-style",
-        "bg=colour235,fg=colour250",
+        "bg=colour17,fg=colour250",
     ])?;
 
     // Left side: static session name label.
@@ -121,26 +121,18 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-left",
-        "#[fg=colour214,bold] SUPERHARNESS #[fg=colour240]│ ",
+        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[bg=colour17,fg=colour240]│ ",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
 
     // Right side: dynamic shell fragments read mode + pane count.
-    // #{E:SUPERHARNESS_BIN} expands the env var we just set.
+    // Uses grep to extract mode from JSON without needing python3.
     // The shell snippet produces "AWAY" or "PRESENT" from the state file.
-    let mode_snippet = r#"#(sh -c '
-        f="$HOME/.local/share/superharness/state.json"
-        if [ -f "$f" ]; then
-            m=$(python3 -c "import sys,json; d=json.load(open(\"$f\")); print(d.get(\"mode\",\"present\").upper())" 2>/dev/null)
-            echo "${m:-PRESENT}"
-        else
-            echo PRESENT
-        fi
-    ')#"#;
+    let mode_snippet = r#"#(f=$HOME/.local/share/superharness/state.json; [ -f "$f" ] && grep -o '"mode":"[^"]*"' "$f" | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]' || echo PRESENT)"#;
 
-    // Pane count (excluding the orchestrator pane 0 by counting all panes minus 1, min 0).
+    // Pane count: number of panes in the superharness session.
     let pane_count_snippet =
-        "#(tmux list-panes -t superharness -a 2>/dev/null | wc -l | tr -d ' ')#";
+        "#(tmux list-panes -t superharness -a 2>/dev/null | wc -l | tr -d ' ')";
 
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour33]MODE:{mode_snippet} \
@@ -161,40 +153,76 @@ fn configure_session(bin_path: &str) -> Result<()> {
     ])?;
 
     // ── F-key shortcuts (no prefix required) ────────────────────────────────
-    // F1 → superharness away  (run in a popup so output is visible)
-    let f1_cmd = format!(
-        "display-popup -E -w 60 -h 12 '{bin_path} away 2>&1; echo; echo Press any key to close...; read -n1'",
-        bin_path = bin_path
-    );
-    tmux_ok(&["bind-key", "-n", "F1", "run-shell", &f1_cmd])?;
+    // display-popup is a tmux command, not a shell command — use bind-key directly (NOT run-shell).
+    // F1 → superharness away
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F1",
+        "display-popup",
+        "-E",
+        "-w",
+        "60",
+        "-h",
+        "12",
+        &format!("{bin_path} away 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
 
     // F2 → superharness present
-    let f2_cmd = format!(
-        "display-popup -E -w 80 -h 24 '{bin_path} present 2>&1; echo; echo Press any key to close...; read -n1'",
-        bin_path = bin_path
-    );
-    tmux_ok(&["bind-key", "-n", "F2", "run-shell", &f2_cmd])?;
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F2",
+        "display-popup",
+        "-E",
+        "-w",
+        "80",
+        "-h",
+        "24",
+        &format!("{bin_path} present 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
 
     // F3 → superharness status
-    let f3_cmd = format!(
-        "display-popup -E -w 80 -h 24 '{bin_path} status 2>&1; echo; echo Press any key to close...; read -n1'",
-        bin_path = bin_path
-    );
-    tmux_ok(&["bind-key", "-n", "F3", "run-shell", &f3_cmd])?;
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F3",
+        "display-popup",
+        "-E",
+        "-w",
+        "80",
+        "-h",
+        "24",
+        &format!("{bin_path} status 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
 
     // F4 → superharness healthcheck (one-shot health of all panes)
-    let f4_cmd = format!(
-        "display-popup -E -w 100 -h 30 '{bin_path} healthcheck 2>&1; echo; echo Press any key to close...; read -n1'",
-        bin_path = bin_path
-    );
-    tmux_ok(&["bind-key", "-n", "F4", "run-shell", &f4_cmd])?;
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F4",
+        "display-popup",
+        "-E",
+        "-w",
+        "100",
+        "-h",
+        "30",
+        &format!("{bin_path} healthcheck 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
 
     // F5 → superharness list  (worker pane list)
-    let f5_cmd = format!(
-        "display-popup -E -w 100 -h 30 '{bin_path} list 2>&1; echo; echo Press any key to close...; read -n1'",
-        bin_path = bin_path
-    );
-    tmux_ok(&["bind-key", "-n", "F5", "run-shell", &f5_cmd])?;
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F5",
+        "display-popup",
+        "-E",
+        "-w",
+        "100",
+        "-h",
+        "30",
+        &format!("{bin_path} list 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
 
     Ok(())
 }

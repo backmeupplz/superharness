@@ -17,9 +17,6 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 /home/borodutch/code/superharness/target/debug/superharness show --pane %ID --split h                # surface pane (h or v)
 /home/borodutch/code/superharness/target/debug/superharness resize --pane %ID --direction R --amount 20  # resize (U/D/L/R)
 /home/borodutch/code/superharness/target/debug/superharness layout --name tiled                      # apply layout preset
-/home/borodutch/code/superharness/target/debug/superharness watch                                    # auto-manage all panes (approve, follow-up, cleanup)
-/home/borodutch/code/superharness/target/debug/superharness watch --interval 30                      # check every 30 seconds
-/home/borodutch/code/superharness/target/debug/superharness watch --pane %ID                         # watch a specific pane only
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
