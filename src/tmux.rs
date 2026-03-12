@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::loop_guard;
 use crate::state::StateManager;
 
 const SESSION: &str = "superharness";
@@ -175,7 +176,12 @@ pub fn read(pane: &str, lines: u32) -> Result<String> {
 
 /// Send text to a pane.
 pub fn send(pane: &str, text: &str) -> Result<()> {
-    tmux_ok(&["send-keys", "-t", pane, text, "Enter"])
+    tmux_ok(&["send-keys", "-t", pane, text, "Enter"])?;
+    // Record this send action for loop detection; don't fail if loop guard errors
+    if let Err(e) = loop_guard::record_action(pane, "send", text) {
+        eprintln!("loop_guard: failed to record action: {e}");
+    }
+    Ok(())
 }
 
 /// Send a bare Enter keypress to a pane (no text).

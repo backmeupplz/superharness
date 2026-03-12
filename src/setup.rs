@@ -162,6 +162,35 @@ $BIN present
 $BIN clear-decisions
 ```
 
+## Loop Protection
+
+Superharness automatically detects when you're looping on the same issue. All `send` calls are tracked and analyzed for repetitive patterns.
+
+**Detecting loops:**
+
+```bash
+$BIN loop-status              # check all panes for loop patterns
+$BIN loop-status --pane %ID   # check a specific pane
+```
+
+Output includes `loop_detected: true/false` and details on what action is repeating.
+
+**After breaking a loop:**
+
+```bash
+$BIN loop-clear --pane %ID    # clear loop history so detection resets
+```
+
+**What to do when a loop is detected:**
+
+1. **Stop sending** the same input — it's not working
+2. **Read the pane output** to understand what the worker is actually stuck on
+3. **Escalate to the human** — surface the pane and ask for guidance
+4. **Try a different approach** — reformulate the task, provide missing context, or break it into smaller steps
+5. **After intervening**, run `$BIN loop-clear --pane %ID` to reset detection
+
+**Oscillation detection:** The guard also catches A→B→A→B alternation patterns (e.g. approve/deny cycles) and reports them as loops.
+
 ## Rules
 
 - Always create a git worktree per worker — never spawn in the main repo
@@ -170,6 +199,7 @@ $BIN clear-decisions
 - Never kill your own pane
 - If a worker is stuck or looping, kill it and respawn with a better prompt
 - In away mode: queue uncertain decisions, do not auto-approve irreversible actions
+- Check `$BIN loop-status` regularly — do not ignore detected loops
 
 ## Autonomous Monitoring
 
