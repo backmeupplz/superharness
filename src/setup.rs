@@ -305,6 +305,53 @@ $BIN loop-clear --pane %ID    # clear loop history so detection resets
 - If a worker is stuck or looping, kill it and respawn with a better prompt
 - In away mode: queue uncertain decisions, do not auto-approve irreversible actions
 - Check `$BIN loop-status` regularly — do not ignore detected loops
+- Use `run-pending` after killing workers so queued dependents start automatically
+
+## Task Dependencies
+
+You can declare dependencies between tasks so a worker only starts once its prerequisites finish.
+
+### Queuing a Dependent Task
+
+```bash
+# Spawn worker A normally
+$BIN spawn --task "Build module A" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+# => { "pane": "%23" }
+
+# Queue worker B to start only after %23 finishes
+$BIN spawn --task "Integrate module A into main app" --dir /tmp/worker-2 --depends-on "%23" --model fireworks/kimi-k2.5
+# => { "pending": true, "task_id": "task-...", "depends_on": ["%23"], ... }
+
+# Multiple dependencies (comma-separated)
+$BIN spawn --task "Final integration" --dir /tmp/worker-3 --depends-on "%23,%24" --model fireworks/kimi-k2.5
+```
+
+When `--depends-on` is given, the task is written to `~/.local/share/superharness/pending_tasks.json` and **not** spawned immediately.
+
+### Listing Pending Tasks
+
+```bash
+$BIN tasks
+```
+
+Returns all queued tasks with their dependency status (`done: true/false` per dependency pane) and whether the task is `ready` to run.
+
+### Spawning Ready Tasks
+
+```bash
+$BIN run-pending
+```
+
+Checks all pending tasks. For each task whose every dependency pane is gone from tmux, it spawns the worker and removes it from the queue. Returns JSON of what was spawned.
+
+**Recommended workflow:**
+
+```bash
+# After killing a finished worker, immediately check for newly-unblocked tasks
+$BIN kill --pane %23
+git worktree remove /tmp/worker-1
+$BIN run-pending   # may spawn tasks that depended on %23
+```
 
 ## Autonomous Monitoring
 

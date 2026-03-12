@@ -1,0 +1,118 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingTask {
+    pub id: String,
+    pub task: String,
+    pub dir: String,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub name: Option<String>,
+    /// Pane IDs that must finish (i.e. no longer appear in tmux list) before this task can run
+    pub depends_on: Vec<String>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Store {
+    tasks: Vec<PendingTask>,
+}
+
+fn data_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .context("cannot determine home directory (HOME not set)")?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("superharness"))
+}
+
+fn store_path() -> Result<PathBuf> {
+    Ok(data_path()?.join("pending_tasks.json"))
+}
+
+fn load() -> Result<Store> {
+    let path = store_path()?;
+    if !path.exists() {
+        return Ok(Store::default());
+    }
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let store: Store = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(store)
+}
+
+fn save(store: &Store) -> Result<()> {
+    let dir = data_path()?;
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create directory: {}", dir.display()))?;
+    let path = store_path()?;
+    let content = serde_json::to_string_pretty(store).context("failed to serialize store")?;
+    fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Add a new pending task. Returns the generated task ID.
+pub fn add_task(
+    task: &str,
+    dir: &str,
+    model: Option<&str>,
+    mode: Option<&str>,
+    name: Option<&str>,
+    depends_on: Vec<String>,
+) -> Result<String> {
+    let mut store = load()?;
+    let id = format!("task-{}", now_unix());
+    store.tasks.push(PendingTask {
+        id: id.clone(),
+        task: task.to_string(),
+        dir: dir.to_string(),
+        model: model.map(|s| s.to_string()),
+        mode: mode.map(|s| s.to_string()),
+        name: name.map(|s| s.to_string()),
+        depends_on,
+        created_at: now_unix(),
+    });
+    save(&store)?;
+    Ok(id)
+}
+
+/// Return all pending tasks.
+pub fn list_tasks() -> Result<Vec<PendingTask>> {
+    Ok(load()?.tasks)
+}
+
+/// Remove a task by ID.
+pub fn remove_task(id: &str) -> Result<()> {
+    let mut store = load()?;
+    store.tasks.retain(|t| t.id != id);
+    save(&store)
+}
+
+/// Given the set of currently-active pane IDs, return tasks whose every dependency is gone.
+pub fn ready_tasks(active_pane_ids: &[String]) -> Result<Vec<PendingTask>> {
+    let store = load()?;
+    let ready = store
+        .tasks
+        .into_iter()
+        .filter(|t| {
+            t.depends_on
+                .iter()
+                .all(|dep| !active_pane_ids.contains(dep))
+        })
+        .collect();
+    Ok(ready)
+}
