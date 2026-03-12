@@ -449,6 +449,35 @@ $BIN loop-clear --pane %ID    # clear loop history so detection resets
 
 **Oscillation detection:** The guard also catches A→B→A→B alternation patterns (e.g. approve/deny cycles) and reports them as loops.
 
+## Task Management
+
+Use the built-in task list to track what needs to be built or fixed across sessions. Unlike `pending_tasks` (which gates worker spawning), this is the human-facing todo list.
+
+```bash
+$BIN task-add "Implement dark mode" --priority high --tags "ui,frontend"
+$BIN task-add "Fix auth bug" --description "JWT tokens expire too early"
+$BIN task-list                          # show all tasks
+$BIN task-list --status pending         # filter by status
+$BIN task-list --tag ui                 # filter by tag
+$BIN task-show <id>                     # show task + subtasks detail
+$BIN task-start <id>                    # mark as in-progress
+$BIN task-done <id>                     # mark as done
+$BIN task-block <id>                    # mark as blocked
+$BIN task-cancel <id>                   # cancel task
+$BIN task-remove <id>                   # delete task
+$BIN subtask-add <task-id> "Write tests"
+$BIN subtask-done <task-id> <subtask-id>
+```
+
+Typical workflow:
+1. At session start: `$BIN task-list` to see what is pending
+2. Pick the highest priority task, spawn workers for it
+3. As workers complete subtasks, mark them done: `$BIN subtask-done <task> <sub>`
+4. When the full task is done: `$BIN task-done <id>`
+5. Repeat
+
+**Difference from `--depends-on`**: `pending_tasks` gates spawning (worker B waits for worker A). Task storage is the project-level backlog — what you are building, not how workers are sequenced.
+
 ## Rules
 
 - Always create a git worktree per worker — never spawn in the main repo
