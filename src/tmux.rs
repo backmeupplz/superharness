@@ -49,6 +49,18 @@ fn ensure_session() -> Result<()> {
     Ok(())
 }
 
+/// Push all current env vars into the tmux session so spawned panes inherit them.
+fn export_env_to_session() -> Result<()> {
+    for (key, value) in std::env::vars() {
+        // Skip internal/problematic vars
+        if key.starts_with('_') || key.contains('=') {
+            continue;
+        }
+        let _ = tmux_ok(&["set-environment", "-t", SESSION, &key, &value]);
+    }
+    Ok(())
+}
+
 fn configure_session() -> Result<()> {
     tmux_ok(&["set-option", "-t", SESSION, "allow-set-title", "off"])?;
 
@@ -63,18 +75,20 @@ fn configure_session() -> Result<()> {
 }
 
 /// Spawn a new opencode worker as a pane in the superharness window.
-pub fn spawn(task: &str, dir: &str, name: Option<&str>) -> Result<String> {
+pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) -> Result<String> {
     ensure_session()?;
 
     let abs_dir =
         std::fs::canonicalize(dir).with_context(|| format!("invalid directory: {dir}"))?;
     let dir_str = abs_dir.to_string_lossy().to_string();
 
-    // Create pane with the task ready but hidden
-    let cmd = format!("opencode --prompt {}", shell_escape(task));
-    let _window_name = name.unwrap_or("worker");
+    let model_flag = match model {
+        Some(m) => format!(" --model {}", shell_escape(m)),
+        None => String::new(),
+    };
+    let cmd = format!("opencode{model_flag} --prompt {}", shell_escape(task));
 
-    // Split the current window to create a new pane
+    // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
         "split-window",
         "-t",
@@ -85,20 +99,11 @@ pub fn spawn(task: &str, dir: &str, name: Option<&str>) -> Result<String> {
         "#{pane_id}",
         "-c",
         &dir_str,
+        "bash", "-lc", &cmd,
     ])?;
 
     // Auto-layout so panes stay usable
     let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
-
-    // Clear screen and show splash, then run opencode silently
-    // Using stty -echo to hide input, clear screen, show splash, then run opencode
-    let setup_cmd = format!(
-        "clear && printf '{}' && {}",
-        r#"\n\n   ╔═══════════════════════════════════════════════════════╗\n   ║                                                       ║\n   ║         ⚡ SUPERHARNESS - AI Agent Worker ⚡          ║\n   ║                                                       ║\n   ║              Initializing AI Agent...                 ║\n   ║                                                       ║\n   ╚═══════════════════════════════════════════════════════╝\n\n"#,
-        cmd
-    );
-
-    tmux_ok(&["send-keys", "-t", &pane_id, &setup_cmd, "Enter"])?;
 
     Ok(pane_id)
 }
@@ -200,44 +205,55 @@ pub fn init(dir: &str) -> Result<()> {
         let _ = tmux_ok(&["kill-session", "-t", SESSION]);
     }
 
-    // Create session running opencode directly. No shell = no prompt flash.
-    // Use a wrapper that shows a centered splash, hides cursor, then execs opencode.
-    // The splash stays visible until opencode's TUI takes over the screen.
-    let splash = r#"bash -c '
-COLS=$(tput cols 2>/dev/null || echo 80)
-ROWS=$(tput lines 2>/dev/null || echo 24)
-LOGO_H=15; LOGO_W=59
-TOP=$(( (ROWS - LOGO_H) / 2 )); LEFT=$(( (COLS - LOGO_W) / 2 ))
-[ "$TOP" -lt 0 ] 2>/dev/null && TOP=0
-[ "$LEFT" -lt 0 ] 2>/dev/null && LEFT=0
-PAD=$(printf "%*s" "$LEFT" "")
-printf "\033[2J\033[H\033[?25l"
-i=0; while [ "$i" -lt "$TOP" ]; do printf "\n"; i=$((i+1)); done
-printf "\033[38;5;214m"
-printf "%s%s\n" "$PAD" "███████╗██╗   ██╗██████╗ ███████╗██████╗ "
-printf "%s%s\n" "$PAD" "██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗"
-printf "%s%s\n" "$PAD" "███████╗██║   ██║██████╔╝█████╗  ██████╔╝"
-printf "%s%s\n" "$PAD" "╚════██║██║   ██║██╔═══╝ ██╔══╝  ██╔══██╗"
-printf "%s%s\n" "$PAD" "███████║╚██████╔╝██║     ███████╗██║  ██║"
-printf "%s%s\n" "$PAD" "╚══════╝ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═╝"
-printf "\n"
-printf "%s%s\n" "$PAD" "██╗  ██╗ █████╗ ██████╗ ███╗   ██╗███████╗███████╗███████╗"
-printf "%s%s\n" "$PAD" "██║  ██║██╔══██╗██╔══██╗████╗  ██║██╔════╝██╔════╝██╔════╝"
-printf "%s%s\n" "$PAD" "███████║███████║██████╔╝██╔██╗ ██║█████╗  ███████╗███████╗"
-printf "%s%s\n" "$PAD" "██╔══██║██╔══██║██╔══██╗██║╚██╗██║██╔══╝  ╚════██║╚════██║"
-printf "%s%s\n" "$PAD" "██║  ██║██║  ██║██║  ██║██║ ╚████║███████╗███████║███████║"
-printf "%s%s\n" "$PAD" "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚══════╝"
-printf "\n"
-MSG="Loading orchestrator..."
-MSG_LEFT=$(( (COLS - ${#MSG}) / 2 ))
-[ "$MSG_LEFT" -lt 0 ] 2>/dev/null && MSG_LEFT=0
-printf "\033[38;5;245m%*s%s\033[0m\n" "$MSG_LEFT" "" "$MSG"
-exec opencode'"#;
-    tmux_ok(&[
-        "new-session", "-d", "-s", SESSION, "-c", &dir_str,
-        "bash", "-c", splash,
-    ])?;
+    // Get current terminal size (this is the real terminal we'll attach to)
+    let (cols, rows): (i32, i32) = term_size::dimensions()
+        .map(|(c, r)| (c as i32, r as i32))
+        .unwrap_or((80, 24));
+
+    // Subtract 1 row for tmux status bar
+    let rows = rows - 1;
+    let logo_h = 15i32;
+    let logo_w = 59i32;
+    let top = ((rows - logo_h) / 2).max(0);
+    let left = ((cols - logo_w) / 2).max(0);
+    let msg = "Loading orchestrator...";
+    let msg_left = ((cols - msg.len() as i32) / 2).max(0);
+
+    let p = " ".repeat(left as usize);
+    let top_nl = "\n".repeat(top as usize);
+    let mp = " ".repeat(msg_left as usize);
+
+    let logo_lines = [
+        "███████╗██╗   ██╗██████╗ ███████╗██████╗ ",
+        "██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗",
+        "███████╗██║   ██║██████╔╝█████╗  ██████╔╝",
+        "╚════██║██║   ██║██╔═══╝ ██╔══╝  ██╔══██╗",
+        "███████║╚██████╔╝██║     ███████╗██║  ██║",
+        "╚══════╝ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═╝",
+        "",
+        "██╗  ██╗ █████╗ ██████╗ ███╗   ██╗███████╗███████╗███████╗",
+        "██║  ██║██╔══██╗██╔══██╗████╗  ██║██╔════╝██╔════╝██╔════╝",
+        "███████║███████║██████╔╝██╔██╗ ██║█████╗  ███████╗███████╗",
+        "██╔══██║██╔══██║██╔══██╗██║╚██╗██║██╔══╝  ╚════██║╚════██║",
+        "██║  ██║██║  ██║██║  ██║██║ ╚████║███████╗███████║███████║",
+        "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚══════╝",
+    ];
+    let logo_text: String = logo_lines
+        .iter()
+        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let splash = format!(
+        "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec opencode"
+    );
+
+    tmux_ok(&["new-session", "-d", "-s", SESSION, "-c", &dir_str])?;
     configure_session()?;
+    export_env_to_session()?;
+
+    // Replace default shell with splash+opencode
+    tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-c", &splash])?;
 
     let status = Command::new("tmux")
         .args(["attach-session", "-t", SESSION])

@@ -36,6 +36,10 @@ enum Command {
         /// Label (unused, reserved)
         #[arg(short, long)]
         name: Option<String>,
+
+        /// Model to use (e.g. "fireworks/kimi-k2.5", "anthropic/claude-sonnet-4-6")
+        #[arg(short, long)]
+        model: Option<String>,
     },
 
     /// Read recent output from a worker pane
@@ -129,8 +133,8 @@ fn main() -> anyhow::Result<()> {
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
-        Some(Command::Spawn { task, dir, name }) => {
-            let pane = tmux::spawn(&task, &dir, name.as_deref())?;
+        Some(Command::Spawn { task, dir, name, model }) => {
+            let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref())?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
