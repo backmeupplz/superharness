@@ -85,9 +85,17 @@ fn configure_session(bin_path: &str) -> Result<()> {
     ])?;
 
     // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'.
-    // Must be a single string containing the raw ESC byte so tmux forwards it as one
-    // unambiguous CSI sequence (\x1b[127;5u) instead of two separate keystrokes.
-    tmux_ok(&["bind-key", "-n", "C-BSpace", "send-keys", "\x1b[127;5u"])?;
+    // Use -l (literal) so tmux sends the exact bytes without any translation.
+    // Also bind C-h as an alias because some terminals send Ctrl+H for Ctrl+Backspace.
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "C-BSpace",
+        "send-keys",
+        "-l",
+        "\x1b[127;5u",
+    ])?;
+    tmux_ok(&["bind-key", "-n", "C-h", "send-keys", "-l", "\x1b[127;5u"])?;
 
     // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences).
     tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "\x1b[1;5D"])?;
@@ -135,15 +143,23 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "#(tmux list-panes -t superharness -a 2>/dev/null | wc -l | tr -d ' ')";
 
     let status_right = format!(
-        "#[fg=colour240]│ #[fg=colour33]MODE:{mode_snippet} \
+        "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour238] F1:away F2:present F3:status F4:workers #[default]"
+         #[fg=colour240]│ #[fg=colour236] F1:away F2:present F3:status F4:workers #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "80"])?;
 
-    // Window status (centre): show window list naturally.
+    // Window status (centre): hide window index/name entirely for a clean bar.
+    tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "window-status-current-format",
+        "",
+    ])?;
     tmux_ok(&[
         "set-option",
         "-t",
@@ -189,10 +205,12 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F3",
         "display-popup",
         "-E",
+        "-b",
+        "rounded",
         "-w",
-        "100",
+        "110",
         "-h",
-        "36",
+        "42",
         &format!("{bin_path} status-human 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
@@ -203,10 +221,12 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F4",
         "display-popup",
         "-E",
+        "-b",
+        "rounded",
         "-w",
-        "100",
+        "110",
         "-h",
-        "30",
+        "36",
         &format!("{bin_path} workers 2>&1; echo; echo 'Press any key to close...'; read -n1"),
     ])?;
 
