@@ -81,6 +81,20 @@ fn configure_session() -> Result<()> {
         "#{pane_title}",
     ])?;
 
+    // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "C-BSpace",
+        "send-keys",
+        "Escape",
+        "[127;5u",
+    ])?;
+
+    // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences)
+    tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "Escape", "[1;5D"])?;
+    tmux_ok(&["bind-key", "-n", "C-Right", "send-keys", "Escape", "[1;5C"])?;
+
     Ok(())
 }
 
