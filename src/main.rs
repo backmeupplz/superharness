@@ -1,7 +1,9 @@
 mod setup;
+mod state;
 mod tmux;
 
 use clap::Parser;
+use state::StateManager;
 
 #[derive(Parser)]
 #[command(
@@ -117,6 +119,37 @@ enum Command {
         #[arg(short, long, default_value = "tiled")]
         name: String,
     },
+
+    /// Enter away mode (human is not watching)
+    Away {
+        /// Optional message describing why you're going away or what to watch for
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+
+    /// Return to present mode (human is back)
+    Present,
+
+    /// Show current mode and any pending decisions
+    Status,
+
+    /// Queue a decision for human review (useful in away mode)
+    QueueDecision {
+        /// Pane ID associated with this decision
+        #[arg(short, long)]
+        pane: String,
+
+        /// The question or decision that needs human input
+        #[arg(short, long)]
+        question: String,
+
+        /// Additional context to help the human decide
+        #[arg(short, long, default_value = "")]
+        context: String,
+    },
+
+    /// Clear all pending decisions
+    ClearDecisions,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -133,7 +166,12 @@ fn main() -> anyhow::Result<()> {
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir)?;
         }
-        Some(Command::Spawn { task, dir, name, model }) => {
+        Some(Command::Spawn {
+            task,
+            dir,
+            name,
+            model,
+        }) => {
             let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref())?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -180,6 +218,76 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Layout { name }) => {
             tmux::layout(&name)?;
             let out = serde_json::json!({ "layout": name });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Away { message }) => {
+            let sm = StateManager::new()?;
+            sm.set_mode(state::Mode::Away, message.as_deref())?;
+            let pending = sm.get_pending_decisions()?;
+            let out = serde_json::json!({
+                "mode": "away",
+                "message": message,
+                "pending_decisions": pending.len(),
+                "checklist": [
+                    "Should workers queue architecture decisions?",
+                    "Should workers queue dependency/library choices?",
+                    "Should workers queue breaking API changes?",
+                    "Should workers queue security-sensitive operations?",
+                    "Should workers queue destructive file operations?"
+                ],
+                "note": "Workers will queue critical decisions instead of auto-deciding. Run 'status' when you return."
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Present) => {
+            let sm = StateManager::new()?;
+            let pending = sm.get_pending_decisions()?;
+            sm.set_mode(state::Mode::Present, None)?;
+            let out = serde_json::json!({
+                "mode": "present",
+                "pending_decisions": pending,
+                "note": if pending.is_empty() {
+                    "No pending decisions. All clear!"
+                } else {
+                    "Review the pending decisions above. Use 'clear-decisions' after resolving them."
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Status) => {
+            let sm = StateManager::new()?;
+            let s = sm.get_state()?;
+            let out = serde_json::json!({
+                "mode": s.mode.to_string(),
+                "away_since": s.away_since,
+                "away_message": s.away_message,
+                "pending_decisions": s.pending_decisions,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::QueueDecision {
+            pane,
+            question,
+            context,
+        }) => {
+            let id = tmux::queue_decision(&pane, &question, &context)?;
+            let out = serde_json::json!({
+                "queued": true,
+                "decision_id": id,
+                "pane": pane,
+                "question": question,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::ClearDecisions) => {
+            let sm = StateManager::new()?;
+            sm.clear_decisions()?;
+            let out = serde_json::json!({ "cleared": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
     }

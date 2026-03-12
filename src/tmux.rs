@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::state::StateManager;
+
 const SESSION: &str = "superharness";
 
 /// Escape a string for safe use in a shell command
@@ -99,7 +101,9 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
 
     // Auto-layout so panes stay usable
@@ -195,6 +199,19 @@ pub fn layout(name: &str) -> Result<()> {
     tmux_ok(&["select-layout", "-t", SESSION, name])
 }
 
+/// Check whether superharness is currently in away mode.
+#[allow(dead_code)]
+pub fn is_away() -> bool {
+    StateManager::new().map(|sm| sm.is_away()).unwrap_or(false)
+}
+
+/// Queue a decision for the human to resolve when they return (away mode).
+/// Returns the decision ID on success.
+pub fn queue_decision(pane: &str, question: &str, context: &str) -> Result<String> {
+    let sm = StateManager::new()?;
+    sm.add_pending_decision(pane, question, context)
+}
+
 /// Start the superharness session with an orchestrator opencode and attach.
 pub fn init(dir: &str) -> Result<()> {
     let abs_dir =
@@ -240,7 +257,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
