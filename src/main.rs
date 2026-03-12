@@ -6,6 +6,7 @@ mod monitor;
 mod pending_tasks;
 mod setup;
 mod state;
+mod tasks;
 mod tmux;
 mod watch;
 
@@ -319,6 +320,90 @@ enum Command {
         /// Agent mode: build (default) or plan
         #[arg(long, default_value = "build")]
         mode: Option<String>,
+    },
+
+    // ── Task/subtask storage ─────────────────────────────────────────────────
+    /// Add a new task to the task list
+    TaskAdd {
+        /// Task title
+        title: String,
+
+        /// Optional description
+        #[arg(short, long)]
+        description: Option<String>,
+
+        /// Priority: high, medium, or low
+        #[arg(short, long)]
+        priority: Option<String>,
+
+        /// Comma-separated tags
+        #[arg(short, long)]
+        tags: Option<String>,
+    },
+
+    /// List tasks (with optional filters)
+    TaskList {
+        /// Filter by status: pending, in_progress, done, blocked, cancelled
+        #[arg(short, long)]
+        status: Option<String>,
+
+        /// Filter by tag
+        #[arg(short, long)]
+        tag: Option<String>,
+    },
+
+    /// Mark a task as done
+    TaskDone {
+        /// Task ID prefix (at least 8 chars)
+        id: String,
+    },
+
+    /// Mark a task as in_progress
+    TaskStart {
+        /// Task ID prefix
+        id: String,
+    },
+
+    /// Mark a task as blocked
+    TaskBlock {
+        /// Task ID prefix
+        id: String,
+    },
+
+    /// Mark a task as cancelled
+    TaskCancel {
+        /// Task ID prefix
+        id: String,
+    },
+
+    /// Remove a task permanently
+    TaskRemove {
+        /// Task ID prefix
+        id: String,
+    },
+
+    /// Show full details of a task
+    TaskShow {
+        /// Task ID prefix
+        id: String,
+    },
+
+    /// Add a subtask to a task
+    SubtaskAdd {
+        /// Parent task ID prefix
+        task_id: String,
+
+        /// Subtask title
+        title: String,
+    },
+
+    /// Mark a subtask as done
+    SubtaskDone {
+        /// Parent task ID prefix
+        task_id: String,
+
+        /// Subtask ID prefix
+        subtask_id: String,
     },
 }
 
@@ -1067,6 +1152,97 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+        }
+
+        // ── Task/subtask commands ────────────────────────────────────────────
+        Some(Command::TaskAdd {
+            title,
+            description,
+            priority,
+            tags,
+        }) => {
+            let tm = tasks::TaskManager::new()?;
+            let priority = priority.as_deref().map(tasks::parse_priority).transpose()?;
+            let tag_list: Vec<String> = tags
+                .as_deref()
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let task = tm.add_task(&title, description.as_deref(), priority, tag_list)?;
+            let id_short: String = task.id.chars().take(8).collect();
+            println!("Task created: {id_short}  \"{}\"", task.title);
+            println!("Full ID: {}", task.id);
+            println!();
+            println!("Reference this task with any unique prefix of its ID (e.g. '{id_short}').");
+        }
+
+        Some(Command::TaskList { status, tag }) => {
+            let tm = tasks::TaskManager::new()?;
+            let status_filter = status
+                .as_deref()
+                .map(tasks::parse_status)
+                .transpose()?
+                .map(|s| s.to_string());
+            let task_list = tm.list_tasks(status_filter.as_deref(), tag.as_deref())?;
+            tasks::print_task_list(&task_list);
+        }
+
+        Some(Command::TaskDone { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            let task = tm.set_status(&id, tasks::TaskStatus::Done)?;
+            let id_short: String = task.id.chars().take(8).collect();
+            println!("Task {id_short} marked as done: \"{}\"", task.title);
+        }
+
+        Some(Command::TaskStart { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            let task = tm.set_status(&id, tasks::TaskStatus::InProgress)?;
+            let id_short: String = task.id.chars().take(8).collect();
+            println!("Task {id_short} marked as in_progress: \"{}\"", task.title);
+        }
+
+        Some(Command::TaskBlock { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            let task = tm.set_status(&id, tasks::TaskStatus::Blocked)?;
+            let id_short: String = task.id.chars().take(8).collect();
+            println!("Task {id_short} marked as blocked: \"{}\"", task.title);
+        }
+
+        Some(Command::TaskCancel { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            let task = tm.set_status(&id, tasks::TaskStatus::Cancelled)?;
+            let id_short: String = task.id.chars().take(8).collect();
+            println!("Task {id_short} marked as cancelled: \"{}\"", task.title);
+        }
+
+        Some(Command::TaskRemove { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            tm.remove_task(&id)?;
+            println!("Task removed.");
+        }
+
+        Some(Command::TaskShow { id }) => {
+            let tm = tasks::TaskManager::new()?;
+            let task = tm.get_task(&id)?;
+            tasks::print_task_detail(&task);
+        }
+
+        Some(Command::SubtaskAdd { task_id, title }) => {
+            let tm = tasks::TaskManager::new()?;
+            let subtask = tm.add_subtask(&task_id, &title)?;
+            let sub_id_short: String = subtask.id.chars().take(8).collect();
+            println!("Subtask created: {sub_id_short}  \"{}\"", subtask.title);
+        }
+
+        Some(Command::SubtaskDone {
+            task_id,
+            subtask_id,
+        }) => {
+            let tm = tasks::TaskManager::new()?;
+            tm.complete_subtask(&task_id, &subtask_id)?;
+            println!("Subtask marked as done.");
         }
     }
 
