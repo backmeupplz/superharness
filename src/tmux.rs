@@ -71,6 +71,20 @@ fn configure_session() -> Result<()> {
     // Bind Shift+Enter to send escape sequence that opencode expects for multi-line input
     tmux_ok(&["bind-key", "-n", "S-Enter", "send-keys", "Escape", "[13;2u"])?;
 
+    // Bind Ctrl+Backspace to send kitty protocol sequence for 'delete word backwards'
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "C-BSpace",
+        "send-keys",
+        "Escape",
+        "[127;5u",
+    ])?;
+
+    // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences)
+    tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "Escape", "[1;5D"])?;
+    tmux_ok(&["bind-key", "-n", "C-Right", "send-keys", "Escape", "[1;5C"])?;
+
     Ok(())
 }
 
@@ -99,7 +113,9 @@ pub fn spawn(task: &str, dir: &str, _name: Option<&str>, model: Option<&str>) ->
         "#{pane_id}",
         "-c",
         &dir_str,
-        "bash", "-lc", &cmd,
+        "bash",
+        "-lc",
+        &cmd,
     ])?;
 
     // Auto-layout so panes stay usable
@@ -240,7 +256,13 @@ pub fn init(dir: &str) -> Result<()> {
     ];
     let logo_text: String = logo_lines
         .iter()
-        .map(|l| if l.is_empty() { String::new() } else { format!("{p}{l}") })
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{p}{l}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
