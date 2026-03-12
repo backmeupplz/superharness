@@ -208,7 +208,22 @@ fn main() -> anyhow::Result<()> {
             model,
             mode,
         }) => {
-            let pane = tmux::spawn(&task, &dir, name.as_deref(), model.as_deref(), mode.as_deref())?;
+            if let Some(ref m) = mode {
+                match m.as_str() {
+                    "build" | "plan" => {}
+                    other => anyhow::bail!(
+                        "invalid mode {:?}: must be 'build' (default) or 'plan' (read-only planning)",
+                        other
+                    ),
+                }
+            }
+            let pane = tmux::spawn(
+                &task,
+                &dir,
+                name.as_deref(),
+                model.as_deref(),
+                mode.as_deref(),
+            )?;
             let out = serde_json::json!({ "pane": pane });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

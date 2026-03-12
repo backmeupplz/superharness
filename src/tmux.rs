@@ -114,18 +114,36 @@ const PANE_COLORS: &[u8] = &[
 ];
 
 /// Spawn a new opencode worker as a pane in the superharness window.
-pub fn spawn(task: &str, dir: &str, name: Option<&str>, model: Option<&str>) -> Result<String> {
+pub fn spawn(
+    task: &str,
+    dir: &str,
+    name: Option<&str>,
+    model: Option<&str>,
+    mode: Option<&str>,
+) -> Result<String> {
     ensure_session()?;
 
     let abs_dir =
         std::fs::canonicalize(dir).with_context(|| format!("invalid directory: {dir}"))?;
     let dir_str = abs_dir.to_string_lossy().to_string();
 
+    let effective_mode = mode.unwrap_or("build");
+
     let model_flag = match model {
         Some(m) => format!(" --model {}", shell_escape(m)),
         None => String::new(),
     };
-    let cmd = format!("opencode{model_flag} --prompt {}", shell_escape(task));
+
+    // In plan mode, prefix the task to instruct the agent not to make changes.
+    let effective_task = match effective_mode {
+        "plan" => format!("[PLAN MODE - do not make changes, only analyze and plan]: {task}"),
+        _ => task.to_string(),
+    };
+
+    let cmd = format!(
+        "opencode{model_flag} --prompt {}",
+        shell_escape(&effective_task)
+    );
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
@@ -143,19 +161,17 @@ pub fn spawn(task: &str, dir: &str, name: Option<&str>, model: Option<&str>) -> 
         &cmd,
     ])?;
 
-    // Determine pane title: use name if provided, otherwise first 30 chars of task
+    // Set pane title: use explicit name if provided, otherwise "[mode] first 50 chars of task"
     let title = match name {
-        Some(n) if !n.is_empty() => n.to_string(),
+        Some(n) if !n.is_empty() => format!("[{effective_mode}] {n}"),
         _ => {
-            let truncated: String = task.chars().take(30).collect();
-            truncated
+            let short_task: String = task.chars().take(50).collect();
+            format!("[{effective_mode}] {short_task}")
         }
     };
-
-    // Set pane title
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &title]);
 
-    // Get pane index to pick a color from the palette
+    // Apply a background color from palette based on pane index
     let pane_index_str =
         tmux(&["display-message", "-t", &pane_id, "-p", "#{pane_index}"]).unwrap_or_default();
     let pane_index: usize = pane_index_str.trim().parse().unwrap_or(0);
