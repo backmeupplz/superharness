@@ -278,7 +278,7 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|| "superharness".to_string())
             });
             setup::write_config(&cli.dir, &bin)?;
-            tmux::init(&cli.dir)?;
+            tmux::init(&cli.dir, &bin)?;
         }
         Some(Command::Spawn {
             task,

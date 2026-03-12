@@ -64,7 +64,7 @@ fn export_env_to_session() -> Result<()> {
     Ok(())
 }
 
-fn configure_session() -> Result<()> {
+fn configure_session(bin_path: &str) -> Result<()> {
     tmux_ok(&["set-option", "-t", SESSION, "allow-set-title", "off"])?;
 
     // Enable extended keys for modified key combinations (Shift+Enter, etc.)
@@ -92,6 +92,109 @@ fn configure_session() -> Result<()> {
     // Bind Ctrl+Left/Right for word navigation (kitty protocol sequences).
     tmux_ok(&["bind-key", "-n", "C-Left", "send-keys", "\x1b[1;5D"])?;
     tmux_ok(&["bind-key", "-n", "C-Right", "send-keys", "\x1b[1;5C"])?;
+
+    // ── Status bar ──────────────────────────────────────────────────────────
+    // Store the binary path as a tmux environment variable so bindings can use it.
+    tmux_ok(&[
+        "set-environment",
+        "-t",
+        SESSION,
+        "SUPERHARNESS_BIN",
+        bin_path,
+    ])?;
+
+    // Bottom status bar: always on, shows mode / worker count / key hints.
+    tmux_ok(&["set-option", "-t", SESSION, "status", "on"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-position", "bottom"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-interval", "5"])?;
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "status-style",
+        "bg=colour235,fg=colour250",
+    ])?;
+
+    // Left side: static session name label.
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "status-left",
+        "#[fg=colour214,bold] SUPERHARNESS #[fg=colour240]│ ",
+    ])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
+
+    // Right side: dynamic shell fragments read mode + pane count.
+    // #{E:SUPERHARNESS_BIN} expands the env var we just set.
+    // The shell snippet produces "AWAY" or "PRESENT" from the state file.
+    let mode_snippet = r#"#(sh -c '
+        f="$HOME/.local/share/superharness/state.json"
+        if [ -f "$f" ]; then
+            m=$(python3 -c "import sys,json; d=json.load(open(\"$f\")); print(d.get(\"mode\",\"present\").upper())" 2>/dev/null)
+            echo "${m:-PRESENT}"
+        else
+            echo PRESENT
+        fi
+    ')#"#;
+
+    // Pane count (excluding the orchestrator pane 0 by counting all panes minus 1, min 0).
+    let pane_count_snippet =
+        "#(tmux list-panes -t superharness -a 2>/dev/null | wc -l | tr -d ' ')#";
+
+    let status_right = format!(
+        "#[fg=colour240]│ #[fg=colour33]MODE:{mode_snippet} \
+         #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
+         #[fg=colour240]│ #[fg=colour243] F1:away F2:present F3:status F4:health F5:workers #[default]"
+    );
+
+    tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "90"])?;
+
+    // Window status (centre): show window list naturally.
+    tmux_ok(&[
+        "set-option",
+        "-t",
+        SESSION,
+        "window-status-current-style",
+        "fg=colour214,bold",
+    ])?;
+
+    // ── F-key shortcuts (no prefix required) ────────────────────────────────
+    // F1 → superharness away  (run in a popup so output is visible)
+    let f1_cmd = format!(
+        "display-popup -E -w 60 -h 12 '{bin_path} away 2>&1; echo; echo Press any key to close...; read -n1'",
+        bin_path = bin_path
+    );
+    tmux_ok(&["bind-key", "-n", "F1", "run-shell", &f1_cmd])?;
+
+    // F2 → superharness present
+    let f2_cmd = format!(
+        "display-popup -E -w 80 -h 24 '{bin_path} present 2>&1; echo; echo Press any key to close...; read -n1'",
+        bin_path = bin_path
+    );
+    tmux_ok(&["bind-key", "-n", "F2", "run-shell", &f2_cmd])?;
+
+    // F3 → superharness status
+    let f3_cmd = format!(
+        "display-popup -E -w 80 -h 24 '{bin_path} status 2>&1; echo; echo Press any key to close...; read -n1'",
+        bin_path = bin_path
+    );
+    tmux_ok(&["bind-key", "-n", "F3", "run-shell", &f3_cmd])?;
+
+    // F4 → superharness healthcheck (one-shot health of all panes)
+    let f4_cmd = format!(
+        "display-popup -E -w 100 -h 30 '{bin_path} healthcheck 2>&1; echo; echo Press any key to close...; read -n1'",
+        bin_path = bin_path
+    );
+    tmux_ok(&["bind-key", "-n", "F4", "run-shell", &f4_cmd])?;
+
+    // F5 → superharness list  (worker pane list)
+    let f5_cmd = format!(
+        "display-popup -E -w 100 -h 30 '{bin_path} list 2>&1; echo; echo Press any key to close...; read -n1'",
+        bin_path = bin_path
+    );
+    tmux_ok(&["bind-key", "-n", "F5", "run-shell", &f5_cmd])?;
 
     Ok(())
 }
@@ -294,7 +397,7 @@ pub fn queue_decision(pane: &str, question: &str, context: &str) -> Result<Strin
 }
 
 /// Start the superharness session with an orchestrator opencode and attach.
-pub fn init(dir: &str) -> Result<()> {
+pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     let abs_dir =
         std::fs::canonicalize(dir).with_context(|| format!("invalid directory: {dir}"))?;
     let dir_str = abs_dir.to_string_lossy().to_string();
@@ -353,7 +456,7 @@ pub fn init(dir: &str) -> Result<()> {
     );
 
     tmux_ok(&["new-session", "-d", "-s", SESSION, "-c", &dir_str])?;
-    configure_session()?;
+    configure_session(bin_path)?;
     export_env_to_session()?;
 
     // Replace default shell with splash+opencode
