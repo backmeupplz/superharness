@@ -7,11 +7,6 @@ use crate::loop_guard;
 
 const SESSION: &str = "superharness";
 
-/// Escape a string for safe use in a shell command
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 /// Run a tmux command, return stdout
 fn tmux(args: &[&str]) -> Result<String> {
     let output = Command::new("tmux")
@@ -639,7 +634,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         String::new()
     };
 
-    let (initial_prompt, auto_submit): (String, bool) = if !config_path.exists() {
+    let (initial_prompt, _auto_submit): (String, bool) = if !config_path.exists() {
         // First-run: ask model to set up preferences (auto-submit is fine here)
         let config_path_str = config_path.to_string_lossy().to_string();
         (
