@@ -432,11 +432,6 @@ pub fn send(pane: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send a bare Enter keypress to a pane (no text).
-pub fn send_raw(pane: &str, _text: &str) -> Result<()> {
-    tmux_ok(&["send-keys", "-t", pane, "Enter"])
-}
-
 /// Flash a notification message in the tmux status bar for 6 seconds.
 pub fn flash_notification(msg: &str) -> Result<()> {
     tmux_ok(&["display-message", "-t", SESSION, "-d", "6000", msg])
@@ -613,12 +608,6 @@ pub fn surface(pane: &str) -> Result<()> {
     show(pane, "h")
 }
 
-/// Select window 0 (the main orchestrator window) so that %0 is visible
-/// after a worker finishes or is cleaned up.
-pub fn select_orchestrator() -> Result<()> {
-    tmux_ok(&["select-window", "-t", &format!("{SESSION}:0")])
-}
-
 /// Auto-compact the main window: if more than 4 worker panes are visible,
 /// move excess panes (highest pane_index, never %0) to background tabs.
 /// Called automatically after each `spawn`.
@@ -736,34 +725,6 @@ pub fn terminal_size_info() -> TerminalSizeInfo {
         workers_visible,
         recommended_max_workers,
     }
-}
-
-/// Query the current tmux window dimensions.
-/// Returns `Some((width, height))` on success, `None` if tmux is unavailable
-/// or the session does not exist.  Unlike [`get_terminal_size`] this never
-/// fabricates a fallback value.
-pub fn terminal_size() -> Option<(u32, u32)> {
-    let output = Command::new("tmux")
-        .args([
-            "display-message",
-            "-t",
-            SESSION,
-            "-p",
-            "#{window_width} #{window_height}",
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let s = String::from_utf8_lossy(&output.stdout);
-    let s = s.trim();
-    let mut parts = s.split_whitespace();
-    let w: u32 = parts.next()?.parse().ok()?;
-    let h: u32 = parts.next()?.parse().ok()?;
-    Some((w, h))
 }
 
 /// Query the current tmux window dimensions dynamically.
