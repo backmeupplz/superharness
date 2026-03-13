@@ -153,11 +153,11 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:relays #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "110"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "130"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
@@ -188,6 +188,22 @@ fn configure_session(bin_path: &str) -> Result<()> {
         &format!("{bin_path} toggle-mode"),
     ])?;
 
+    // F2 → relay-human (pending relay requests, human-readable)
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F2",
+        "display-popup",
+        "-E",
+        "-b",
+        "rounded",
+        "-w",
+        "110",
+        "-h",
+        "36",
+        &format!("{bin_path} relay-human 2>&1; echo; echo '  Press any key to close...'; read -n1"),
+    ])?;
+
     // F3 → status-human (mode + pending decisions + worker health, human-readable)
     tmux_ok(&[
         "bind-key",
@@ -201,7 +217,9 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "110",
         "-h",
         "42",
-        &format!("{bin_path} status-human 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        &format!(
+            "{bin_path} status-human 2>&1; echo; echo '  Press any key to close...'; read -n1"
+        ),
     ])?;
 
     // F4 → workers (human-readable worker list)
@@ -217,10 +235,10 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "110",
         "-h",
         "36",
-        &format!("{bin_path} workers 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        &format!("{bin_path} workers 2>&1; echo; echo '  Press any key to close...'; read -n1"),
     ])?;
 
-    // F5 → tasks-modal (task list grouped by status)
+    // F5 → tasks-modal (task list grouped by status, scrollable via less)
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -233,10 +251,10 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "110",
         "-h",
         "42",
-        &format!("{bin_path} tasks-modal 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        &format!("bash -c '{bin_path} tasks-modal 2>&1 | less -R'"),
     ])?;
 
-    // F6 → event-feed (scrollable event log via less)
+    // F6 → event-feed (scrollable event log via less; press q to close)
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -249,7 +267,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "110",
         "-h",
         "42",
-        &format!("bash -c '{bin_path} event-feed 2>&1 | less -R; echo Press any key; read -n1'"),
+        &format!("bash -c '{bin_path} event-feed 2>&1 | less -R'"),
     ])?;
 
     Ok(())
@@ -315,8 +333,9 @@ pub fn spawn(
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_else(|| "superharness".to_string());
 
-    let cmd =
-        format!("{opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')");
+    let cmd = format!(
+        "export SUPERHARNESS_WORKER=1; {opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')"
+    );
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
