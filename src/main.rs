@@ -34,7 +34,7 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Spawn a new opencode worker as a pane
+    /// Spawn a new opencode worker as an agent
     Spawn {
         /// Task/prompt to give the worker
         #[arg(short, long)]
@@ -44,7 +44,7 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         dir: String,
 
-        /// Label/title for the pane (shown in pane border)
+        /// Label/title for the agent (shown in agent border)
         #[arg(short, long)]
         name: Option<String>,
 
@@ -56,7 +56,7 @@ enum Command {
         #[arg(long, default_value = "build")]
         mode: Option<String>,
 
-        /// Comma-separated pane IDs that must finish before this worker starts (e.g. "%23,%24").
+        /// Comma-separated agent IDs that must finish before this worker starts (e.g. "%23,%24").
         /// When set, the task is written to pending_tasks.json and NOT spawned immediately.
         #[arg(long)]
         depends_on: Option<String>,
@@ -68,9 +68,9 @@ enum Command {
     /// Check pending tasks and spawn any whose dependencies have all finished
     RunPending,
 
-    /// Read recent output from a worker pane
+    /// Read recent output from a worker agent
     Read {
-        /// Pane ID (from spawn/list output)
+        /// Agent ID (from spawn/list output)
         #[arg(short, long)]
         pane: String,
 
@@ -79,9 +79,9 @@ enum Command {
         lines: u32,
     },
 
-    /// Send input/keystrokes to a worker pane
+    /// Send input/keystrokes to a worker agent
     Send {
-        /// Pane ID
+        /// Agent ID
         #[arg(short, long)]
         pane: String,
 
@@ -90,19 +90,19 @@ enum Command {
         text: String,
     },
 
-    /// List all panes in the superharness session
+    /// List all agents in the superharness session
     List,
 
-    /// Kill a worker pane
+    /// Kill a worker agent
     Kill {
-        /// Pane ID to kill
+        /// Agent ID to kill
         #[arg(short, long)]
         pane: String,
     },
 
-    /// Hide a pane to its own background tab
+    /// Hide an agent to its own background tab
     Hide {
-        /// Pane ID
+        /// Agent ID
         #[arg(short, long)]
         pane: String,
 
@@ -111,9 +111,9 @@ enum Command {
         name: Option<String>,
     },
 
-    /// Surface a background pane back into the main window
+    /// Surface a background agent back into the main window
     Show {
-        /// Pane ID
+        /// Agent ID
         #[arg(short, long)]
         pane: String,
 
@@ -122,19 +122,19 @@ enum Command {
         split: String,
     },
 
-    /// Bring a background pane back into the main window with auto-layout (alias for show --split h)
+    /// Bring a background agent back into the main window with auto-layout (alias for show --split h)
     Surface {
-        /// Pane ID to bring back into the main window
+        /// Agent ID to bring back into the main window
         #[arg(short, long)]
         pane: String,
     },
 
-    /// Move small or excess panes to background tabs to keep the main window usable
+    /// Move small or excess agents to background tabs to keep the main window usable
     Compact,
 
-    /// Resize a pane
+    /// Resize an agent
     Resize {
-        /// Pane ID
+        /// Agent ID
         #[arg(short, long)]
         pane: String,
 
@@ -175,7 +175,7 @@ enum Command {
 
     /// Queue a decision for human review (useful in away mode)
     QueueDecision {
-        /// Pane ID associated with this decision
+        /// Agent ID associated with this decision
         #[arg(short, long)]
         pane: String,
 
@@ -191,38 +191,38 @@ enum Command {
     /// Clear all pending decisions
     ClearDecisions,
 
-    /// Monitor panes for stalls and auto-recover
+    /// Monitor agents for stalls and auto-recover
     Monitor {
         /// Seconds between each check cycle
         #[arg(short, long, default_value_t = 60)]
         interval: u64,
 
-        /// Specific pane ID to monitor (monitors all panes if omitted)
+        /// Specific agent ID to monitor (monitors all agents if omitted)
         #[arg(short, long)]
         pane: Option<String>,
 
-        /// Number of consecutive unchanged checks before a pane is considered stalled
+        /// Number of consecutive unchanged checks before an agent is considered stalled
         #[arg(long, default_value_t = 3)]
         stall_threshold: u32,
     },
 
-    /// Auto follow-up and review loop: cleanup done panes, approve safe prompts, nudge stalled panes
+    /// Auto follow-up and review loop: cleanup done agents, approve safe prompts, nudge stalled agents
     Watch {
         /// Seconds between each check cycle (default 30)
         #[arg(short, long, default_value_t = 30)]
         interval: u64,
 
-        /// Specific pane ID to watch (watches all panes if omitted)
+        /// Specific agent ID to watch (watches all agents if omitted)
         #[arg(short, long)]
         pane: Option<String>,
     },
 
-    /// Send a [PULSE] digest of all worker panes to the orchestrator pane (%0)
+    /// Send a [PULSE] digest of all worker agents to the orchestrator agent (%0)
     Pulse,
 
-    /// One-shot health snapshot for pane(s) — returns structured JSON per pane
+    /// One-shot health snapshot for agent(s) — returns structured JSON per agent
     Healthcheck {
-        /// Specific pane ID to check (omit to check all panes)
+        /// Specific agent ID to check (omit to check all agents)
         #[arg(short, long)]
         pane: Option<String>,
 
@@ -232,23 +232,23 @@ enum Command {
         interval: u64,
     },
 
-    /// Show loop detection status for pane(s)
+    /// Show loop detection status for agent(s)
     LoopStatus {
-        /// Pane ID to check (omit to check all panes)
+        /// Agent ID to check (omit to check all agents)
         #[arg(short, long)]
         pane: Option<String>,
     },
 
-    /// Clear loop history for a pane (after human breaks the loop)
+    /// Clear loop history for an agent (after human breaks the loop)
     LoopClear {
-        /// Pane ID to clear
+        /// Agent ID to clear
         #[arg(short, long)]
         pane: String,
     },
 
-    /// Save a checkpoint snapshot of a pane's output and metadata
+    /// Save a checkpoint snapshot of an agent's output and metadata
     Checkpoint {
-        /// Pane ID to snapshot
+        /// Agent ID to snapshot
         #[arg(short, long)]
         pane: String,
 
@@ -259,7 +259,7 @@ enum Command {
 
     /// List saved checkpoints
     Checkpoints {
-        /// Filter to a specific pane ID (lists all panes if omitted)
+        /// Filter to a specific agent ID (lists all agents if omitted)
         #[arg(short, long)]
         pane: Option<String>,
     },
@@ -279,9 +279,9 @@ enum Command {
         model: Option<String>,
     },
 
-    /// Store or list key-value memory facts for a pane
+    /// Store or list key-value memory facts for an agent
     Memory {
-        /// Pane ID
+        /// Agent ID
         #[arg(short, long)]
         pane: String,
 
@@ -293,14 +293,14 @@ enum Command {
         #[arg(short = 'V', long)]
         value: Option<String>,
 
-        /// List all stored memory entries for the pane
+        /// List all stored memory entries for the agent
         #[arg(short, long)]
         list: bool,
     },
 
-    /// Read last 20 lines of a worker pane and detect if it's asking a question
+    /// Read last 20 lines of a worker agent and detect if it's asking a question
     Ask {
-        /// Pane ID to inspect
+        /// Agent ID to inspect
         #[arg(short, long)]
         pane: String,
     },
@@ -314,7 +314,7 @@ enum Command {
 
     /// Kill a crashed worker and respawn it with crash context prepended to the task
     Respawn {
-        /// Pane ID of the crashed worker
+        /// Agent ID of the crashed worker
         #[arg(short, long)]
         pane: String,
 
@@ -642,10 +642,10 @@ fn main() -> anyhow::Result<()> {
             let (moved, remaining) = tmux::compact_panes()?;
             let note = if moved > 0 {
                 format!(
-                    "{moved} pane(s) moved to background tabs. {remaining} pane(s) remain visible."
+                    "{moved} agent(s) moved to background tabs. {remaining} agent(s) remain visible."
                 )
             } else {
-                "No panes needed moving — all panes meet size thresholds.".to_string()
+                "No agents needed moving — all agents meet size thresholds.".to_string()
             };
             let out = serde_json::json!({
                 "moved_to_background": moved,
@@ -768,7 +768,7 @@ fn main() -> anyhow::Result<()> {
                 );
                 for (i, d) in s.pending_decisions.iter().enumerate() {
                     println!();
-                    println!("  {BOLD}[{}]{RESET} Pane {YELLOW}{}{RESET}", i + 1, d.pane);
+                    println!("  {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, d.pane);
                     println!("      {BOLD}Q:{RESET} {}", d.question);
                     if !d.context.is_empty() {
                         println!("      {DIM}Context:{RESET} {}", d.context);
@@ -870,7 +870,7 @@ fn main() -> anyhow::Result<()> {
                 println!();
                 println!(
                     "{BOLD}{UNDERLINE}{:<W_PANE$}  {:<W_CMD$}  {:<W_TITLE$}  {:<W_PATH$}{RESET}",
-                    "PANE", "CMD", "TITLE", "PATH"
+                    "AGENT", "CMD", "TITLE", "PATH"
                 );
                 println!("{DIM}{}{RESET}", "─".repeat(sep_width));
                 for p in &panes {
@@ -1095,7 +1095,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            println!("=== Pane {} — last {} lines ===", pane, lines.len());
+            println!("=== Agent {} — last {} lines ===", pane, lines.len());
             println!();
             for line in &lines {
                 println!("  {line}");
@@ -1211,7 +1211,7 @@ fn main() -> anyhow::Result<()> {
             // 4. Spawn a new worker
             let new_pane = tmux::spawn(&retry_task, &dir, None, model.as_deref(), mode.as_deref())?;
 
-            println!("Crashed pane {} killed.", pane);
+            println!("Crashed agent {} killed.", pane);
             println!("New worker spawned: {new_pane}");
             println!();
             println!("The new worker has been given the crash context and will retry the task.");

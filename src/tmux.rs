@@ -144,7 +144,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
 
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
-         #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
+         #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
          #[fg=colour240]│ #[fg=colour110] F1:away  F2:present #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
     );
 
