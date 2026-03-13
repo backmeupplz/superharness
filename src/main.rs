@@ -886,6 +886,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             // ── MODE ──────────────────────────────────────────────────────────
+            println!();
             if mode_str == "away" {
                 let away_since_str = away_since.map(|ts| {
                     let now = SystemTime::now()
@@ -897,43 +898,43 @@ fn main() -> anyhow::Result<()> {
                     let m = (elapsed % 3600) / 60;
                     format!("{h}h {m}m ago (since unix:{ts})")
                 });
-                println!("{BOLD}{YELLOW}Mode:{RESET}    {BOLD}{YELLOW}AWAY{RESET}");
+                println!("  {BOLD}{YELLOW}Mode:{RESET}    {BOLD}{YELLOW}AWAY{RESET}");
                 if let Some(since) = away_since_str {
-                    println!("{DIM}Away:{RESET}    {since}");
+                    println!("  {DIM}Away:{RESET}    {since}");
                 }
                 if let Some(ref msg) = away_message {
-                    println!("{DIM}Message:{RESET} {msg}");
+                    println!("  {DIM}Message:{RESET} {msg}");
                 }
             } else {
-                println!("{BOLD}{GREEN}Mode:{RESET}    {BOLD}{GREEN}PRESENT{RESET}");
+                println!("  {BOLD}{GREEN}Mode:{RESET}    {BOLD}{GREEN}PRESENT{RESET}");
             }
 
             // ── PENDING DECISIONS ─────────────────────────────────────────────
             let decisions_file = state_dir.join("decisions.json");
             println!();
-            println!("{BOLD}{UNDERLINE}Pending Decisions{RESET}");
+            println!("  {BOLD}{UNDERLINE}Pending Decisions{RESET}");
             if decisions_file.exists() {
                 let content = std::fs::read_to_string(&decisions_file).unwrap_or_default();
                 let decisions: Vec<serde_json::Value> =
                     serde_json::from_str(&content).unwrap_or_default();
                 if decisions.is_empty() {
-                    println!("  {DIM}none{RESET}");
+                    println!("    {DIM}none{RESET}");
                 } else {
-                    println!("  {BOLD}{}{RESET} decision(s) queued", decisions.len());
+                    println!("    {BOLD}{}{RESET} decision(s) queued", decisions.len());
                     for (i, d) in decisions.iter().enumerate() {
                         println!();
                         let pane = d["pane"].as_str().unwrap_or("?");
                         let question = d["question"].as_str().unwrap_or("?");
                         let context = d["context"].as_str().unwrap_or("");
-                        println!("  {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, pane);
-                        println!("      {BOLD}Q:{RESET} {}", question);
+                        println!("    {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, pane);
+                        println!("        {BOLD}Q:{RESET} {}", question);
                         if !context.is_empty() {
-                            println!("      {DIM}Context:{RESET} {}", context);
+                            println!("        {DIM}Context:{RESET} {}", context);
                         }
                     }
                 }
             } else {
-                println!("  {DIM}none{RESET}");
+                println!("    {DIM}none{RESET}");
             }
 
             // ── WORKER HEALTH ─────────────────────────────────────────────────

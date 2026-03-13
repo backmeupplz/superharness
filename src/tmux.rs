@@ -875,6 +875,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
             trimmed.is_empty() || trimmed == "[]" || trimmed == "null"
         };
 
+        let tasks_file_path = tasks_file.to_string_lossy().to_string();
         if !has_state || tasks_empty {
             // Planning mode: prefill the prompt but let the user submit manually.
             (format!(
@@ -884,12 +885,14 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 2. Ask clarifying questions to understand scope, constraints, and priorities. \
                 3. Break the goal down into concrete tasks. \
                 4. Identify which tasks can run in parallel and which depend on each other. \
-                5. Write the resulting tasks to .superharness/tasks.json (create .superharness/ dir if needed). \
+                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed). \
                 6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
                 Be conversational — this is a planning chat, not a form to fill out."
             ), false)
         } else {
             // Resume mode: inject previous context and auto-submit.
+            // Tasks are NOT inlined here — the orchestrator reads them fresh from disk to avoid
+            // working from a stale startup-time snapshot.
             let state_content =
                 std::fs::read_to_string(&state_file).unwrap_or_else(|_| "{}".to_string());
             let decisions_content = if decisions_file.exists() {
@@ -898,10 +901,12 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 "none".to_string()
             };
             (format!(
-                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. Tasks: {}. Decisions pending: {}. \
+                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. \
+                Tasks file: {} — please read this file to see current tasks. \
+                Decisions pending: {}. \
                 Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
                 state_content,
-                tasks_content_raw,
+                tasks_file_path,
                 decisions_content,
             ), true)
         }
