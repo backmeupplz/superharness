@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d0f0e"/>
+      <stop offset="100%" style="stop-color:#111614"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="50%" cy="0%" r="60%">
+      <stop offset="0%" style="stop-color:#e8760a;stop-opacity:0.18"/>
+      <stop offset="100%" style="stop-color:#e8760a;stop-opacity:0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="85%" cy="90%" r="40%">
+      <stop offset="0%" style="stop-color:#39d353;stop-opacity:0.06"/>
+      <stop offset="100%" style="stop-color:#39d353;stop-opacity:0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow1)"/>
+  <rect width="1200" height="630" fill="url(#glow2)"/>
+
+  <!-- Subtle grid lines -->
+  <g opacity="0.04" stroke="#d4d8d5" stroke-width="1">
+    <line x1="0" y1="105" x2="1200" y2="105"/>
+    <line x1="0" y1="210" x2="1200" y2="210"/>
+    <line x1="0" y1="315" x2="1200" y2="315"/>
+    <line x1="0" y1="420" x2="1200" y2="420"/>
+    <line x1="0" y1="525" x2="1200" y2="525"/>
+    <line x1="200" y1="0" x2="200" y2="630"/>
+    <line x1="400" y1="0" x2="400" y2="630"/>
+    <line x1="600" y1="0" x2="600" y2="630"/>
+    <line x1="800" y1="0" x2="800" y2="630"/>
+    <line x1="1000" y1="0" x2="1000" y2="630"/>
+  </g>
+
+  <!-- Terminal window — right side -->
+  <g transform="translate(620, 140)">
+    <!-- Window chrome -->
+    <rect x="0" y="0" width="520" height="330" rx="10" ry="10" fill="#0a0c0b" stroke="#1e2420" stroke-width="1.5"/>
+    <!-- Titlebar -->
+    <rect x="0" y="0" width="520" height="36" rx="10" ry="10" fill="#111413"/>
+    <rect x="0" y="18" width="520" height="18" fill="#111413"/>
+    <circle cx="18" cy="18" r="6" fill="#ff5f57"/>
+    <circle cx="36" cy="18" r="6" fill="#ffbd2e"/>
+    <circle cx="54" cy="18" r="6" fill="#28c840"/>
+    <text x="260" y="23" font-family="monospace" font-size="11" fill="#6b756e" text-anchor="middle">your-project — opencode + superharness</text>
+    <!-- Terminal body -->
+    <text x="20" y="68" font-family="monospace" font-size="13" fill="#39d353">$</text>
+    <text x="34" y="68" font-family="monospace" font-size="13" fill="#eef2ee">superharness</text>
+    <text x="20" y="92" font-family="monospace" font-size="12" fill="#6b756e">  opencode starting — orchestrator mode</text>
+    <text x="20" y="116" font-family="monospace" font-size="12" fill="#6b756e">  [orchestrator] Breaking into 3 workstreams...</text>
+    <text x="20" y="144" font-family="monospace" font-size="12" fill="#e8760a">  [worker-1]</text>
+    <text x="110" y="144" font-family="monospace" font-size="12" fill="#6b756e"> spawned → JWT middleware</text>
+    <text x="20" y="164" font-family="monospace" font-size="12" fill="#e8760a">  [worker-2]</text>
+    <text x="110" y="164" font-family="monospace" font-size="12" fill="#6b756e"> spawned → user endpoints</text>
+    <text x="20" y="184" font-family="monospace" font-size="12" fill="#e8760a">  [worker-3]</text>
+    <text x="110" y="184" font-family="monospace" font-size="12" fill="#6b756e"> spawned → db schemas</text>
+    <text x="20" y="212" font-family="monospace" font-size="12" fill="#6b756e">  [worker-2] allow write to src/routes?</text>
+    <text x="20" y="232" font-family="monospace" font-size="12" fill="#39d353">  [orchestrator] approved ✓</text>
+    <text x="20" y="260" font-family="monospace" font-size="12" fill="#6b756e">  [worker-1] done  ·  [worker-3] done  ·  [worker-2] 80%</text>
+    <text x="20" y="284" font-family="monospace" font-size="12" fill="#39d353">  [orchestrator] all workers finished — cleaning up</text>
+    <!-- Cursor blink -->
+    <rect x="20" y="302" width="8" height="14" fill="#e8760a" opacity="0.8"/>
+  </g>
+
+  <!-- Left side: wordmark + tagline -->
+  <!-- Logo wordmark -->
+  <text x="80" y="220" font-family="'Fira Code', 'Courier New', monospace" font-size="72" font-weight="700" fill="#eef2ee" letter-spacing="-2">super</text>
+  <text x="80" y="300" font-family="'Fira Code', 'Courier New', monospace" font-size="72" font-weight="700" fill="#e8760a" letter-spacing="-2">harness</text>
+
+  <!-- Tagline -->
+  <text x="80" y="360" font-family="system-ui, -apple-system, sans-serif" font-size="22" fill="#6b756e" letter-spacing="0">Give opencode a team.</text>
+
+  <!-- Divider -->
+  <line x1="80" y1="395" x2="390" y2="395" stroke="#1e2420" stroke-width="1.5"/>
+
+  <!-- Three pills -->
+  <!-- Run superharness -->
+  <rect x="80" y="415" width="220" height="36" rx="18" fill="rgba(232,118,10,0.1)" stroke="rgba(232,118,10,0.3)" stroke-width="1"/>
+  <text x="190" y="438" font-family="'Fira Code','Courier New',monospace" font-size="14" fill="#e8760a" text-anchor="middle">$ superharness</text>
+
+  <!-- Parallel workers -->
+  <rect x="80" y="462" width="220" height="36" rx="18" fill="rgba(57,211,83,0.06)" stroke="rgba(57,211,83,0.2)" stroke-width="1"/>
+  <text x="190" y="485" font-family="system-ui,-apple-system,sans-serif" font-size="13" fill="#39d353" text-anchor="middle">parallel workers spawn</text>
+
+  <!-- Opencode -->
+  <rect x="80" y="509" width="220" height="36" rx="18" fill="rgba(255,255,255,0.03)" stroke="#1e2420" stroke-width="1"/>
+  <text x="190" y="532" font-family="system-ui,-apple-system,sans-serif" font-size="13" fill="#6b756e" text-anchor="middle">built on opencode</text>
+
+  <!-- Domain -->
+  <text x="80" y="595" font-family="'Fira Code','Courier New',monospace" font-size="15" fill="#6b756e">superharness.dev</text>
+
+  <!-- Border -->
+  <rect x="2" y="2" width="1196" height="626" rx="0" fill="none" stroke="#1e2420" stroke-width="2"/>
+</svg>
