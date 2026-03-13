@@ -19,6 +19,23 @@ superharness wraps [opencode](https://opencode.ai) and tmux into a self-managing
 - **Checkpoints** — snapshot any pane's output and resume it later with a fresh worker
 - **Per-pane memory** — store structured key-value facts across a session for any pane
 
+## Demo
+
+```
+$ superharness
+# Opens tmux session. You are the orchestrator in pane %0.
+
+$ superharness spawn --task "Refactor auth module" --dir /tmp/w1 --model anthropic/claude-sonnet-4-6
+# => { "pane": "%1" }  — worker running in isolated git worktree
+
+$ superharness workers
+# %1  [build]  ACTIVE   /tmp/w1   "Refactor auth module"
+# %2  [plan]   IDLE     /tmp/w2   "Audit test coverage"
+
+$ superharness watch
+# Auto-managing all panes: approving safe prompts, nudging stalls, cleaning finished workers...
+```
+
 ## Install
 
 ```bash
@@ -84,14 +101,22 @@ superharness send --pane %23 --text "y"
 | `superharness` | Initialize and open tmux session |
 | `spawn` | Create a new worker pane |
 | `list` | List all active panes (JSON) |
+| `workers` | List workers in human-readable format (F4 popup) |
+| `status-human` | Human-readable status + worker health (F3 popup) |
 | `read --pane %ID` | Read recent output from a pane |
 | `send --pane %ID --text "..."` | Send input to a pane |
+| `ask --pane %ID` | Detect if a worker is asking a question |
 | `kill --pane %ID` | Kill a pane |
 | `hide / show` | Move pane to background tab or surface it |
 | `resize / layout` | Adjust pane geometry |
+| `compact` | Move small/excess panes to background tabs |
+| `surface --pane %ID` | Bring a background pane back to main window |
+| `git-check --dir /path` | Verify repo is clean before creating a worktree |
+| `respawn --pane %ID` | Kill crashed worker and respawn with crash context |
 | `tasks` | List pending (dependency-gated) tasks |
 | `run-pending` | Spawn tasks whose dependencies have finished |
 | `monitor` | Continuous stall detection and auto-recovery |
+| `watch` | Auto follow-up loop: cleanup done panes, approve safe prompts, nudge stalled panes |
 | `healthcheck` | One-shot structured health snapshot |
 | `away / present` | Toggle human-watching mode |
 | `status` | Show current mode and queued decisions |
@@ -108,4 +133,6 @@ superharness send --pane %23 --text "y"
 
 MIT — see [LICENSE](LICENSE)
 
-[superharness.dev](https://superharness.dev)
+---
+
+Website: [superharness.dev](https://superharness.dev) · GitHub: [backmeupplz/superharness](https://github.com/backmeupplz/superharness)

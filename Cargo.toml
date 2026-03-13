@@ -2,7 +2,7 @@
 name = "superharness"
 version = "0.2.0"
 edition = "2024"
-description = "CLI tools for AI agent orchestration via tmux"
+description = "Autonomous multi-agent orchestrator for AI coding agents via tmux"
 license = "MIT"
 repository = "https://github.com/backmeupplz/superharness"
 
