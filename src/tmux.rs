@@ -258,12 +258,18 @@ const PANE_COLOR_HEX: &[&str] = &[
 ];
 
 /// Spawn a new opencode worker as a pane in the superharness window.
+///
+/// When `no_hide` is `false` (the default), the new pane is immediately moved
+/// to its own background tmux tab named after `name` (or a short task snippet)
+/// so it does not clutter the main orchestrator window.
+/// Pass `no_hide = true` to keep the pane visible in the main window.
 pub fn spawn(
     task: &str,
     dir: &str,
     name: Option<&str>,
     model: Option<&str>,
     mode: Option<&str>,
+    no_hide: bool,
 ) -> Result<String> {
     ensure_session()?;
 
@@ -335,11 +341,31 @@ pub fn spawn(
     let style = format!("bg={color_hex}");
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
-    // Smart layout so panes stay usable
-    let _ = smart_layout();
-
-    // Auto-compact: if the main window has too many worker panes, move excess to background
-    let _ = auto_compact();
+    if no_hide {
+        // Keep pane in main window — apply smart layout and auto-compact as before.
+        let _ = smart_layout();
+        let _ = auto_compact();
+    } else {
+        // Immediately move the new pane to its own background tab so it never
+        // appears in the main orchestrator window.  The tab is named after the
+        // worker's --name argument; if no name was given, use the first 20
+        // characters of the task as a fallback label.
+        let tab_name: String = match name {
+            Some(n) if !n.is_empty() => n.chars().take(20).collect(),
+            _ => {
+                let s: String = task.chars().take(20).collect();
+                s.trim().to_string()
+            }
+        };
+        let tab_name = if tab_name.is_empty() {
+            "worker".to_string()
+        } else {
+            tab_name
+        };
+        let _ = tmux_ok(&["break-pane", "-t", &pane_id, "-d", "-n", &tab_name]);
+        // Re-balance the main window now that the new pane is gone from it.
+        let _ = smart_layout();
+    }
 
     Ok(pane_id)
 }
@@ -435,6 +461,12 @@ pub fn show(pane: &str, split: &str) -> Result<()> {
 /// Equivalent to `show(pane, "h")`.
 pub fn surface(pane: &str) -> Result<()> {
     show(pane, "h")
+}
+
+/// Select window 0 (the main orchestrator window) so that %0 is visible
+/// after a worker finishes or is cleaned up.
+pub fn select_orchestrator() -> Result<()> {
+    tmux_ok(&["select-window", "-t", &format!("{SESSION}:0")])
 }
 
 /// Auto-compact the main window: if more than 4 worker panes are visible,
