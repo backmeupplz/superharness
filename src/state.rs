@@ -21,6 +21,32 @@ impl std::fmt::Display for Mode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreAuth {
+    /// Auto-approve file edits inside worker directories (default: true)
+    pub auto_approve_file_edits: bool,
+    /// Auto-approve git commits and branch operations (default: true)
+    pub auto_approve_git_commits: bool,
+    /// Auto-approve running builds and tests (default: true)
+    pub auto_approve_builds_tests: bool,
+    /// Queue decisions about architecture/design choices (default: true)
+    pub flag_architecture_decisions: bool,
+    /// Queue decisions about destructive operations — rm, force push, etc. (default: true)
+    pub flag_destructive_operations: bool,
+}
+
+impl Default for PreAuth {
+    fn default() -> Self {
+        Self {
+            auto_approve_file_edits: true,
+            auto_approve_git_commits: true,
+            auto_approve_builds_tests: true,
+            flag_architecture_decisions: true,
+            flag_destructive_operations: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingDecision {
     pub id: String,
     pub pane: String,
@@ -35,6 +61,8 @@ pub struct State {
     pub away_since: Option<u64>,
     pub away_message: Option<String>,
     pub pending_decisions: Vec<PendingDecision>,
+    #[serde(default)]
+    pub pre_auth: Option<PreAuth>,
 }
 
 impl Default for State {
@@ -44,6 +72,7 @@ impl Default for State {
             away_since: None,
             away_message: None,
             pending_decisions: Vec::new(),
+            pre_auth: None,
         }
     }
 }
@@ -84,20 +113,32 @@ impl StateManager {
         Ok(self.load()?.mode)
     }
 
-    pub fn set_mode(&self, mode: Mode, message: Option<&str>) -> Result<()> {
+    pub fn set_mode(
+        &self,
+        mode: Mode,
+        message: Option<&str>,
+        pre_auth: Option<PreAuth>,
+    ) -> Result<()> {
         let mut state = self.load()?;
         match &mode {
             Mode::Away => {
                 state.away_since = Some(now_unix());
                 state.away_message = message.map(|s| s.to_string());
+                state.pre_auth = pre_auth;
             }
             Mode::Present => {
                 state.away_since = None;
                 state.away_message = None;
+                state.pre_auth = None;
             }
         }
         state.mode = mode;
         self.save(&state)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_pre_auth(&self) -> Result<Option<PreAuth>> {
+        Ok(self.load()?.pre_auth)
     }
 
     pub fn add_pending_decision(

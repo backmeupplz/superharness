@@ -159,6 +159,10 @@ enum Command {
         /// Optional message describing why you're going away or what to watch for
         #[arg(short, long)]
         message: Option<String>,
+
+        /// Skip the interactive pre-authorization questions and use all defaults
+        #[arg(short = 's', long)]
+        skip_questions: bool,
     },
 
     /// Return to present mode (human is back)
@@ -669,22 +673,86 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
 
-        Some(Command::Away { message }) => {
+        Some(Command::Away {
+            message,
+            skip_questions,
+        }) => {
+            use std::io::IsTerminal;
+            use std::io::{self, BufRead, Write};
+
+            let pre_auth = if !skip_questions && io::stdin().is_terminal() {
+                // Helper: prompt a single [Y/n] question and return the boolean result.
+                // An empty answer or 'y'/'Y' means "yes" (default); 'n'/'N' means "no".
+                fn ask_yn(prompt: &str, default: bool) -> bool {
+                    print!("{}", prompt);
+                    let _ = io::stdout().flush();
+                    let stdin = io::stdin();
+                    let mut line = String::new();
+                    if stdin.lock().read_line(&mut line).is_err() {
+                        return default;
+                    }
+                    match line.trim().to_lowercase().as_str() {
+                        "n" | "no" => false,
+                        "y" | "yes" | "" => true,
+                        _ => default,
+                    }
+                }
+
+                println!();
+                println!("Configure auto-approval for while you're away (Enter = keep default):");
+                println!();
+
+                let auto_approve_file_edits = ask_yn(
+                    "  Auto-approve file edits in worker directories? [Y/n]: ",
+                    true,
+                );
+                let auto_approve_git_commits = ask_yn(
+                    "  Auto-approve git commits and branch operations? [Y/n]: ",
+                    true,
+                );
+                let auto_approve_builds_tests =
+                    ask_yn("  Auto-approve running builds and tests? [Y/n]: ", true);
+                let flag_architecture_decisions = ask_yn(
+                    "  Queue decisions about architecture/design choices? [Y/n]: ",
+                    true,
+                );
+                let flag_destructive_operations = ask_yn(
+                    "  Queue decisions about destructive operations (rm, force push)? [Y/n]: ",
+                    true,
+                );
+                println!();
+
+                state::PreAuth {
+                    auto_approve_file_edits,
+                    auto_approve_git_commits,
+                    auto_approve_builds_tests,
+                    flag_architecture_decisions,
+                    flag_destructive_operations,
+                }
+            } else {
+                // Not a TTY or --skip-questions: silently use all defaults.
+                state::PreAuth::default()
+            };
+
             let sm = StateManager::new()?;
-            sm.set_mode(state::Mode::Away, message.as_deref())?;
+            sm.set_mode(
+                state::Mode::Away,
+                message.as_deref(),
+                Some(pre_auth.clone()),
+            )?;
             let pending = sm.get_pending_decisions()?;
             let out = serde_json::json!({
                 "mode": "away",
                 "message": message,
                 "pending_decisions": pending.len(),
-                "checklist": [
-                    "Should workers queue architecture decisions?",
-                    "Should workers queue dependency/library choices?",
-                    "Should workers queue breaking API changes?",
-                    "Should workers queue security-sensitive operations?",
-                    "Should workers queue destructive file operations?"
-                ],
-                "note": "Workers will queue critical decisions instead of auto-deciding. Run 'status' when you return."
+                "pre_auth": {
+                    "auto_approve_file_edits": pre_auth.auto_approve_file_edits,
+                    "auto_approve_git_commits": pre_auth.auto_approve_git_commits,
+                    "auto_approve_builds_tests": pre_auth.auto_approve_builds_tests,
+                    "flag_architecture_decisions": pre_auth.flag_architecture_decisions,
+                    "flag_destructive_operations": pre_auth.flag_destructive_operations,
+                },
+                "note": "Workers will use these pre-auth settings. Run 'status' when you return."
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -692,7 +760,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Present) => {
             let sm = StateManager::new()?;
             let pending = sm.get_pending_decisions()?;
-            sm.set_mode(state::Mode::Present, None)?;
+            sm.set_mode(state::Mode::Present, None, None)?;
             let out = serde_json::json!({
                 "mode": "present",
                 "pending_decisions": pending,
