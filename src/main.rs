@@ -517,6 +517,12 @@ enum Command {
         /// Harness name to switch to: opencode, claude, or codex
         name: String,
     },
+
+    /// Print the event log in human-readable colorized format (oldest-first, last 200 events)
+    EventFeed,
+
+    /// Show orchestrator tasks from .superharness/tasks.json grouped by status
+    TasksModal,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1864,6 +1870,182 @@ fn main() -> anyhow::Result<()> {
             harness::set_default_harness(&config_dir, &name)?;
             println!("Harness switched to: {name}");
             println!("Workers spawned from now on will use '{name}'.");
+        }
+
+        Some(Command::EventFeed) => {
+            // ANSI helpers
+            const RESET: &str = "\x1b[0m";
+            const BOLD: &str = "\x1b[1m";
+            const DIM: &str = "\x1b[2m";
+            const GREEN: &str = "\x1b[32m";
+            const RED: &str = "\x1b[31m";
+            const YELLOW: &str = "\x1b[33m";
+            const CYAN: &str = "\x1b[36m";
+
+            let state_dir = project::get_project_state_dir()?;
+            let events_path = state_dir.join("events.json");
+
+            let all_events = events::load_events().unwrap_or_default();
+            // Show last 200 events in chronological order (oldest first)
+            let start = all_events.len().saturating_sub(200);
+            let events = &all_events[start..];
+
+            println!();
+            println!(
+                "  {BOLD}Event Log:{RESET} {}  {DIM}({} total, showing last {}){RESET}",
+                events_path.display(),
+                all_events.len(),
+                events.len()
+            );
+            println!();
+
+            if events.is_empty() {
+                println!("  {DIM}No events recorded yet.{RESET}");
+            } else {
+                for ev in events {
+                    let secs = ev.timestamp;
+                    let h = (secs % 86400) / 3600;
+                    let m = (secs % 3600) / 60;
+                    let s = secs % 60;
+                    let time_str = format!("{h:02}:{m:02}:{s:02}");
+
+                    let (color, kind_str) = match &ev.kind {
+                        events::EventKind::WorkerSpawned => (GREEN, format!("{}", ev.kind)),
+                        events::EventKind::WorkerKilled => (RED, format!("{}", ev.kind)),
+                        events::EventKind::WorkerCompleted => (CYAN, format!("{}", ev.kind)),
+                        events::EventKind::Pulse => (DIM, format!("{}", ev.kind)),
+                        _ => (YELLOW, format!("{}", ev.kind)),
+                    };
+
+                    let pane_str = ev
+                        .pane
+                        .as_deref()
+                        .map(|p| format!("  {DIM}{p}{RESET}"))
+                        .unwrap_or_default();
+
+                    let details = &ev.details;
+
+                    println!(
+                        "  {DIM}[{time_str}]{RESET}  {color}{kind_str:<20}{RESET}{pane_str}  {details}"
+                    );
+                }
+            }
+            println!();
+        }
+
+        Some(Command::TasksModal) => {
+            // ANSI helpers
+            const RESET: &str = "\x1b[0m";
+            const BOLD: &str = "\x1b[1m";
+            const DIM: &str = "\x1b[2m";
+            const UNDERLINE: &str = "\x1b[4m";
+            const GREEN: &str = "\x1b[32m";
+            const RED: &str = "\x1b[31m";
+            const YELLOW: &str = "\x1b[33m";
+
+            #[derive(serde::Deserialize)]
+            struct OrchestratorTask {
+                id: String,
+                title: String,
+                #[serde(default)]
+                description: String,
+                status: String,
+                #[serde(default)]
+                priority: String,
+                #[serde(default)]
+                worker_pane: Option<String>,
+            }
+
+            let state_dir = project::get_project_state_dir()?;
+            let tasks_path = state_dir.join("tasks.json");
+
+            let tasks: Vec<OrchestratorTask> = if tasks_path.exists() {
+                let content = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+                serde_json::from_str(&content).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            // Count per status
+            let count_in_progress = tasks.iter().filter(|t| t.status == "in-progress").count();
+            let count_pending = tasks.iter().filter(|t| t.status == "pending").count();
+            let count_blocked = tasks.iter().filter(|t| t.status == "blocked").count();
+            let count_done = tasks.iter().filter(|t| t.status == "done").count();
+            let count_cancelled = tasks.iter().filter(|t| t.status == "cancelled").count();
+
+            println!();
+            println!(
+                "  {BOLD}Tasks:{RESET} {}  {DIM}| in-progress:{} pending:{} blocked:{} done:{} cancelled:{}{RESET}",
+                tasks.len(),
+                count_in_progress,
+                count_pending,
+                count_blocked,
+                count_done,
+                count_cancelled,
+            );
+            println!("  {DIM}{}{RESET}", "─".repeat(72));
+            println!();
+
+            if tasks.is_empty() {
+                println!("  {DIM}No tasks found in {}{RESET}", tasks_path.display());
+                println!();
+                // Done
+            } else {
+                // Order: in-progress, pending, blocked, done, cancelled
+                let status_order = ["in-progress", "pending", "blocked", "done", "cancelled"];
+
+                for status_key in &status_order {
+                    let group: Vec<&OrchestratorTask> =
+                        tasks.iter().filter(|t| t.status == *status_key).collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+
+                    let (color, label) = match *status_key {
+                        "in-progress" => (GREEN, "IN-PROGRESS"),
+                        "pending" => (YELLOW, "PENDING"),
+                        "blocked" => (RED, "BLOCKED"),
+                        "done" => (DIM, "DONE"),
+                        "cancelled" => (DIM, "CANCELLED"),
+                        _ => ("\x1b[0m", *status_key),
+                    };
+
+                    println!("  {BOLD}{UNDERLINE}{color}{label}{RESET}");
+                    println!();
+
+                    for task in &group {
+                        let priority_badge = match task.priority.as_str() {
+                            "high" => format!("{RED}[HIGH]{RESET} "),
+                            "medium" => format!("{YELLOW}[MED]{RESET}  "),
+                            "low" => format!("{DIM}[LOW]{RESET}  "),
+                            _ => String::new(),
+                        };
+
+                        let desc_preview: String = task.description.chars().take(80).collect();
+                        let desc_suffix = if task.description.len() > 80 {
+                            "…"
+                        } else {
+                            ""
+                        };
+
+                        let pane_str = task
+                            .worker_pane
+                            .as_deref()
+                            .map(|p| format!("  {DIM}pane:{p}{RESET}"))
+                            .unwrap_or_default();
+
+                        println!(
+                            "  {color}[{label}]{RESET} {priority_badge}{BOLD}{}{RESET}{pane_str}",
+                            task.title
+                        );
+                        if !desc_preview.is_empty() {
+                            println!("    {DIM}{}{}{RESET}", desc_preview, desc_suffix);
+                        }
+                        println!("    {DIM}id: {}{RESET}", task.id);
+                        println!();
+                    }
+                }
+            }
         }
     }
 
