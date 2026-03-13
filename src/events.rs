@@ -9,6 +9,7 @@ use crate::project;
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     WorkerSpawned,
+    WorkerCompleted,
     WorkerKilled,
     WorkerStalled,
     WorkerRecovered,
@@ -22,6 +23,7 @@ impl std::fmt::Display for EventKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             EventKind::WorkerSpawned => "WorkerSpawned",
+            EventKind::WorkerCompleted => "WorkerCompleted",
             EventKind::WorkerKilled => "WorkerKilled",
             EventKind::WorkerStalled => "WorkerStalled",
             EventKind::WorkerRecovered => "WorkerRecovered",

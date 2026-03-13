@@ -332,6 +332,18 @@ pub fn send_raw(pane: &str, _text: &str) -> Result<()> {
     tmux_ok(&["send-keys", "-t", pane, "Enter"])
 }
 
+/// Flash a notification message in the tmux status bar for 6 seconds.
+pub fn flash_notification(msg: &str) -> Result<()> {
+    tmux_ok(&[
+        "display-message",
+        "-t",
+        SESSION,
+        "-d",
+        "6000",
+        msg,
+    ])
+}
+
 #[derive(Serialize)]
 pub struct PaneInfo {
     pub id: String,

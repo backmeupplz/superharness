@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::events;
 use crate::health::{classify_pane, HealthStatus};
 use crate::monitor::load_state;
 use crate::pending_tasks;
@@ -289,6 +290,10 @@ fn handle_done(pane_id: &str) -> PaneAction {
                 )
             };
 
+            let _ = tmux::flash_notification(&format!("✓ Worker {pane_id} done"));
+            let _ = pulse(true);
+            let _ = events::log_event(events::EventKind::WorkerCompleted, Some(pane_id), &detail);
+
             PaneAction {
                 pane: pane_id.to_string(),
                 status: "done".to_string(),
@@ -354,6 +359,7 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
         1 => {
             let msg = "please continue";
             let _ = tmux::send(pane_id, msg);
+            let _ = tmux::flash_notification(&format!("⚠ Worker {pane_id} stalled — nudging"));
             PaneAction {
                 pane: pane_id.to_string(),
                 status: "stalled".to_string(),
