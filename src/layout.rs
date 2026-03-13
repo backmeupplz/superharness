@@ -27,6 +27,7 @@ const SESSION: &str = "superharness";
 
 /// Per-pane metadata used by the layout engine to make sizing decisions.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PaneLayout {
     /// Tmux pane ID (e.g. `"%3"`).
     pub id: String,
@@ -100,7 +101,7 @@ impl LayoutEngine {
 // ---------------------------------------------------------------------------
 
 /// Choose a [`LayoutStrategy`] based on pane count and terminal width.
-pub fn choose_strategy(pane_count: usize, term_width: u32, _term_height: u32) -> LayoutStrategy {
+pub fn choose_strategy(pane_count: usize, _term_width: u32, _term_height: u32) -> LayoutStrategy {
     match pane_count {
         0 | 1 => LayoutStrategy::Single,
         2 => LayoutStrategy::SideBySide,
