@@ -1,0 +1,9 @@
+superharness (0.2.0-1) noble; urgency=low
+
+  * Initial release.
+  * Autonomous multi-agent orchestrator for AI coding agents via tmux.
+  * Features: spawn/read/send worker panes, git worktree isolation,
+    task dependencies, loop detection, health monitoring, away mode,
+    checkpoint/resume, and Homebrew/AUR/PPA publishing infrastructure.
+
+ -- Nikita Kolmogorov <ubuntu@borodutch.com>  Thu, 13 Mar 2026 00:00:00 +0000
