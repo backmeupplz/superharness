@@ -349,6 +349,7 @@ fn handle_done(pane_id: &str) -> PaneAction {
                         t.name.as_deref(),
                         t.model.as_deref(),
                         t.mode.as_deref(),
+                        false, // auto-hide by default
                     ) {
                         Ok(new_pane) => {
                             let _ = pending_tasks::remove_task(&t.id);
@@ -370,6 +371,8 @@ fn handle_done(pane_id: &str) -> PaneAction {
 
             let _ = tmux::flash_notification(&format!("✓ Worker {pane_id} done"));
             let _ = pulse(true);
+            // Surface the orchestrator window so the user sees %0 after a worker finishes.
+            let _ = tmux::select_orchestrator();
             let _ = events::log_event(events::EventKind::WorkerCompleted, Some(pane_id), &detail);
 
             PaneAction {
