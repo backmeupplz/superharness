@@ -404,6 +404,7 @@ fn handle_done(pane_id: &str) -> PaneAction {
                         &t.dir,
                         t.name.as_deref(),
                         t.model.as_deref(),
+                        t.harness.as_deref(),
                         t.mode.as_deref(),
                         false, // auto-hide by default
                     ) {

@@ -55,6 +55,11 @@ enum Command {
         #[arg(short, long)]
         model: Option<String>,
 
+        /// AI harness to use for this worker (opencode, claude, or codex).
+        /// Overrides the configured default for this single spawn only.
+        #[arg(long)]
+        harness: Option<String>,
+
         /// Agent mode: build (default, full access) or plan (read-only planning)
         #[arg(long, default_value = "build")]
         mode: Option<String>,
@@ -518,6 +523,13 @@ enum Command {
         name: String,
     },
 
+    /// Open an interactive settings popup: view current harness/model and switch harness
+    ///
+    /// Shows the configured default harness and model, then presents an arrow-key
+    /// picker to change the default harness.  Writes the new choice to
+    /// ~/.config/superharness/config.json.  Bound to F2 in the tmux status bar.
+    HarnessSettings,
+
     /// Print the event log in human-readable colorized format (oldest-first, last 200 events)
     EventFeed,
 
@@ -549,6 +561,7 @@ fn main() -> anyhow::Result<()> {
             dir,
             name,
             model,
+            harness,
             mode,
             depends_on,
             no_hide,
@@ -620,6 +633,7 @@ fn main() -> anyhow::Result<()> {
                     model.as_deref(),
                     mode.as_deref(),
                     name.as_deref(),
+                    harness.as_deref(),
                     deps.clone(),
                 )?;
                 let out = serde_json::json!({
@@ -635,6 +649,7 @@ fn main() -> anyhow::Result<()> {
                     &dir,
                     name.as_deref(),
                     model.as_deref(),
+                    harness.as_deref(),
                     mode.as_deref(),
                     no_hide,
                 )?;
@@ -701,6 +716,7 @@ fn main() -> anyhow::Result<()> {
                     &t.dir,
                     t.name.as_deref(),
                     t.model.as_deref(),
+                    t.harness.as_deref(),
                     t.mode.as_deref(),
                     false, // show in main window (default)
                 ) {
@@ -1206,6 +1222,7 @@ fn main() -> anyhow::Result<()> {
                 &dir,
                 Some(&name),
                 model.as_deref(),
+                None, // use default harness for resumed worker
                 Some("build"),
                 false, // show in main window (default)
             )?;
@@ -1380,6 +1397,7 @@ fn main() -> anyhow::Result<()> {
                 &dir,
                 None,
                 model.as_deref(),
+                None, // use default harness for respawned worker
                 mode.as_deref(),
                 false, // show in main window (default)
             )?;
@@ -1875,6 +1893,75 @@ fn main() -> anyhow::Result<()> {
             harness::set_default_harness(&config_dir, &name)?;
             println!("Harness switched to: {name}");
             println!("Workers spawned from now on will use '{name}'.");
+        }
+
+        Some(Command::HarnessSettings) => {
+            use std::io::{self, Write};
+
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("superharness");
+
+            let current_harness = harness::get_default_harness(&config_dir);
+            let current_model = harness::get_default_model(&config_dir);
+
+            // ── Show current settings ────────────────────────────────────────
+            println!();
+            println!("  \x1b[1mSuperHarness Settings\x1b[0m");
+            println!("  {}", "─".repeat(50));
+            println!();
+            let harness_display = current_harness.as_deref().unwrap_or("(auto-detected)");
+            let model_display = current_model.as_deref().unwrap_or("(none set)");
+            println!("  Current harness : \x1b[1;32m{harness_display}\x1b[0m");
+            println!("  Current model   : \x1b[1;33m{model_display}\x1b[0m");
+            println!();
+            println!("  \x1b[2mChange harness (↑↓ move, Enter select, q cancel):\x1b[0m");
+            println!();
+            io::stdout().flush().ok();
+
+            // Collect ALL candidates (installed or not) so user can see the full list.
+            let candidates: Vec<harness::HarnessInfo> = harness::detect_all_candidates();
+
+            match harness::run_interactive_picker(&candidates, current_harness.as_deref()) {
+                Ok(Some(chosen)) => match harness::set_default_harness(&config_dir, &chosen) {
+                    Ok(()) => {
+                        println!(
+                                "  \x1b[1;32m\u{2713}\x1b[0m Default harness set to: \x1b[1m{chosen}\x1b[0m"
+                            );
+                    }
+                    Err(e) => {
+                        eprintln!("  error: could not save config: {e}");
+                    }
+                },
+                Ok(None) => {
+                    println!("  No changes made.");
+                }
+                Err(e) => {
+                    eprintln!("  picker error: {e}");
+                }
+            }
+
+            println!();
+            print!("  Press any key to close...");
+            io::stdout().flush().ok();
+            // Brief raw-mode read so the popup stays open until keypress.
+            {
+                use crossterm::{
+                    event::{self},
+                    terminal,
+                };
+                let _ = terminal::enable_raw_mode();
+                loop {
+                    if let Ok(true) = event::poll(std::time::Duration::from_secs(60)) {
+                        let _ = event::read();
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+                let _ = terminal::disable_raw_mode();
+            }
+            println!();
         }
 
         Some(Command::EventFeed) => {
