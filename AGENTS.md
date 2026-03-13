@@ -833,12 +833,11 @@ superharness relay --pane $PANE_ID --question '' --wait-for "$RELAY_ID"
 /home/borodutch/code/superharness/target/debug/superharness relay-list | jq '.requests[] | select(.pane == "%5")'
 ```
 
-The `watch` loop automatically detects pending relay requests, surfaces the relevant worker pane, and sends a `[RELAY REQUEST]` notification to `%0`. You should:
-1. See the `[RELAY REQUEST]` message arrive in your pane.
-2. Inspect the question and context.
-3. If it's a credential: obtain it from the human and answer with `relay-answer`.
-4. If it's a question you can answer yourself: answer directly.
-5. If in away mode: queue the decision in `.superharness/decisions.json` instead.
+When a worker creates a relay request, check for it with `relay-list --pending` and surface the relevant worker pane so the human can see it. You should:
+1. Inspect the question and context.
+2. If it's a credential: obtain it from the human and answer with `relay-answer`.
+3. If it's a question you can answer yourself: answer directly.
+4. If in away mode: queue the decision in `.superharness/decisions.json` instead.
 
 ### Key rules
 
@@ -870,9 +869,8 @@ The `respawn` command:
 
 SuperHarness is **event-driven** — you never need to `sleep N` or poll. Instead:
 
-- **Workers trigger immediate heartbeat** with `/home/borodutch/code/superharness/target/debug/superharness heartbeat` when they finish, waking the orchestrator without waiting for the 30-second cycle.
+- **Workers trigger immediate heartbeat** with `/home/borodutch/code/superharness/target/debug/superharness heartbeat` when they finish, waking the orchestrator immediately.
 - **The kill command auto-triggers heartbeat** — whenever you run `/home/borodutch/code/superharness/target/debug/superharness kill --pane %ID`, a heartbeat is automatically triggered.
-- **The heartbeat fires every 30 seconds** as a fallback, ensuring `%0` always wakes up even if no events arrive.
 - **Snooze** with `/home/borodutch/code/superharness/target/debug/superharness heartbeat --snooze N` to suppress heartbeats for N seconds while you are busy processing.
 
 **IMPORTANT: Never use `sleep` commands.** Do not use `sleep N` or any polling loops. The heartbeat mechanism handles all timing automatically.
@@ -892,7 +890,6 @@ This triggers an immediate heartbeat so the orchestrator wakes up and processes 
 |---|---|
 | Worker finishes task | Worker runs `heartbeat` → `[HEARTBEAT]` in %0 |
 | Worker killed | `kill` auto-triggers heartbeat → `[HEARTBEAT]` in %0 |
-| Heartbeat (fallback) | Every 30s → `[HEARTBEAT]` in %0 (if not snoozed/toggled off) |
 
 ## Detecting Finished Workers
 
@@ -1221,62 +1218,11 @@ git worktree remove /tmp/worker-1
 /home/borodutch/code/superharness/target/debug/superharness run-pending   # may spawn tasks that depended on %23
 ```
 
-## Autonomous Monitoring
-
-The `monitor` subcommand watches panes for stalls and attempts automatic recovery so you can focus on orchestration rather than babysitting workers.
-
-```bash
-/home/borodutch/code/superharness/target/debug/superharness monitor                                        # monitor all panes (60s interval, stall after 3 unchanged checks)
-/home/borodutch/code/superharness/target/debug/superharness monitor --pane %23                             # monitor a specific pane only
-/home/borodutch/code/superharness/target/debug/superharness monitor --interval 30                          # check every 30 seconds
-/home/borodutch/code/superharness/target/debug/superharness monitor --stall-threshold 5                    # require 5 unchanged checks before acting
-/home/borodutch/code/superharness/target/debug/superharness monitor --interval 45 --stall-threshold 4      # combine options
-```
-
-### How it works
-
-1. Every `--interval` seconds, the monitor reads each pane's output.
-2. It hashes the output and compares it to the previous check.
-3. If output is **unchanged** for `--stall-threshold` consecutive checks **and** doesn't end with a shell prompt or completion marker, the pane is considered **stalled**.
-4. Recovery attempts are made in order:
-   - **Attempt 1**: Send a bare `Enter` keypress (wakes up many blocked prompts)
-   - **Attempt 2**: Send `continue`
-   - **Attempt 3**: Send `please continue with the task`
-   - **Attempt 4+**: Log that the pane needs human attention
-
-Monitor state (stall counts, output hashes, recovery attempts) is persisted in `~/.local/share/superharness/monitor_state.json` so it survives restarts.
-
-### When to use it
-
-- **Long-running tasks**: Start `monitor` in a separate pane when workers will run for hours.
-- **Unattended runs**: Use it when you step away so workers don't silently block on prompts.
-- **Background supervision**: Run it with `--interval 120` for low-overhead continuous oversight.
-
-## Auto-Watch
-
-The `watch` subcommand is a higher-level supervisor that auto-manages all panes — approving safe permission prompts, sending follow-up messages, and cleaning up finished workers without manual intervention.
-
-```bash
-/home/borodutch/code/superharness/target/debug/superharness watch                   # auto-manage all panes (default 60s interval)
-/home/borodutch/code/superharness/target/debug/superharness watch --interval 30     # check every 30 seconds
-/home/borodutch/code/superharness/target/debug/superharness watch --pane %ID        # watch a specific pane only
-```
-
-Use `watch` when you want fully hands-off supervision: it combines health checking, permission approval, and cleanup into a single long-running command. For finer control or away-mode use, prefer `monitor` + manual `send`/`kill`.
-
-The watch loop also sends a periodic `[PULSE]` digest to the orchestrator pane (%0) when workers need attention. Orchestrators should respond to `[PULSE]` messages by checking the named panes.
-
-You can also trigger a pulse manually at any time:
-
-```bash
-/home/borodutch/code/superharness/target/debug/superharness pulse   # send [PULSE] digest to %0 right now
-```
-
 ## Model Preferences
 
 The user has configured model preferences. Follow these when spawning workers unless the task genuinely requires something different (e.g. a vision-specific model).
 
-**Default model:** `anthropic/claude-sonnet-4-6`
+**Default model:** `anthropic/claude-opus-4-6`
 
 **Provider routing rule:** For anthropic/* models always use the 'anthropic' provider (Max subscription, not API key). For kimi-k2.5 always use fireworks-ai provider.
 
@@ -1285,10 +1231,13 @@ The user has configured model preferences. Follow these when spawning workers un
 - fireworks-ai
 
 **Preferred models** (use these by default):
-- `anthropic/claude-sonnet-4-6`
 - `anthropic/claude-opus-4-6`
+- `anthropic/claude-sonnet-4-6`
 - `anthropic/claude-haiku-4-5`
 - `fireworks-ai/accounts/fireworks/models/kimi-k2p5`
 
 
+
+
 $TASK
+
