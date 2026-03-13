@@ -604,36 +604,76 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // ── Fix 1: Auto-start watch daemon ───────────────────────────────
+            // ── Auto-start watch daemon (with stale-binary restart) ──────────
             // Spawn `superharness watch --interval 30` as a background daemon
             // so the heartbeat state file is kept up-to-date while the session
-            // runs. A PID lock file prevents duplicate watch loops.
+            // runs.
+            //
+            // The PID file is now JSON: {"pid": N, "bin_mtime": M}
+            // On each init we compare the stored bin_mtime against the current
+            // binary's mtime.  If the binary is newer, the old daemon is killed
+            // and a fresh one is spawned — preventing stale binaries from
+            // overwriting heartbeat_state.json with fields they don't know about
+            // (e.g. `disabled`).
             {
+                // Tiny local struct — only used in this block.
+                #[derive(serde::Serialize, serde::Deserialize, Default)]
+                struct WatchPidFile {
+                    pid: u32,
+                    bin_mtime: u64,
+                }
+
                 let data_dir = dirs::data_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
                     .join("superharness");
                 let _ = std::fs::create_dir_all(&data_dir);
                 let pid_file = data_dir.join("watch.pid");
 
-                let already_running = if let Ok(content) = std::fs::read_to_string(&pid_file) {
-                    let pid: u32 = content.trim().parse().unwrap_or(0);
-                    if pid > 0 {
-                        // Check if the process is still alive via kill -0
-                        std::process::Command::new("kill")
-                            .args(["-0", &pid.to_string()])
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status()
-                            .map(|s| s.success())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
+                // Current binary mtime (seconds since UNIX epoch, 0 if unavailable).
+                let bin_mtime: u64 = std::fs::metadata(&bin)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                // Read pid file — support both old plain-number format and new JSON.
+                let stored: WatchPidFile = if let Ok(content) = std::fs::read_to_string(&pid_file) {
+                    serde_json::from_str::<WatchPidFile>(&content).unwrap_or_else(|_| {
+                        // Fall back to parsing as a plain PID integer (old format).
+                        let pid: u32 = content.trim().parse().unwrap_or(0);
+                        WatchPidFile { pid, bin_mtime: 0 }
+                    })
                 } else {
-                    false
+                    WatchPidFile::default()
                 };
 
-                if !already_running {
+                let process_alive = stored.pid > 0
+                    && std::process::Command::new("kill")
+                        .args(["-0", &stored.pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+
+                // Restart if: not running, OR the binary is newer than the running daemon.
+                let needs_restart =
+                    !process_alive || (bin_mtime > 0 && bin_mtime > stored.bin_mtime);
+
+                if needs_restart {
+                    // Kill the stale daemon if it is still alive.
+                    if process_alive && bin_mtime > stored.bin_mtime {
+                        eprintln!(
+                            "superharness: watch daemon is stale (binary updated) — restarting"
+                        );
+                        let _ = std::process::Command::new("kill")
+                            .arg(stored.pid.to_string())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
+
                     match std::process::Command::new(&bin)
                         .args(["watch", "--interval", "30"])
                         .stdin(std::process::Stdio::null())
@@ -642,7 +682,13 @@ fn main() -> anyhow::Result<()> {
                         .spawn()
                     {
                         Ok(child) => {
-                            let _ = std::fs::write(&pid_file, child.id().to_string());
+                            let pid_data = WatchPidFile {
+                                pid: child.id(),
+                                bin_mtime,
+                            };
+                            if let Ok(json) = serde_json::to_string(&pid_data) {
+                                let _ = std::fs::write(&pid_file, json);
+                            }
                             // Drop child to detach; it continues after superharness exits.
                             drop(child);
                         }
