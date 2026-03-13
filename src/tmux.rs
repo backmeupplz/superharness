@@ -120,7 +120,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-style",
-        "bg=colour17,fg=colour250",
+        "bg=#1a2d4a,fg=colour250",
     ])?;
 
     // Left side: static session name label.
@@ -129,7 +129,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-left",
-        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[bg=colour17,fg=colour240]│ ",
+        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[bg=#1a2d4a,fg=colour240]│ ",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
 
@@ -145,7 +145,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]PANES:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour236] F1:away F2:present F3:status F4:workers #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:away  F2:present #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
@@ -480,9 +480,38 @@ pub fn auto_compact() -> Result<()> {
     Ok(())
 }
 
-/// Compact the main window: move any pane (except %0) with WIDTH < 80 or HEIGHT < 20
-/// to a background tab. Returns (moved_count, remaining_visible_count).
+/// Query the current tmux window dimensions dynamically.
+/// Returns (width, height). Falls back to (80, 24) on any error.
+pub fn get_terminal_size() -> (u32, u32) {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            SESSION,
+            "-p",
+            "#{window_width} #{window_height}",
+        ])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let s = s.trim();
+            let mut parts = s.split_whitespace();
+            let w: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(80);
+            let h: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(24);
+            (w, h)
+        }
+        _ => (80, 24),
+    }
+}
+
+/// Compact the main window: move any pane (except %0) that is too small
+/// (width < term_w/3 or height < term_h/3) to a background tab.
+/// Returns (moved_count, remaining_visible_count).
 pub fn compact_panes() -> Result<(usize, usize)> {
+    let (term_w, term_h) = get_terminal_size();
+
     // List all panes across all windows with dimensions and window index
     let output = match tmux(&[
         "list-panes",
@@ -518,7 +547,7 @@ pub fn compact_panes() -> Result<(usize, usize)> {
             continue;
         }
 
-        if width < 80 || height < 20 {
+        if width < (term_w / 3) || height < (term_h / 3) {
             let tab_name: String = title.chars().take(20).collect();
             let tab_name = tab_name.trim().to_string();
             let tab_name = if tab_name.is_empty() {
