@@ -597,6 +597,14 @@ $BIN watch --pane %ID        # watch a specific pane only
 
 Use `watch` when you want fully hands-off supervision: it combines health checking, permission approval, and cleanup into a single long-running command. For finer control or away-mode use, prefer `monitor` + manual `send`/`kill`.
 
+The watch loop also sends a periodic `[PULSE]` digest to the orchestrator pane (%0) when workers need attention. Orchestrators should respond to `[PULSE]` messages by checking the named panes.
+
+You can also trigger a pulse manually at any time:
+
+```bash
+$BIN pulse   # send [PULSE] digest to %0 right now
+```
+
 $TASK
 "##;
 

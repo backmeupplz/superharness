@@ -217,6 +217,9 @@ enum Command {
         pane: Option<String>,
     },
 
+    /// Send a [PULSE] digest of all worker panes to the orchestrator pane (%0)
+    Pulse,
+
     /// One-shot health snapshot for pane(s) — returns structured JSON per pane
     Healthcheck {
         /// Specific pane ID to check (omit to check all panes)
@@ -920,6 +923,18 @@ fn main() -> anyhow::Result<()> {
 
         Some(Command::Watch { interval, pane }) => {
             watch::run(interval, pane.as_deref())?;
+        }
+
+        Some(Command::Pulse) => {
+            let result = watch::pulse(true)?;
+            let out = serde_json::json!({
+                "sent": result.sent,
+                "target_pane": result.target_pane,
+                "message": result.message,
+                "worker_count": result.worker_count,
+                "reason_skipped": result.reason_skipped,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
 
         Some(Command::Healthcheck { pane, interval }) => {

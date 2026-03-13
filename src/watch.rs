@@ -89,6 +89,141 @@ pub struct PaneAction {
 }
 
 // ---------------------------------------------------------------------------
+// Pulse — orchestrator heartbeat digest
+// ---------------------------------------------------------------------------
+
+/// Result from a pulse operation.
+#[derive(Debug, Serialize)]
+pub struct PulseResult {
+    /// Whether the digest was actually sent to %0.
+    pub sent: bool,
+    /// Target pane (always "%0").
+    pub target_pane: String,
+    /// The full message that was sent, if sent.
+    pub message: Option<String>,
+    /// Number of worker panes inspected.
+    pub worker_count: usize,
+    /// Reason the pulse was skipped (if `sent` is false).
+    pub reason_skipped: Option<String>,
+}
+
+/// Build a [PULSE] digest of all worker panes and optionally send it to %0.
+///
+/// `force_send` — when `true`, always send if at least one worker exists
+///               (used by the standalone `pulse` subcommand).
+///               When `false`, only send when at least one worker is in an
+///               actionable state (done, waiting, stalled, or error); used
+///               by the watch loop.
+pub fn pulse(force_send: bool) -> Result<PulseResult> {
+    let monitor_state = load_state();
+
+    // List all panes, skip %0 (the orchestrator itself).
+    let all_panes = tmux::list().unwrap_or_default();
+    let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+
+    if worker_panes.is_empty() {
+        return Ok(PulseResult {
+            sent: false,
+            target_pane: "%0".to_string(),
+            message: None,
+            worker_count: 0,
+            reason_skipped: Some("no active workers".to_string()),
+        });
+    }
+
+    let mut summaries: Vec<String> = Vec::new();
+    let mut actions_needed: Vec<String> = Vec::new();
+    let mut has_actionable = false;
+
+    for pane in &worker_panes {
+        // Use pane title as a short label; fall back to ID.
+        let label: String = if pane.title.is_empty() {
+            pane.id.clone()
+        } else {
+            pane.title.chars().take(24).collect()
+        };
+
+        match classify_pane(&pane.id, &monitor_state, 60) {
+            Ok(health) => {
+                let status_str = match health.status {
+                    HealthStatus::Working => "working".to_string(),
+                    HealthStatus::Idle => "idle".to_string(),
+                    HealthStatus::Stalled => {
+                        has_actionable = true;
+                        "STALLED".to_string()
+                    }
+                    HealthStatus::Waiting => {
+                        has_actionable = true;
+                        "WAITING approval".to_string()
+                    }
+                    HealthStatus::Done => {
+                        has_actionable = true;
+                        "done".to_string()
+                    }
+                };
+
+                summaries.push(format!("{} {} ({})", pane.id, status_str, label));
+
+                // Collect explicit action items.
+                match health.status {
+                    HealthStatus::Waiting => {
+                        actions_needed.push(format!("approve {}", pane.id));
+                    }
+                    HealthStatus::Done => {
+                        actions_needed.push(format!("collect {} output", pane.id));
+                    }
+                    HealthStatus::Stalled if health.needs_attention => {
+                        actions_needed.push(format!("check {} (stalled)", pane.id));
+                    }
+                    _ => {}
+                }
+            }
+            Err(e) => {
+                has_actionable = true;
+                summaries.push(format!("{} ERROR ({}): {}", pane.id, label, e));
+                actions_needed.push(format!("check {} (error)", pane.id));
+            }
+        }
+    }
+
+    // In non-forced mode, skip sending when everything is just working/idle.
+    if !force_send && !has_actionable {
+        return Ok(PulseResult {
+            sent: false,
+            target_pane: "%0".to_string(),
+            message: None,
+            worker_count: worker_panes.len(),
+            reason_skipped: Some("no actionable workers (all working/idle)".to_string()),
+        });
+    }
+
+    // Build the one-line digest.
+    let worker_list = summaries.join(", ");
+    let action_part = if actions_needed.is_empty() {
+        "No immediate action needed.".to_string()
+    } else {
+        format!("Action needed: {}.", actions_needed.join(", "))
+    };
+    let message = format!(
+        "[PULSE] {} worker(s) active: {}. {}",
+        worker_panes.len(),
+        worker_list,
+        action_part
+    );
+
+    // Send to the orchestrator pane (%0).
+    tmux::send("%0", &message)?;
+
+    Ok(PulseResult {
+        sent: true,
+        target_pane: "%0".to_string(),
+        message: Some(message),
+        worker_count: worker_panes.len(),
+        reason_skipped: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Core logic helpers
 // ---------------------------------------------------------------------------
 
@@ -353,6 +488,27 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         // background tabs.  This also handles the case where several working/idle panes
         // are accumulating in the main window.
         let _ = tmux::auto_compact();
+
+        // At the end of each cycle, send a [PULSE] digest to the orchestrator
+        // pane (%0) when at least one worker had a non-trivial result this cycle
+        // (i.e. something other than plain "observed").  This keeps the
+        // orchestrator informed without flooding it when everything is idle.
+        let cycle_has_actionable = actions
+            .iter()
+            .any(|a| a.action != "observed" && a.action != "skipped");
+        if cycle_has_actionable {
+            match pulse(false) {
+                Ok(ref pr) if pr.sent => {
+                    eprintln!(
+                        "[watch] sent [PULSE] to {}: {:?}",
+                        pr.target_pane,
+                        pr.message.as_deref().unwrap_or("")
+                    );
+                }
+                Ok(_) => {} // nothing actionable in pulse's own check — skip
+                Err(e) => eprintln!("[watch] pulse error: {e}"),
+            }
+        }
 
         // Print JSON status update for this cycle.
         let out = serde_json::json!({
