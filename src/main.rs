@@ -1,4 +1,5 @@
 mod checkpoint;
+mod events;
 mod health;
 mod loop_guard;
 mod memory;
@@ -525,6 +526,9 @@ fn main() -> anyhow::Result<()> {
                     model.as_deref(),
                     mode.as_deref(),
                 )?;
+                let short_task: String = task.chars().take(80).collect();
+                let _ =
+                    events::log_event(events::EventKind::WorkerSpawned, Some(&pane), &short_task);
                 let out = serde_json::json!({ "pane": pane });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             }
@@ -624,6 +628,11 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Kill { pane }) => {
             tmux::kill(&pane)?;
+            let _ = events::log_event(
+                events::EventKind::WorkerKilled,
+                Some(&pane),
+                "worker killed",
+            );
             let out = serde_json::json!({ "pane": pane, "killed": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -740,6 +749,7 @@ fn main() -> anyhow::Result<()> {
                 message.as_deref(),
                 Some(pre_auth.clone()),
             )?;
+            let _ = events::log_event(events::EventKind::ModeChanged, None, "entered away mode");
             let pending = sm.get_pending_decisions()?;
             let out = serde_json::json!({
                 "mode": "away",
@@ -758,11 +768,47 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::Present) => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+
             let sm = StateManager::new()?;
+            let current_state = sm.get_state()?;
+            let away_since = current_state.away_since;
             let pending = sm.get_pending_decisions()?;
             sm.set_mode(state::Mode::Present, None, None)?;
+            let _ = events::log_event(
+                events::EventKind::ModeChanged,
+                None,
+                "returned to present mode",
+            );
+
+            // Build debrief if we were away
+            let (debrief, away_duration_secs) = if let Some(since) = away_since {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let duration = now.saturating_sub(since);
+                let ev = events::events_since(since).unwrap_or_default();
+                let debrief_json: Vec<serde_json::Value> = ev
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "timestamp": e.timestamp,
+                            "kind": e.kind.to_string(),
+                            "pane": e.pane,
+                            "details": e.details,
+                        })
+                    })
+                    .collect();
+                (debrief_json, Some(duration))
+            } else {
+                (Vec::new(), None)
+            };
+
             let out = serde_json::json!({
                 "mode": "present",
+                "away_duration_secs": away_duration_secs,
+                "debrief": debrief,
                 "pending_decisions": pending,
                 "note": if pending.is_empty() {
                     "No pending decisions. All clear!"
@@ -797,6 +843,7 @@ fn main() -> anyhow::Result<()> {
             const GREEN: &str = "\x1b[32m";
             const YELLOW: &str = "\x1b[33m";
             const BRIGHT_RED: &str = "\x1b[91m";
+            const CYAN: &str = "\x1b[36m";
 
             let sm = StateManager::new()?;
             let s = sm.get_state()?;
@@ -895,6 +942,63 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+
+            // ── DEBRIEF (only shown when away) ────────────────────────────────
+            if matches!(s.mode, state::Mode::Away) {
+                if let Some(since) = s.away_since {
+                    let ev = events::events_since(since).unwrap_or_default();
+                    println!();
+                    println!("{BOLD}{UNDERLINE}Events Since Going Away{RESET}");
+                    if ev.is_empty() {
+                        println!("  {DIM}no events recorded yet{RESET}");
+                    } else {
+                        for e in &ev {
+                            // Format timestamp as HH:MM:SS offset from `since`
+                            let elapsed = e.timestamp.saturating_sub(since);
+                            let h = elapsed / 3600;
+                            let m = (elapsed % 3600) / 60;
+                            let sec = elapsed % 60;
+                            let ts_str = format!("+{h:02}:{m:02}:{sec:02}");
+                            let pane_str = e
+                                .pane
+                                .as_deref()
+                                .map(|p| format!(" {YELLOW}{p}{RESET}"))
+                                .unwrap_or_default();
+                            let kind_colored = match e.kind {
+                                events::EventKind::WorkerSpawned => {
+                                    format!("{GREEN}WorkerSpawned  {RESET}")
+                                }
+                                events::EventKind::WorkerKilled => {
+                                    format!("{DIM}WorkerKilled   {RESET}")
+                                }
+                                events::EventKind::WorkerStalled => {
+                                    format!("{BOLD}{RED}WorkerStalled  {RESET}")
+                                }
+                                events::EventKind::WorkerRecovered => {
+                                    format!("{CYAN}WorkerRecovered{RESET}")
+                                }
+                                events::EventKind::DecisionQueued => {
+                                    format!("{BOLD}{YELLOW}DecisionQueued {RESET}")
+                                }
+                                events::EventKind::DecisionCleared => {
+                                    format!("{DIM}DecisionCleared{RESET}")
+                                }
+                                events::EventKind::ModeChanged => {
+                                    format!("{DIM}ModeChanged    {RESET}")
+                                }
+                                events::EventKind::Pulse => {
+                                    format!("{DIM}Pulse          {RESET}")
+                                }
+                            };
+                            let short_details: String = e.details.chars().take(60).collect();
+                            println!(
+                                "  {DIM}{ts_str}{RESET}  {kind_colored}{pane_str}  {DIM}{short_details}{RESET}"
+                            );
+                        }
+                    }
+                }
+            }
+
             println!();
         }
 
@@ -965,6 +1069,8 @@ fn main() -> anyhow::Result<()> {
             context,
         }) => {
             let id = tmux::queue_decision(&pane, &question, &context)?;
+            let short_q: String = question.chars().take(80).collect();
+            let _ = events::log_event(events::EventKind::DecisionQueued, Some(&pane), &short_q);
             let out = serde_json::json!({
                 "queued": true,
                 "decision_id": id,
@@ -977,6 +1083,11 @@ fn main() -> anyhow::Result<()> {
         Some(Command::ClearDecisions) => {
             let sm = StateManager::new()?;
             sm.clear_decisions()?;
+            let _ = events::log_event(
+                events::EventKind::DecisionCleared,
+                None,
+                "all pending decisions cleared",
+            );
             let out = serde_json::json!({ "cleared": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

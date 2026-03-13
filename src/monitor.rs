@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::events;
 use crate::tmux;
 
 /// State persisted between monitor runs.
@@ -146,6 +147,15 @@ fn check_pane(pane_id: &str, state: &mut MonitorState, stall_threshold: u32) -> 
     let attempt = *attempts;
     *attempts += 1;
 
+    // Log the stall event only on the first recovery attempt (attempt == 0)
+    if attempt == 0 {
+        let _ = events::log_event(
+            events::EventKind::WorkerStalled,
+            Some(pane_id),
+            &format!("stalled after {} unchanged checks", current_stall),
+        );
+    }
+
     match attempt {
         0 => {
             eprintln!("[monitor] [{}] STALLED — attempt 1: sending Enter", pane_id);
@@ -158,6 +168,11 @@ fn check_pane(pane_id: &str, state: &mut MonitorState, stall_threshold: u32) -> 
                 pane_id
             );
             let _ = tmux::send(pane_id, "continue");
+            let _ = events::log_event(
+                events::EventKind::WorkerRecovered,
+                Some(pane_id),
+                "recovery attempt 2: sent 'continue'",
+            );
             format!(
                 "[{}] STALLED — sent 'continue' (recovery attempt 2)",
                 pane_id
@@ -169,6 +184,11 @@ fn check_pane(pane_id: &str, state: &mut MonitorState, stall_threshold: u32) -> 
                 pane_id
             );
             let _ = tmux::send(pane_id, "please continue with the task");
+            let _ = events::log_event(
+                events::EventKind::WorkerRecovered,
+                Some(pane_id),
+                "recovery attempt 3: sent 'please continue with the task'",
+            );
             format!(
                 "[{}] STALLED — sent detailed prompt (recovery attempt 3)",
                 pane_id
