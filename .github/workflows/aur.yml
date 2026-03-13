@@ -19,12 +19,11 @@ jobs:
           VERSION="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download binary and compute SHA256
+      - name: Download source tarball and compute SHA256
         id: sha
         run: |
-          curl -fSL -o superharness \
-            "https://github.com/backmeupplz/superharness/releases/download/${{ github.event.release.tag_name }}/superharness-x86_64-unknown-linux-gnu"
-          SHA256=$(sha256sum superharness | awk '{print $1}')
+          curl -fSL -o source.tar.gz "https://github.com/backmeupplz/superharness/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz"
+          SHA256=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Generate PKGBUILD
@@ -33,24 +32,35 @@ jobs:
           SHA256="${{ steps.sha.outputs.sha256 }}"
           cat > PKGBUILD << 'EOF'
           # Maintainer: Nikita Kolmogorov <ubuntu@borodutch.com>
-          pkgname=superharness-bin
+          pkgname=superharness
           pkgver=__VERSION__
           pkgrel=1
-          pkgdesc='Autonomous multi-agent orchestrator for AI coding'
+          pkgdesc='Autonomous multi-agent orchestrator for AI coding agents via tmux'
           arch=('x86_64')
           url='https://github.com/backmeupplz/superharness'
           license=('MIT')
           depends=('tmux')
-          provides=('superharness')
-          conflicts=('superharness')
-          source=("superharness::https://github.com/backmeupplz/superharness/releases/download/v$pkgver/superharness-x86_64-unknown-linux-gnu")
+          makedepends=('cargo')
+          source=("$pkgname-$pkgver.tar.gz::https://github.com/backmeupplz/superharness/archive/refs/tags/v$pkgver.tar.gz")
           sha256sums=('__SHA256__')
 
+          prepare() {
+            cd "$pkgname-$pkgver"
+            export RUSTUP_TOOLCHAIN=stable
+            cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+          }
+
+          build() {
+            cd "$pkgname-$pkgver"
+            export RUSTUP_TOOLCHAIN=stable
+            export CARGO_TARGET_DIR=target
+            cargo build --frozen --release
+          }
+
           package() {
-            install -Dm0755 superharness "$pkgdir/usr/bin/superharness"
-            install -Dm644 /dev/stdin "$pkgdir/usr/share/licenses/$pkgname/LICENSE" <<LICENSE
-          MIT License — see https://github.com/backmeupplz/superharness/blob/master/LICENSE
-          LICENSE
+            cd "$pkgname-$pkgver"
+            install -Dm0755 -t "$pkgdir/usr/bin/" "target/release/$pkgname"
+            install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
           }
           EOF
           sed -i 's/^          //' PKGBUILD
@@ -73,7 +83,7 @@ jobs:
           echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
 
-          git clone ssh://aur@aur.archlinux.org/superharness-bin.git aur-repo
+          git clone ssh://aur@aur.archlinux.org/superharness.git aur-repo
           cd aur-repo
           git checkout master 2>/dev/null || git checkout -b master origin/master 2>/dev/null || git checkout -b master
           git config user.name "github-actions[bot]"

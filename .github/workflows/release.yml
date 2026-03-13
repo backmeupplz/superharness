@@ -1,9 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -19,10 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: false
-          - target: aarch64-unknown-linux-musl
+          - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: true
           - target: x86_64-apple-darwin
@@ -42,11 +41,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install musl tools (x86_64-unknown-linux-musl)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get install -y musl-tools
-
-      - name: Install cross (for aarch64-unknown-linux-musl)
+      - name: Install cross (for aarch64-unknown-linux-gnu)
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
@@ -72,8 +67,7 @@ jobs:
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/superharness"
-          VERSION="${GITHUB_REF_NAME}"
-          ASSET="superharness-${VERSION}-${{ matrix.target }}"
+          ASSET="superharness-${{ matrix.target }}"
 
           cp "$BIN" "$ASSET"
 
@@ -91,8 +85,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           case "${{ matrix.target }}" in
-            x86_64-unknown-linux-musl)  DEB_ARCH="amd64" ;;
-            aarch64-unknown-linux-musl) DEB_ARCH="arm64" ;;
+            x86_64-unknown-linux-gnu)  DEB_ARCH="amd64" ;;
+            aarch64-unknown-linux-gnu) DEB_ARCH="arm64" ;;
           esac
 
           PKG_DIR="superharness_${VERSION}_${DEB_ARCH}"

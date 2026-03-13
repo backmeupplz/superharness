@@ -50,7 +50,7 @@ jobs:
           mkdir -p homebrew-tap/Formula
           cat > homebrew-tap/Formula/superharness.rb <<RUBY
           class Superharness < Formula
-            desc "Autonomous multi-agent orchestrator for AI coding"
+            desc "Autonomous multi-agent orchestrator for AI coding agents via tmux"
             homepage "https://github.com/backmeupplz/superharness"
             version "$VERSION"
             license "MIT"

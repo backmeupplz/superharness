@@ -1,0 +1,80 @@
+name: Publish to PPA
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.2.0)"
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y debhelper devscripts dput
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Generate lockfile and vendor dependencies
+        run: |
+          cargo generate-lockfile
+          cargo vendor debian/vendor
+          tar cJf debian/vendor.tar.xz -C debian vendor
+          rm -rf debian/vendor
+
+      - name: Create orig tarball
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          tar czf "../superharness_${VERSION}.orig.tar.gz" \
+            --exclude='.git' \
+            --exclude='debian' \
+            --exclude='target' \
+            .
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+          gpgconf --launch gpg-agent
+          KEYGRIP=$(gpg --with-keygrip --list-secret-keys "${{ secrets.GPG_KEY_ID }}" | grep Keygrip | head -1 | awk '{print $3}')
+          /usr/lib/gnupg/gpg-preset-passphrase --preset --passphrase "${{ secrets.GPG_PASSPHRASE }}" "$KEYGRIP"
+
+      - name: Build and upload source packages
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GPG_KEY="${{ secrets.GPG_KEY_ID }}"
+
+          for DISTRO in jammy noble; do
+            echo "=== Building for $DISTRO ==="
+
+            cat > debian/changelog << CHLOG
+          superharness (${VERSION}-1${DISTRO}1) ${DISTRO}; urgency=medium
+
+            * Release ${VERSION}
+
+           -- Nikita Kolmogorov <ubuntu@borodutch.com>  $(date -R)
+          CHLOG
+
+            debuild -S -sa -d -k"$GPG_KEY"
+
+            dput ppa:borodutch/superharness "../superharness_${VERSION}-1${DISTRO}1_source.changes"
+          done
