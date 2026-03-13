@@ -645,17 +645,68 @@
 <section id="install">
   <div class="container">
     <h2>Install</h2>
-    <p class="section-lead">Requires Rust, tmux, and opencode.</p>
-    <div class="install-block">
-      <div class="install-label">Cargo</div>
-      <div class="install-cmd">
-        <span class="prompt">$</span>
-        <span id="install-cmd-2">cargo install superharness</span>
-        <button class="copy-btn" onclick="copyInstall2()" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        </button>
+     <p class="section-lead">Requires tmux and an AI coding agent (opencode, claude, or codex).</p>
+    <div style="margin-bottom: 16px;">
+      <div class="install-block">
+        <div class="install-label">Quick install</div>
+        <div class="install-cmd">
+          <span class="prompt">$</span>
+          <span id="install-cmd-1">curl -fsSL https://superharness.dev/install.sh | sh</span>
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-1')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="install-soon">brew and AUR packages coming soon</div>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <div class="quickstart-block">
+        <div class="qs-titlebar">Ubuntu / Debian (PPA)</div>
+        <div class="qs-body">
+          <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">sudo add-apt-repository ppa:borodutch/superharness</span></div>
+          <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">sudo apt update</span></div>
+          <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">sudo apt install superharness</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <div class="install-block">
+        <div class="install-label">Arch Linux (AUR)</div>
+        <div class="install-cmd">
+          <span class="prompt">$</span>
+          <span id="install-cmd-3">yay -S superharness</span>
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-3')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <div class="install-block">
+        <div class="install-label">macOS / Linux (Homebrew)</div>
+        <div class="install-cmd">
+          <span class="prompt">$</span>
+          <span id="install-cmd-4">brew install backmeupplz/superharness/superharness</span>
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-4')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <div class="install-block">
+        <div class="install-label">Cargo</div>
+        <div class="install-cmd">
+          <span class="prompt">$</span>
+          <span id="install-cmd-2">cargo install superharness</span>
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-2')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
     </div>
     <div style="margin-top:28px;">
       <div class="quickstart-block" style="max-width:400px;">
@@ -698,13 +749,14 @@
 </footer>
 
 <script>
-  function copyInstall2() {
-    const cmd = document.getElementById('install-cmd-2').textContent;
+  function copyInstallCmd(elementId) {
+    const cmd = document.getElementById(elementId).textContent;
     navigator.clipboard.writeText(cmd).then(() => {
-      const btn = document.querySelector('#install .copy-btn');
+      const btn = event.target.closest('.copy-btn');
+      const originalHTML = btn.innerHTML;
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
       setTimeout(() => {
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+        btn.innerHTML = originalHTML;
       }, 2000);
     });
   }

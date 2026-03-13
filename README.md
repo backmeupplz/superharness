@@ -26,11 +26,39 @@ That's it. You get a normal opencode session — the same interface you already 
 
 ## Install
 
+### Quick install
+
+```bash
+curl -fsSL https://superharness.dev/install.sh | sh
+```
+
+### Ubuntu/Debian (PPA)
+
+```bash
+sudo add-apt-repository ppa:borodutch/superharness
+sudo apt update
+sudo apt install superharness
+```
+
+### Arch Linux (AUR)
+
+```bash
+yay -S superharness
+```
+
+### macOS/Linux (Homebrew)
+
+```bash
+brew install backmeupplz/superharness/superharness
+```
+
+### Cargo
+
 ```bash
 cargo install superharness
 ```
 
-Requires: [opencode](https://opencode.ai) · [tmux](https://github.com/tmux/tmux) · brew and AUR packages coming soon
+Requires: [tmux](https://github.com/tmux/tmux) · an AI coding agent ([opencode](https://opencode.ai), claude, or codex)
 
 ---
 
