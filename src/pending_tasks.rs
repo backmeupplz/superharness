@@ -14,6 +14,10 @@ pub struct PendingTask {
     pub model: Option<String>,
     pub mode: Option<String>,
     pub name: Option<String>,
+    /// Override the AI harness for this worker (opencode / claude / codex).
+    /// When absent the configured default is used.
+    #[serde(default)]
+    pub harness: Option<String>,
     /// Pane IDs that must finish (i.e. no longer appear in tmux list) before this task can run
     pub depends_on: Vec<String>,
     pub created_at: u64,
@@ -56,12 +60,14 @@ fn now_unix() -> u64 {
 }
 
 /// Add a new pending task. Returns the generated task ID.
+#[allow(clippy::too_many_arguments)]
 pub fn add_task(
     task: &str,
     dir: &str,
     model: Option<&str>,
     mode: Option<&str>,
     name: Option<&str>,
+    harness: Option<&str>,
     depends_on: Vec<String>,
 ) -> Result<String> {
     let mut store = load()?;
@@ -73,6 +79,7 @@ pub fn add_task(
         model: model.map(|s| s.to_string()),
         mode: mode.map(|s| s.to_string()),
         name: name.map(|s| s.to_string()),
+        harness: harness.map(|s| s.to_string()),
         depends_on,
         created_at: now_unix(),
     });

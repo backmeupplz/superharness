@@ -42,6 +42,19 @@ pub fn detect_installed() -> Vec<HarnessInfo> {
     installed
 }
 
+/// Return all known candidate harnesses regardless of installation status.
+/// Used by the settings picker so users can see all options.
+pub fn detect_all_candidates() -> Vec<HarnessInfo> {
+    CANDIDATES
+        .iter()
+        .map(|(name, binary, display_name)| HarnessInfo {
+            name: name.to_string(),
+            binary: binary.to_string(),
+            display_name: display_name.to_string(),
+        })
+        .collect()
+}
+
 /// Return true if `binary` is available on the current PATH.
 fn binary_on_path(binary: &str) -> bool {
     std::process::Command::new("which")
@@ -194,4 +207,182 @@ pub fn install_url(name: &str) -> &'static str {
         "codex" => "https://github.com/openai/codex",
         _ => "https://opencode.ai",
     }
+}
+
+/// Read `default_model` from `<config_dir>/config.json`.
+/// Returns `None` if the file does not exist or the field is absent.
+pub fn get_default_model(config_dir: &Path) -> Option<String> {
+    let config_path = config_dir.join("config.json");
+    if !config_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    v["default_model"].as_str().map(String::from)
+}
+
+/// Show an interactive arrow-key harness picker in the current terminal.
+///
+/// Displays all `harnesses` (installed or not), highlights the one matching
+/// `current` (if any), and lets the user navigate with ↑/↓ and confirm with
+/// Enter. Returns `Some(name)` on selection or `None` when the user cancels
+/// with `q` / `Esc`.
+///
+/// This function temporarily enables raw mode and hides the cursor.  Both are
+/// unconditionally restored before returning, even on error.
+pub fn run_interactive_picker(
+    harnesses: &[HarnessInfo],
+    current: Option<&str>,
+) -> Result<Option<String>> {
+    use crossterm::{
+        cursor,
+        event::{self, Event, KeyCode, KeyModifiers},
+        execute, queue,
+        style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+        terminal::{self, Clear, ClearType},
+    };
+    use std::io::{self, Write};
+
+    if harnesses.is_empty() {
+        return Ok(None);
+    }
+
+    let installed = detect_installed();
+    let installed_set: std::collections::HashSet<String> =
+        installed.iter().map(|h| h.name.clone()).collect();
+
+    // Initial selection: prefer the currently configured harness, else first.
+    let initial_idx = current
+        .and_then(|c| harnesses.iter().position(|h| h.name == c || h.binary == c))
+        .unwrap_or(0);
+    let mut selected = initial_idx;
+
+    let mut stdout = io::stdout();
+
+    // Enable raw mode so we can receive individual key events.
+    terminal::enable_raw_mode()?;
+    let _ = execute!(stdout, cursor::Hide);
+
+    // We draw (3 header + len list + 2 footer) lines each render cycle.
+    // Saving this so we can move the cursor back to the top on re-draw.
+    let list_len = harnesses.len() as u16;
+    let render_lines: u16 = 3 + list_len + 2; // blank + title + blank + items + blank + hints
+
+    let mut first_draw = true;
+
+    let result = 'picker: loop {
+        // On re-draw, move cursor back to the start of the block.
+        if !first_draw {
+            let _ = execute!(
+                stdout,
+                cursor::MoveUp(render_lines),
+                cursor::MoveToColumn(0)
+            );
+        }
+        first_draw = false;
+
+        // Header (3 lines)
+        queue!(
+            stdout,
+            Clear(ClearType::CurrentLine),
+            Print("\r\n"),
+            Clear(ClearType::CurrentLine),
+            SetAttribute(Attribute::Bold),
+            Print("  Select default AI harness:\r\n"),
+            SetAttribute(Attribute::Reset),
+            Clear(ClearType::CurrentLine),
+            Print("\r\n"),
+        )?;
+
+        // Harness list (inlined to avoid dyn Write issues with queue! macro)
+        for (i, h) in harnesses.iter().enumerate() {
+            let inst = installed_set.contains(&h.name);
+            let status = if inst { "[installed]" } else { "[not found]" };
+            queue!(stdout, Clear(ClearType::CurrentLine))?;
+            if i == selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Green),
+                    SetAttribute(Attribute::Bold),
+                    Print(format!(
+                        "  \u{25ba} {:<10} {:<20}  {}\r\n",
+                        h.binary, h.display_name, status
+                    )),
+                    SetAttribute(Attribute::Reset),
+                    ResetColor,
+                )?;
+            } else if inst {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Reset),
+                    Print(format!(
+                        "    {:<10} {:<20}  {}\r\n",
+                        h.binary, h.display_name, status
+                    )),
+                    ResetColor,
+                )?;
+            } else {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(format!(
+                        "    {:<10} {:<20}  {}\r\n",
+                        h.binary, h.display_name, status
+                    )),
+                    ResetColor,
+                )?;
+            }
+        }
+
+        // Footer (2 lines)
+        queue!(
+            stdout,
+            Clear(ClearType::CurrentLine),
+            Print("\r\n"),
+            Clear(ClearType::CurrentLine),
+            SetForegroundColor(Color::DarkGrey),
+            Print("  \u{2191}\u{2193} move  Enter select  q cancel\r\n"),
+            ResetColor,
+        )?;
+        stdout.flush()?;
+
+        // Key event loop: spin until we get an actionable key.
+        loop {
+            if event::poll(std::time::Duration::from_millis(200))? {
+                if let Event::Key(key) = event::read()? {
+                    match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if selected > 0 {
+                                selected -= 1;
+                            }
+                            break; // re-render outer loop
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if selected + 1 < harnesses.len() {
+                                selected += 1;
+                            }
+                            break; // re-render outer loop
+                        }
+                        KeyCode::Enter => {
+                            break 'picker Some(harnesses[selected].name.clone());
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            break 'picker None;
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break 'picker None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+
+    // Restore terminal state unconditionally.
+    let _ = terminal::disable_raw_mode();
+    let _ = execute!(stdout, cursor::Show);
+    let _ = writeln!(stdout);
+
+    Ok(result)
 }

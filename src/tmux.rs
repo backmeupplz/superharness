@@ -154,11 +154,11 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS: {pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "110"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "130"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
@@ -187,6 +187,22 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F1",
         "run-shell",
         &format!("{bin_path} toggle-mode"),
+    ])?;
+
+    // F2 → harness-settings: interactive popup to view/change the default harness & model
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F2",
+        "display-popup",
+        "-E",
+        "-b",
+        "rounded",
+        "-w",
+        "70",
+        "-h",
+        "22",
+        &format!("{bin_path} harness-settings"),
     ])?;
 
     // F3 → status-human (mode + pending decisions + worker health, human-readable)
@@ -277,11 +293,15 @@ const PANE_COLOR_HEX: &[&str] = &[
 /// main orchestrator window stays clean and full-size. Pass `no_hide = true`
 /// to keep the worker visible in the main window (useful when you want to
 /// watch a worker directly without surfacing it manually).
+///
+/// `harness_override` — when `Some`, use that harness binary directly instead
+/// of the configured default.  Pass `None` to use the default.
 pub fn spawn(
     task: &str,
     dir: &str,
     name: Option<&str>,
     model: Option<&str>,
+    harness_override: Option<&str>,
     mode: Option<&str>,
     no_hide: bool,
 ) -> Result<String> {
@@ -312,7 +332,10 @@ pub fn spawn(
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
         .join("superharness");
-    let active_harness = harness::resolve_harness(&config_dir)?;
+    let active_harness = match harness_override {
+        Some(h) => h.to_string(),
+        None => harness::resolve_harness(&config_dir)?,
+    };
 
     // Build the harness command string (handles per-harness flag differences).
     let opencode_cmd = harness::build_harness_cmd(&active_harness, model, &effective_task);
@@ -948,10 +971,46 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     // ── Determine initial prompt BEFORE launching opencode ───────────────────
     // This lets us pass the prompt directly via --prompt rather than using
     // send-keys after the fact (which is unreliable for long/multi-line messages).
-    let config_path = dirs::config_dir()
+    let config_dir_base = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("superharness")
-        .join("config.json");
+        .join("superharness");
+    let config_path = config_dir_base.join("config.json");
+
+    // ── First-launch harness picker ──────────────────────────────────────────
+    // If no config exists yet, detect installed harnesses:
+    //   • exactly one found  → silently write it as the default
+    //   • multiple found     → show an interactive arrow-key picker so the user
+    //                          can choose BEFORE the tmux session opens
+    //   • none found         → skip (the AI will surface an error when spawning)
+    if !config_path.exists() {
+        let candidates = harness::detect_installed();
+        match candidates.len() {
+            0 => {} // nothing to do — let the AI handle missing harness errors
+            1 => {
+                // Single harness: silently persist so subsequent sessions skip this.
+                let _ = harness::set_default_harness(&config_dir_base, &candidates[0].name);
+            }
+            _ => {
+                // Multiple harnesses: let the user pick before we launch.
+                println!();
+                println!("  \x1b[1mSuperHarness — first run\x1b[0m");
+                println!();
+                match harness::run_interactive_picker(&candidates, None) {
+                    Ok(Some(chosen)) => {
+                        if let Err(e) = harness::set_default_harness(&config_dir_base, &chosen) {
+                            eprintln!("warning: could not persist harness choice: {e}");
+                        }
+                    }
+                    Ok(None) => {
+                        // User cancelled — the AI will ask during first-run prompt.
+                    }
+                    Err(e) => {
+                        eprintln!("warning: picker error ({e}); the AI will ask instead.");
+                    }
+                }
+            }
+        }
+    }
 
     // Read default_model from config so the orchestrator uses the user's preferred model.
     let (default_model, orch_harness): (Option<String>, String) = if config_path.exists() {
