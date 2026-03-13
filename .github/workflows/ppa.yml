@@ -44,9 +44,10 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           tar czf "../superharness_${VERSION}.orig.tar.gz" \
-            --exclude='.git' \
-            --exclude='debian' \
-            --exclude='target' \
+            --exclude='./.git' \
+            --exclude='./debian' \
+            --exclude='./target' \
+            --exclude='./packaging' \
             .
 
       - name: Import GPG key
@@ -74,7 +75,7 @@ jobs:
            -- Nikita Kolmogorov <ubuntu@borodutch.com>  $(date -R)
           CHLOG
 
-            dpkg-source -b . 2>&1 || (echo "=== DIFF CONTENTS ===" && cat /tmp/superharness_*.diff.* 2>/dev/null | head -60 && exit 1)
+            dpkg-source -b .
             debuild -S -sa -d -k"$GPG_KEY"
 
             dput ppa:borodutch/superharness "../superharness_${VERSION}-1${DISTRO}1_source.changes"
