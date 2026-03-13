@@ -1,4 +1,3 @@
-mod autonomous;
 mod checkpoint;
 mod events;
 mod health;
@@ -6,16 +5,14 @@ mod loop_guard;
 mod memory;
 mod monitor;
 mod pending_tasks;
-mod plan;
+mod project;
 mod setup;
-mod state;
 mod tasks;
 mod tmux;
 mod watch;
 
 use anyhow::Context as _;
 use clap::Parser;
-use state::StateManager;
 
 #[derive(Parser)]
 #[command(
@@ -157,46 +154,14 @@ enum Command {
         name: String,
     },
 
-    /// Enter away mode (human is not watching)
-    Away {
-        /// Optional message describing why you're going away or what to watch for
-        #[arg(short, long)]
-        message: Option<String>,
+    /// Toggle between away and present mode by messaging the orchestrator
+    ToggleMode,
 
-        /// Skip the interactive pre-authorization questions and use all defaults
-        #[arg(short = 's', long)]
-        skip_questions: bool,
-    },
-
-    /// Return to present mode (human is back)
-    Present,
-
-    /// Show current mode and any pending decisions
-    Status,
-
-    /// Show current mode, decisions, and worker health in human-readable format (used by F3)
+    /// Show current mode and worker health in human-readable format (used by F3)
     StatusHuman,
 
     /// List active workers in human-readable format (used by F4)
     Workers,
-
-    /// Queue a decision for human review (useful in away mode)
-    QueueDecision {
-        /// Agent ID associated with this decision
-        #[arg(short, long)]
-        pane: String,
-
-        /// The question or decision that needs human input
-        #[arg(short, long)]
-        question: String,
-
-        /// Additional context to help the human decide
-        #[arg(short, long, default_value = "")]
-        context: String,
-    },
-
-    /// Clear all pending decisions
-    ClearDecisions,
 
     /// Monitor agents for stalls and auto-recover
     Monitor {
@@ -222,13 +187,6 @@ enum Command {
         /// Specific agent ID to watch (watches all agents if omitted)
         #[arg(short, long)]
         pane: Option<String>,
-    },
-
-    /// Run the autonomous execution engine: reads the project plan, spawns workers, monitors them
-    Autonomous {
-        /// Seconds between each check cycle (default 30)
-        #[arg(short, long, default_value_t = 30)]
-        interval: u64,
     },
 
     /// Send a [PULSE] digest of all worker agents to the orchestrator agent (%0)
@@ -432,31 +390,6 @@ enum Command {
         /// Subtask ID prefix
         subtask_id: String,
     },
-
-    // ── Project Plan ────────────────────────────────────────────────────────
-    /// Create a new AI-generated project plan and store it
-    Plan {
-        /// High-level description of what you want to build
-        description: String,
-
-        /// Path to the git repository (defaults to current directory)
-        #[arg(short, long)]
-        repo: Option<String>,
-
-        /// Model to use for workers spawned to execute the plan
-        #[arg(short, long, default_value = "anthropic/claude-sonnet-4-6")]
-        model: String,
-
-        /// Maximum number of concurrent workers when executing the plan
-        #[arg(long, default_value_t = 3)]
-        max_workers: usize,
-    },
-
-    /// Show the current project plan
-    PlanShow,
-
-    /// Reset all task statuses to pending (start over)
-    PlanReset,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -470,6 +403,11 @@ fn main() -> anyhow::Result<()> {
                     .and_then(|p| p.to_str().map(String::from))
                     .unwrap_or_else(|| "superharness".to_string())
             });
+            // Record active project directory
+            let abs_dir = std::fs::canonicalize(&cli.dir)
+                .unwrap_or_else(|_| std::path::PathBuf::from(&cli.dir));
+            project::set_active_project(&abs_dir)?;
+
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir, &bin)?;
         }
@@ -716,200 +654,48 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
 
-        Some(Command::Away {
-            message,
-            skip_questions,
-        }) => {
-            use std::io::IsTerminal;
-            use std::io::{self, BufRead, Write};
+        Some(Command::ToggleMode) => {
+            // Read project state to determine current mode
+            let state_dir = project::get_project_state_dir()?;
+            let state_file = state_dir.join("state.json");
 
-            let pre_auth = if !skip_questions && io::stdin().is_terminal() {
-                // Helper: prompt a single [Y/n] question and return the boolean result.
-                // An empty answer or 'y'/'Y' means "yes" (default); 'n'/'N' means "no".
-                fn ask_yn(prompt: &str, default: bool) -> bool {
-                    print!("{}", prompt);
-                    let _ = io::stdout().flush();
-                    let stdin = io::stdin();
-                    let mut line = String::new();
-                    if stdin.lock().read_line(&mut line).is_err() {
-                        return default;
-                    }
-                    match line.trim().to_lowercase().as_str() {
-                        "n" | "no" => false,
-                        "y" | "yes" | "" => true,
-                        _ => default,
-                    }
-                }
-
-                println!();
-                println!("Configure auto-approval for while you're away (Enter = keep default):");
-                println!();
-
-                let auto_approve_file_edits = ask_yn(
-                    "  Auto-approve file edits in worker directories? [Y/n]: ",
-                    true,
-                );
-                let auto_approve_git_commits = ask_yn(
-                    "  Auto-approve git commits and branch operations? [Y/n]: ",
-                    true,
-                );
-                let auto_approve_builds_tests =
-                    ask_yn("  Auto-approve running builds and tests? [Y/n]: ", true);
-                let flag_architecture_decisions = ask_yn(
-                    "  Queue decisions about architecture/design choices? [Y/n]: ",
-                    true,
-                );
-                let flag_destructive_operations = ask_yn(
-                    "  Queue decisions about destructive operations (rm, force push)? [Y/n]: ",
-                    true,
-                );
-                println!();
-
-                state::PreAuth {
-                    auto_approve_file_edits,
-                    auto_approve_git_commits,
-                    auto_approve_builds_tests,
-                    flag_architecture_decisions,
-                    flag_destructive_operations,
-                }
+            let current_mode = if state_file.exists() {
+                let content = std::fs::read_to_string(&state_file).unwrap_or_default();
+                let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+                v["mode"].as_str().unwrap_or("present").to_string()
             } else {
-                // Not a TTY or --skip-questions: silently use all defaults.
-                state::PreAuth::default()
+                "present".to_string()
             };
 
-            let sm = StateManager::new()?;
-            sm.set_mode(
-                state::Mode::Away,
-                message.as_deref(),
-                Some(pre_auth.clone()),
-            )?;
-            let _ = events::log_event(events::EventKind::ModeChanged, None, "entered away mode");
-            let pending = sm.get_pending_decisions()?;
+            // Find the main orchestrator pane (%0 or first pane)
+            let panes = tmux::list().unwrap_or_default();
+            let target_pane = panes
+                .iter()
+                .find(|p| p.id == "%0")
+                .or_else(|| panes.first())
+                .map(|p| p.id.clone())
+                .unwrap_or_else(|| "%0".to_string());
 
-            // Check if a project plan exists and build plan summary
-            let plan_info = match autonomous::load_plan() {
-                Ok(Some(plan)) => {
-                    let summary = autonomous::summarize_plan(&plan);
-                    serde_json::json!({
-                        "found": true,
-                        "description": plan.description,
-                        "total_stages": summary.total_stages,
-                        "total_tasks": summary.total_tasks,
-                        "done_tasks": summary.done_tasks,
-                        "in_progress_tasks": summary.in_progress_tasks,
-                        "pending_tasks": summary.pending_tasks,
-                        "current_stage": summary.current_stage_name,
-                    })
-                }
-                _ => serde_json::json!({ "found": false }),
-            };
-
-            let autonomous_note = if plan_info["found"].as_bool().unwrap_or(false) {
-                "Project plan found. Run 'superharness autonomous' in a separate pane to start autonomous execution."
+            let (message, new_mode) = if current_mode == "away" {
+                (
+                    "The user has returned. Please read .superharness/state.json and .superharness/decisions.json to understand what happened while they were away, give them a brief natural-language debrief, then update .superharness/state.json to set mode to 'present' and clear away_since.",
+                    "present",
+                )
             } else {
-                "No project plan found. Create one with: superharness plan \"description\""
+                (
+                    "The user wants to step away. Please ask them a few questions about what decisions you should queue vs auto-approve while they are gone, then update .superharness/state.json with {\"mode\": \"away\", \"away_since\": <unix_timestamp>, \"instructions\": <their preferences>} and adjust your behavior accordingly.",
+                    "away",
+                )
             };
+
+            tmux::send(&target_pane, message)?;
 
             let out = serde_json::json!({
-                "mode": "away",
-                "message": message,
-                "pending_decisions": pending.len(),
-                "pre_auth": {
-                    "auto_approve_file_edits": pre_auth.auto_approve_file_edits,
-                    "auto_approve_git_commits": pre_auth.auto_approve_git_commits,
-                    "auto_approve_builds_tests": pre_auth.auto_approve_builds_tests,
-                    "flag_architecture_decisions": pre_auth.flag_architecture_decisions,
-                    "flag_destructive_operations": pre_auth.flag_destructive_operations,
-                },
-                "project_plan": plan_info,
-                "autonomous_mode": plan_info["found"].as_bool().unwrap_or(false),
-                "autonomous_note": autonomous_note,
-                "note": "Workers will use these pre-auth settings. Run 'status' when you return."
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-
-        Some(Command::Present) => {
-            use std::time::{SystemTime, UNIX_EPOCH};
-
-            let sm = StateManager::new()?;
-            let current_state = sm.get_state()?;
-            let away_since = current_state.away_since;
-            let pending = sm.get_pending_decisions()?;
-            sm.set_mode(state::Mode::Present, None, None)?;
-            let _ = events::log_event(
-                events::EventKind::ModeChanged,
-                None,
-                "returned to present mode",
-            );
-
-            // Build debrief if we were away
-            let (debrief, away_duration_secs) = if let Some(since) = away_since {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let duration = now.saturating_sub(since);
-                let ev = events::events_since(since).unwrap_or_default();
-                let debrief_json: Vec<serde_json::Value> = ev
-                    .iter()
-                    .map(|e| {
-                        serde_json::json!({
-                            "timestamp": e.timestamp,
-                            "kind": e.kind.to_string(),
-                            "pane": e.pane,
-                            "details": e.details,
-                        })
-                    })
-                    .collect();
-                (debrief_json, Some(duration))
-            } else {
-                (Vec::new(), None)
-            };
-
-            // Build plan progress if a project plan exists
-            let plan_progress = match autonomous::load_plan() {
-                Ok(Some(plan)) => {
-                    let summary = autonomous::summarize_plan(&plan);
-                    serde_json::json!({
-                        "found": true,
-                        "description": plan.description,
-                        "total_tasks": summary.total_tasks,
-                        "done_tasks": summary.done_tasks,
-                        "in_progress_tasks": summary.in_progress_tasks,
-                        "pending_tasks": summary.pending_tasks,
-                        "failed_tasks": summary.failed_tasks,
-                        "current_stage": summary.current_stage_name,
-                        "current_stage_index": summary.current_stage_index,
-                        "total_stages": summary.total_stages,
-                    })
-                }
-                _ => serde_json::json!({ "found": false }),
-            };
-
-            let out = serde_json::json!({
-                "mode": "present",
-                "away_duration_secs": away_duration_secs,
-                "debrief": debrief,
-                "pending_decisions": pending,
-                "plan_progress": plan_progress,
-                "note": if pending.is_empty() {
-                    "No pending decisions. All clear!"
-                } else {
-                    "Review the pending decisions above. Use 'clear-decisions' after resolving them."
-                }
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-
-        Some(Command::Status) => {
-            let sm = StateManager::new()?;
-            let s = sm.get_state()?;
-            let out = serde_json::json!({
-                "mode": s.mode.to_string(),
-                "away_since": s.away_since,
-                "away_message": s.away_message,
-                "pending_decisions": s.pending_decisions,
+                "toggled": true,
+                "previous_mode": current_mode,
+                "requesting_mode": new_mode,
+                "target_pane": target_pane,
+                "note": "Message sent to orchestrator. The AI will handle the mode transition."
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -926,14 +712,27 @@ fn main() -> anyhow::Result<()> {
             const GREEN: &str = "\x1b[32m";
             const YELLOW: &str = "\x1b[33m";
             const BRIGHT_RED: &str = "\x1b[91m";
-            const CYAN: &str = "\x1b[36m";
 
-            let sm = StateManager::new()?;
-            let s = sm.get_state()?;
+            // Read mode from project state file
+            let state_dir = project::get_project_state_dir()?;
+            let state_file = state_dir.join("state.json");
+            let (mode_str, away_since, away_message) = if state_file.exists() {
+                let content = std::fs::read_to_string(&state_file).unwrap_or_default();
+                let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+                let mode = v["mode"].as_str().unwrap_or("present").to_string();
+                let since = v["away_since"].as_u64();
+                let msg = v["instructions"]
+                    .as_str()
+                    .or_else(|| v["away_message"].as_str())
+                    .map(|s| s.to_string());
+                (mode, since, msg)
+            } else {
+                ("present".to_string(), None, None)
+            };
 
             // ── MODE ──────────────────────────────────────────────────────────
-            if matches!(s.mode, state::Mode::Away) {
-                let away_since = s.away_since.map(|ts| {
+            if mode_str == "away" {
+                let away_since_str = away_since.map(|ts| {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs())
@@ -944,10 +743,10 @@ fn main() -> anyhow::Result<()> {
                     format!("{h}h {m}m ago (since unix:{ts})")
                 });
                 println!("{BOLD}{YELLOW}Mode:{RESET}    {BOLD}{YELLOW}AWAY{RESET}");
-                if let Some(since) = away_since {
+                if let Some(since) = away_since_str {
                     println!("{DIM}Away:{RESET}    {since}");
                 }
-                if let Some(ref msg) = s.away_message {
+                if let Some(ref msg) = away_message {
                     println!("{DIM}Message:{RESET} {msg}");
                 }
             } else {
@@ -955,23 +754,31 @@ fn main() -> anyhow::Result<()> {
             }
 
             // ── PENDING DECISIONS ─────────────────────────────────────────────
+            let decisions_file = state_dir.join("decisions.json");
             println!();
             println!("{BOLD}{UNDERLINE}Pending Decisions{RESET}");
-            if s.pending_decisions.is_empty() {
-                println!("  {DIM}none{RESET}");
-            } else {
-                println!(
-                    "  {BOLD}{}{RESET} decision(s) queued",
-                    s.pending_decisions.len()
-                );
-                for (i, d) in s.pending_decisions.iter().enumerate() {
-                    println!();
-                    println!("  {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, d.pane);
-                    println!("      {BOLD}Q:{RESET} {}", d.question);
-                    if !d.context.is_empty() {
-                        println!("      {DIM}Context:{RESET} {}", d.context);
+            if decisions_file.exists() {
+                let content = std::fs::read_to_string(&decisions_file).unwrap_or_default();
+                let decisions: Vec<serde_json::Value> =
+                    serde_json::from_str(&content).unwrap_or_default();
+                if decisions.is_empty() {
+                    println!("  {DIM}none{RESET}");
+                } else {
+                    println!("  {BOLD}{}{RESET} decision(s) queued", decisions.len());
+                    for (i, d) in decisions.iter().enumerate() {
+                        println!();
+                        let pane = d["pane"].as_str().unwrap_or("?");
+                        let question = d["question"].as_str().unwrap_or("?");
+                        let context = d["context"].as_str().unwrap_or("");
+                        println!("  {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, pane);
+                        println!("      {BOLD}Q:{RESET} {}", question);
+                        if !context.is_empty() {
+                            println!("      {DIM}Context:{RESET} {}", context);
+                        }
                     }
                 }
+            } else {
+                println!("  {DIM}none{RESET}");
             }
 
             // ── WORKER HEALTH ─────────────────────────────────────────────────
@@ -1023,62 +830,6 @@ fn main() -> anyhow::Result<()> {
                         "  {DIM}{}{RESET}  {status_colored}  {BOLD}{:<48}{RESET}{}",
                         p.id, short_title, attn
                     );
-                }
-            }
-
-            // ── DEBRIEF (only shown when away) ────────────────────────────────
-            if matches!(s.mode, state::Mode::Away) {
-                if let Some(since) = s.away_since {
-                    let ev = events::events_since(since).unwrap_or_default();
-                    println!();
-                    println!("{BOLD}{UNDERLINE}Events Since Going Away{RESET}");
-                    if ev.is_empty() {
-                        println!("  {DIM}no events recorded yet{RESET}");
-                    } else {
-                        for e in &ev {
-                            // Format timestamp as HH:MM:SS offset from `since`
-                            let elapsed = e.timestamp.saturating_sub(since);
-                            let h = elapsed / 3600;
-                            let m = (elapsed % 3600) / 60;
-                            let sec = elapsed % 60;
-                            let ts_str = format!("+{h:02}:{m:02}:{sec:02}");
-                            let pane_str = e
-                                .pane
-                                .as_deref()
-                                .map(|p| format!(" {YELLOW}{p}{RESET}"))
-                                .unwrap_or_default();
-                            let kind_colored = match e.kind {
-                                events::EventKind::WorkerSpawned => {
-                                    format!("{GREEN}WorkerSpawned  {RESET}")
-                                }
-                                events::EventKind::WorkerKilled => {
-                                    format!("{DIM}WorkerKilled   {RESET}")
-                                }
-                                events::EventKind::WorkerStalled => {
-                                    format!("{BOLD}{RED}WorkerStalled  {RESET}")
-                                }
-                                events::EventKind::WorkerRecovered => {
-                                    format!("{CYAN}WorkerRecovered{RESET}")
-                                }
-                                events::EventKind::DecisionQueued => {
-                                    format!("{BOLD}{YELLOW}DecisionQueued {RESET}")
-                                }
-                                events::EventKind::DecisionCleared => {
-                                    format!("{DIM}DecisionCleared{RESET}")
-                                }
-                                events::EventKind::ModeChanged => {
-                                    format!("{DIM}ModeChanged    {RESET}")
-                                }
-                                events::EventKind::Pulse => {
-                                    format!("{DIM}Pulse          {RESET}")
-                                }
-                            };
-                            let short_details: String = e.details.chars().take(60).collect();
-                            println!(
-                                "  {DIM}{ts_str}{RESET}  {kind_colored}{pane_str}  {DIM}{short_details}{RESET}"
-                            );
-                        }
-                    }
                 }
             }
 
@@ -1146,35 +897,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::QueueDecision {
-            pane,
-            question,
-            context,
-        }) => {
-            let id = tmux::queue_decision(&pane, &question, &context)?;
-            let short_q: String = question.chars().take(80).collect();
-            let _ = events::log_event(events::EventKind::DecisionQueued, Some(&pane), &short_q);
-            let out = serde_json::json!({
-                "queued": true,
-                "decision_id": id,
-                "pane": pane,
-                "question": question,
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-
-        Some(Command::ClearDecisions) => {
-            let sm = StateManager::new()?;
-            sm.clear_decisions()?;
-            let _ = events::log_event(
-                events::EventKind::DecisionCleared,
-                None,
-                "all pending decisions cleared",
-            );
-            let out = serde_json::json!({ "cleared": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-
         Some(Command::Monitor {
             interval,
             pane,
@@ -1185,10 +907,6 @@ fn main() -> anyhow::Result<()> {
 
         Some(Command::Watch { interval, pane }) => {
             watch::run(interval, pane.as_deref())?;
-        }
-
-        Some(Command::Autonomous { interval }) => {
-            autonomous::run(interval)?;
         }
 
         Some(Command::Pulse) => {
@@ -1607,191 +1325,6 @@ fn main() -> anyhow::Result<()> {
             let tm = tasks::TaskManager::new()?;
             tm.complete_subtask(&task_id, &subtask_id)?;
             println!("Subtask marked as done.");
-        }
-
-        // ── Project Plan commands ────────────────────────────────────────────
-        Some(Command::Plan {
-            description,
-            repo,
-            model,
-            max_workers,
-        }) => {
-            use std::time::Duration;
-
-            let repo_path = match repo {
-                Some(r) => std::fs::canonicalize(&r)
-                    .with_context(|| format!("invalid repo path: {r}"))?
-                    .to_string_lossy()
-                    .to_string(),
-                None => std::env::current_dir()
-                    .context("failed to get current directory")?
-                    .to_string_lossy()
-                    .to_string(),
-            };
-
-            let pm = plan::PlanManager::new()?;
-            let plan_file = plan::plan_file_path()?;
-            let plan_file_str = plan_file.to_string_lossy().to_string();
-
-            // Build the planner prompt
-            let schema_example = r#"{
-  "description": "...",
-  "repo_path": "...",
-  "model": "...",
-  "max_concurrent_workers": 3,
-  "current_stage_index": 0,
-  "stages": [
-    {
-      "id": "stage-0",
-      "name": "...",
-      "description": "...",
-      "tasks": [
-        {
-          "id": "task-0-0",
-          "title": "...",
-          "description": "Detailed description for the AI worker",
-          "status": "pending",
-          "assigned_pane": null,
-          "worktree_path": null,
-          "started_at": null,
-          "completed_at": null
-        }
-      ]
-    }
-  ]
-}"#;
-
-            let planner_task = format!(
-                "You are a software project planner. Analyze this project and create a detailed, staged implementation plan.\n\n\
-                Project description: {description}\n\
-                Git repository: {repo_path}\n\n\
-                Your job: Write a project plan as JSON to this exact file path: {plan_file_str}\n\n\
-                The JSON must match this exact schema:\n{schema_example}\n\n\
-                Requirements:\n\
-                - 2-4 stages, ordered from foundations to features to polish\n\
-                - 3-5 tasks per stage\n\
-                - Each task description must be detailed enough that an AI coding agent can implement it independently, with no ambiguity\n\
-                - Tasks within a stage can run in parallel (they should not depend on each other)\n\
-                - model: \"{model}\"\n\
-                - max_concurrent_workers: {max_workers}\n\
-                - repo_path: \"{repo_path}\"\n\
-                - current_stage_index: 0\n\
-                - All task statuses start as \"pending\"\n\
-                - Generate unique IDs like \"stage-0\", \"stage-1\", \"task-0-0\", \"task-0-1\", etc.\n\n\
-                Write ONLY the JSON file. Do not start any implementation. Output a brief summary of the plan after writing the file.",
-                description = description,
-                repo_path = repo_path,
-                plan_file_str = plan_file_str,
-                schema_example = schema_example,
-                model = model,
-                max_workers = max_workers,
-            );
-
-            println!("Creating project plan...");
-            println!("  Description: {description}");
-            println!("  Repo:        {repo_path}");
-            println!("  Model:       {model}");
-            println!("  Max workers: {max_workers}");
-            println!();
-            println!("Spawning planner agent...");
-
-            let pane_id = tmux::spawn(
-                &planner_task,
-                &repo_path,
-                Some("planner"),
-                Some(&model),
-                Some("plan"),
-            )?;
-
-            println!("Planner agent spawned: {pane_id}");
-            println!("Waiting for plan file to be written (up to 5 minutes)...");
-
-            // Poll every 5s for up to 5 minutes (60 attempts)
-            let mut plan_ready = false;
-            for attempt in 0..60usize {
-                std::thread::sleep(Duration::from_secs(5));
-
-                // Check if file exists and is valid JSON
-                if plan_file.exists() {
-                    match std::fs::read_to_string(&plan_file) {
-                        Ok(content) => {
-                            if serde_json::from_str::<plan::ProjectPlan>(&content).is_ok() {
-                                plan_ready = true;
-                                break;
-                            }
-                        }
-                        Err(_) => {}
-                    }
-                }
-
-                if attempt % 6 == 5 {
-                    let elapsed = (attempt + 1) * 5;
-                    println!("  Still waiting... ({elapsed}s elapsed)");
-                }
-            }
-
-            // Kill the planner pane
-            let _ = tmux::kill(&pane_id);
-
-            if !plan_ready {
-                anyhow::bail!(
-                    "Planner did not produce a valid plan file within 5 minutes.\n\
-                    Check if the planner output any errors, or try again."
-                );
-            }
-
-            // Load and display
-            match pm.load()? {
-                Some(p) => {
-                    println!();
-                    println!("Plan created successfully!");
-                    println!();
-                    plan::print_plan(&p);
-                    println!();
-                    println!("Run 'superharness plan-show' to view the plan at any time.");
-                }
-                None => {
-                    anyhow::bail!("Plan file was written but could not be loaded.");
-                }
-            }
-        }
-
-        Some(Command::PlanShow) => {
-            let pm = plan::PlanManager::new()?;
-            match pm.load()? {
-                Some(p) => plan::print_plan(&p),
-                None => {
-                    println!("No project plan found.");
-                    println!();
-                    println!("Create one with:");
-                    println!("  superharness plan \"description of what you want to build\" --repo /path/to/repo");
-                }
-            }
-        }
-
-        Some(Command::PlanReset) => {
-            let pm = plan::PlanManager::new()?;
-            match pm.load()? {
-                None => {
-                    println!("No project plan found. Nothing to reset.");
-                }
-                Some(mut p) => {
-                    p.current_stage_index = 0;
-                    for stage in &mut p.stages {
-                        for task in &mut stage.tasks {
-                            task.status = plan::TaskStatus::Pending;
-                            task.assigned_pane = None;
-                            task.worktree_path = None;
-                            task.started_at = None;
-                            task.completed_at = None;
-                        }
-                    }
-                    pm.save(&p)?;
-                    println!("Plan reset: all tasks set to pending, stage index reset to 0.");
-                    println!();
-                    plan::print_plan(&p);
-                }
-            }
         }
     }
 

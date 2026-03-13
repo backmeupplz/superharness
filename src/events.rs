@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::project;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
@@ -41,12 +43,10 @@ pub struct Event {
 }
 
 fn events_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
-        .join("events.json")
+    // Use project-local state dir; fall back to /tmp on error
+    project::get_project_state_dir()
+        .map(|d| d.join("events.json"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/superharness-events.json"))
 }
 
 fn now_unix() -> u64 {
@@ -59,11 +59,7 @@ fn now_unix() -> u64 {
 /// Append one event to the event log file (creates it if it doesn't exist).
 pub fn log_event(kind: EventKind, pane: Option<&str>, details: &str) -> Result<()> {
     let path = events_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create events directory: {}", parent.display()))?;
-    }
-
+    // Directory is already created by get_project_state_dir() inside events_path()
     let mut events = load_events().unwrap_or_default();
     events.push(Event {
         timestamp: now_unix(),
@@ -95,6 +91,7 @@ pub fn load_events() -> Result<Vec<Event>> {
 }
 
 /// Return only events with timestamp >= since.
+#[allow(dead_code)]
 pub fn events_since(since: u64) -> Result<Vec<Event>> {
     let all = load_events()?;
     Ok(all.into_iter().filter(|e| e.timestamp >= since).collect())
