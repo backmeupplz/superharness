@@ -12,7 +12,7 @@ mod relay;
 mod setup;
 mod tasks;
 mod tmux;
-mod watch;
+mod heartbeat;
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -827,7 +827,7 @@ fn main() -> anyhow::Result<()> {
             );
 
             // Trigger a heartbeat so the orchestrator wakes up immediately.
-            let _ = watch::heartbeat();
+            let _ = heartbeat::heartbeat();
 
             let out = serde_json::json!({ "pane": pane, "killed": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -2184,7 +2184,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::StatusCounts) => {
-            println!("{}", watch::status_counts());
+            println!("{}", heartbeat::status_counts());
         }
 
         Some(Command::Heartbeat { snooze }) => {
@@ -2196,9 +2196,9 @@ fn main() -> anyhow::Result<()> {
             if let Some(secs) = snooze {
                 // Snooze mode: update snooze_until WITHOUT sending a heartbeat.
                 // Preserve the disabled flag — snooze is independent of toggle.
-                let state = watch::read_heartbeat_state();
+                let state = heartbeat::read_heartbeat_state();
                 let snooze_until = now + secs;
-                watch::write_heartbeat_state_full(
+                heartbeat::write_heartbeat_state_full(
                     state.last_beat_ts,
                     state.interval_secs,
                     state.last_sent,
@@ -2210,7 +2210,7 @@ fn main() -> anyhow::Result<()> {
             } else {
                 // Immediate heartbeat: run idle checks and send if %0 is ready.
                 // Respects snooze/toggle — does NOT clear it on success.
-                match watch::heartbeat() {
+                match heartbeat::heartbeat() {
                     Ok(true) => {
                         eprintln!("[heartbeat] sent [HEARTBEAT] to %0");
                     }
@@ -2225,12 +2225,12 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::HeartbeatToggle) => {
-            let state = watch::read_heartbeat_state();
+            let state = heartbeat::read_heartbeat_state();
 
             if state.disabled {
                 // Currently disabled — re-enable by clearing the disabled flag.
                 // Leave snooze_until unchanged so any active timed snooze is preserved.
-                watch::write_heartbeat_state_full(
+                heartbeat::write_heartbeat_state_full(
                     state.last_beat_ts,
                     state.interval_secs,
                     state.last_sent,
@@ -2242,7 +2242,7 @@ fn main() -> anyhow::Result<()> {
             } else {
                 // Currently enabled — disable by setting the disabled flag.
                 // Leave snooze_until unchanged so timed snoozes are not disturbed.
-                watch::write_heartbeat_state_full(
+                heartbeat::write_heartbeat_state_full(
                     state.last_beat_ts,
                     state.interval_secs,
                     state.last_sent,
@@ -2260,7 +2260,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            let state = watch::read_heartbeat_state();
+            let state = heartbeat::read_heartbeat_state();
 
             if state.last_beat_ts == 0 && state.snooze_until == 0 && !state.disabled {
                 // No heartbeat state file yet.
