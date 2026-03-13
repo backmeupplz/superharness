@@ -5,6 +5,7 @@ mod loop_guard;
 mod memory;
 mod monitor;
 mod pending_tasks;
+mod plan;
 mod setup;
 mod state;
 mod tasks;
@@ -423,6 +424,31 @@ enum Command {
         /// Subtask ID prefix
         subtask_id: String,
     },
+
+    // ── Project Plan ────────────────────────────────────────────────────────
+    /// Create a new AI-generated project plan and store it
+    Plan {
+        /// High-level description of what you want to build
+        description: String,
+
+        /// Path to the git repository (defaults to current directory)
+        #[arg(short, long)]
+        repo: Option<String>,
+
+        /// Model to use for workers spawned to execute the plan
+        #[arg(short, long, default_value = "anthropic/claude-sonnet-4-6")]
+        model: String,
+
+        /// Maximum number of concurrent workers when executing the plan
+        #[arg(long, default_value_t = 3)]
+        max_workers: usize,
+    },
+
+    /// Show the current project plan
+    PlanShow,
+
+    /// Reset all task statuses to pending (start over)
+    PlanReset,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1520,6 +1546,191 @@ fn main() -> anyhow::Result<()> {
             let tm = tasks::TaskManager::new()?;
             tm.complete_subtask(&task_id, &subtask_id)?;
             println!("Subtask marked as done.");
+        }
+
+        // ── Project Plan commands ────────────────────────────────────────────
+        Some(Command::Plan {
+            description,
+            repo,
+            model,
+            max_workers,
+        }) => {
+            use std::time::Duration;
+
+            let repo_path = match repo {
+                Some(r) => std::fs::canonicalize(&r)
+                    .with_context(|| format!("invalid repo path: {r}"))?
+                    .to_string_lossy()
+                    .to_string(),
+                None => std::env::current_dir()
+                    .context("failed to get current directory")?
+                    .to_string_lossy()
+                    .to_string(),
+            };
+
+            let pm = plan::PlanManager::new()?;
+            let plan_file = plan::plan_file_path()?;
+            let plan_file_str = plan_file.to_string_lossy().to_string();
+
+            // Build the planner prompt
+            let schema_example = r#"{
+  "description": "...",
+  "repo_path": "...",
+  "model": "...",
+  "max_concurrent_workers": 3,
+  "current_stage_index": 0,
+  "stages": [
+    {
+      "id": "stage-0",
+      "name": "...",
+      "description": "...",
+      "tasks": [
+        {
+          "id": "task-0-0",
+          "title": "...",
+          "description": "Detailed description for the AI worker",
+          "status": "pending",
+          "assigned_pane": null,
+          "worktree_path": null,
+          "started_at": null,
+          "completed_at": null
+        }
+      ]
+    }
+  ]
+}"#;
+
+            let planner_task = format!(
+                "You are a software project planner. Analyze this project and create a detailed, staged implementation plan.\n\n\
+                Project description: {description}\n\
+                Git repository: {repo_path}\n\n\
+                Your job: Write a project plan as JSON to this exact file path: {plan_file_str}\n\n\
+                The JSON must match this exact schema:\n{schema_example}\n\n\
+                Requirements:\n\
+                - 2-4 stages, ordered from foundations to features to polish\n\
+                - 3-5 tasks per stage\n\
+                - Each task description must be detailed enough that an AI coding agent can implement it independently, with no ambiguity\n\
+                - Tasks within a stage can run in parallel (they should not depend on each other)\n\
+                - model: \"{model}\"\n\
+                - max_concurrent_workers: {max_workers}\n\
+                - repo_path: \"{repo_path}\"\n\
+                - current_stage_index: 0\n\
+                - All task statuses start as \"pending\"\n\
+                - Generate unique IDs like \"stage-0\", \"stage-1\", \"task-0-0\", \"task-0-1\", etc.\n\n\
+                Write ONLY the JSON file. Do not start any implementation. Output a brief summary of the plan after writing the file.",
+                description = description,
+                repo_path = repo_path,
+                plan_file_str = plan_file_str,
+                schema_example = schema_example,
+                model = model,
+                max_workers = max_workers,
+            );
+
+            println!("Creating project plan...");
+            println!("  Description: {description}");
+            println!("  Repo:        {repo_path}");
+            println!("  Model:       {model}");
+            println!("  Max workers: {max_workers}");
+            println!();
+            println!("Spawning planner agent...");
+
+            let pane_id = tmux::spawn(
+                &planner_task,
+                &repo_path,
+                Some("planner"),
+                Some(&model),
+                Some("plan"),
+            )?;
+
+            println!("Planner agent spawned: {pane_id}");
+            println!("Waiting for plan file to be written (up to 5 minutes)...");
+
+            // Poll every 5s for up to 5 minutes (60 attempts)
+            let mut plan_ready = false;
+            for attempt in 0..60usize {
+                std::thread::sleep(Duration::from_secs(5));
+
+                // Check if file exists and is valid JSON
+                if plan_file.exists() {
+                    match std::fs::read_to_string(&plan_file) {
+                        Ok(content) => {
+                            if serde_json::from_str::<plan::ProjectPlan>(&content).is_ok() {
+                                plan_ready = true;
+                                break;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+
+                if attempt % 6 == 5 {
+                    let elapsed = (attempt + 1) * 5;
+                    println!("  Still waiting... ({elapsed}s elapsed)");
+                }
+            }
+
+            // Kill the planner pane
+            let _ = tmux::kill(&pane_id);
+
+            if !plan_ready {
+                anyhow::bail!(
+                    "Planner did not produce a valid plan file within 5 minutes.\n\
+                    Check if the planner output any errors, or try again."
+                );
+            }
+
+            // Load and display
+            match pm.load()? {
+                Some(p) => {
+                    println!();
+                    println!("Plan created successfully!");
+                    println!();
+                    plan::print_plan(&p);
+                    println!();
+                    println!("Run 'superharness plan-show' to view the plan at any time.");
+                }
+                None => {
+                    anyhow::bail!("Plan file was written but could not be loaded.");
+                }
+            }
+        }
+
+        Some(Command::PlanShow) => {
+            let pm = plan::PlanManager::new()?;
+            match pm.load()? {
+                Some(p) => plan::print_plan(&p),
+                None => {
+                    println!("No project plan found.");
+                    println!();
+                    println!("Create one with:");
+                    println!("  superharness plan \"description of what you want to build\" --repo /path/to/repo");
+                }
+            }
+        }
+
+        Some(Command::PlanReset) => {
+            let pm = plan::PlanManager::new()?;
+            match pm.load()? {
+                None => {
+                    println!("No project plan found. Nothing to reset.");
+                }
+                Some(mut p) => {
+                    p.current_stage_index = 0;
+                    for stage in &mut p.stages {
+                        for task in &mut stage.tasks {
+                            task.status = plan::TaskStatus::Pending;
+                            task.assigned_pane = None;
+                            task.worktree_path = None;
+                            task.started_at = None;
+                            task.completed_at = None;
+                        }
+                    }
+                    pm.save(&p)?;
+                    println!("Plan reset: all tasks set to pending, stage index reset to 0.");
+                    println!();
+                    plan::print_plan(&p);
+                }
+            }
         }
     }
 
