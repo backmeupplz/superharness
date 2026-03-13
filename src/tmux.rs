@@ -133,7 +133,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // Uses grep to extract mode from the project-local .superharness/state.json.
     // Falls back to the global active_project.txt to locate the project dir.
     // The shell snippet produces "AWAY" or "PRESENT" from the state file.
-    let mode_snippet = r#"#(p=$(cat $HOME/.local/share/superharness/active_project.txt 2>/dev/null); f="$p/.superharness/state.json"; [ -f "$f" ] && grep -o '"mode":"[^"]*"' "$f" | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]' || echo PRESENT)"#;
+    let mode_snippet = r#"#(p=$(cat $HOME/.local/share/superharness/active_project.txt 2>/dev/null); f="$p/.superharness/state.json"; if [ -f "$f" ]; then m=$(jq -r '.mode' "$f" 2>/dev/null | tr '[:lower:]' '[:upper:]'); [ -z "$m" ] && m=$(grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" | grep -o '"[^"]*"$' | tr -d '"' | tr '[:lower:]' '[:upper:]'); [ "$m" = "AWAY" ] && echo "#[fg=colour214,bold]AWAY#[default]" || echo "#[fg=colour71,bold]PRESENT#[default]"; else echo "#[fg=colour71,bold]PRESENT#[default]"; fi)"#;
 
     // Pane count: number of panes in the superharness session.
     let pane_count_snippet =
