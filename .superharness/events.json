@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": 1773408176,
+    "kind": "worker_killed",
+    "pane": "%1",
+    "details": "worker killed"
+  },
+  {
+    "timestamp": 1773408176,
+    "kind": "worker_killed",
+    "pane": "%3",
+    "details": "worker killed"
+  }
+]
