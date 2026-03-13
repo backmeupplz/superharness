@@ -573,7 +573,8 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Warn if the target dir is a git repo with uncommitted changes.
+            // Warn if the target dir is a git repo with uncommitted changes or
+            // is in a state that can make worktrees tricky (detached HEAD, no commits).
             // Worktrees are created from HEAD, so dirty files won't be included.
             {
                 let check_dir =
@@ -589,23 +590,77 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or(false);
 
                 if is_git {
+                    // ── Detached HEAD check ──────────────────────────────────
+                    // `git symbolic-ref --quiet HEAD` succeeds on a branch,
+                    // fails when HEAD points directly at a commit (detached).
+                    let is_detached = std::process::Command::new("git")
+                        .args(["-C", &check_dir_str, "symbolic-ref", "--quiet", "HEAD"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .map(|s| !s.success())
+                        .unwrap_or(false);
+
+                    if is_detached {
+                        eprintln!(
+                            "WARNING: {check_dir_str} is in detached HEAD state."
+                        );
+                        eprintln!(
+                            "  A worktree created from here will not be on any branch."
+                        );
+                        eprintln!(
+                            "  Consider checking out a branch first:"
+                        );
+                        eprintln!(
+                            "    git -C {check_dir_str} checkout -b <branch-name>"
+                        );
+                    }
+
+                    // ── Dirty-files check ────────────────────────────────────
                     let status_out = std::process::Command::new("git")
                         .args(["-C", &check_dir_str, "status", "--porcelain"])
                         .output();
 
                     if let Ok(out) = status_out {
                         let status_text = String::from_utf8_lossy(&out.stdout);
-                        let dirty_count =
-                            status_text.lines().filter(|l| !l.trim().is_empty()).count();
+                        let dirty_lines: Vec<&str> = status_text
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .collect();
+                        let dirty_count = dirty_lines.len();
                         if dirty_count > 0 {
+                            // Categorise into staged, unstaged, and untracked for clarity.
+                            let staged = dirty_lines
+                                .iter()
+                                .filter(|l| {
+                                    let b = l.as_bytes();
+                                    !b.is_empty() && b[0] != b' ' && b[0] != b'?'
+                                })
+                                .count();
+                            let unstaged = dirty_lines
+                                .iter()
+                                .filter(|l| {
+                                    let b = l.as_bytes();
+                                    b.len() > 1 && b[1] != b' ' && b[0] == b' '
+                                })
+                                .count();
+                            let untracked = dirty_lines
+                                .iter()
+                                .filter(|l| l.starts_with("??"))
+                                .count();
+
                             eprintln!(
-                                "WARNING: {check_dir_str} has {dirty_count} uncommitted file(s)."
+                                "WARNING: {check_dir_str} has {dirty_count} file(s) with uncommitted changes \
+                                 ({staged} staged, {unstaged} unstaged, {untracked} untracked)."
                             );
                             eprintln!(
                                 "  If you are using a git worktree, dirty files will NOT be included."
                             );
                             eprintln!(
-                                "  Run 'superharness git-check --dir {check_dir_str}' for details."
+                                "  Commit or stash them first, or run for details:"
+                            );
+                            eprintln!(
+                                "    superharness git-check --dir {check_dir_str}"
                             );
                         }
                     }

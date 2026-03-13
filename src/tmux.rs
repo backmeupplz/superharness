@@ -287,8 +287,17 @@ pub fn spawn(
 ) -> Result<String> {
     ensure_session()?;
 
-    let abs_dir =
-        std::fs::canonicalize(dir).with_context(|| format!("invalid directory: {dir}"))?;
+    // Give a friendly error when the working directory is missing.
+    if !std::path::Path::new(dir).exists() {
+        anyhow::bail!(
+            "directory does not exist: {dir}\n\
+             Create it first with:\n\
+             \n\
+               mkdir -p {dir}"
+        );
+    }
+    let abs_dir = std::fs::canonicalize(dir)
+        .with_context(|| format!("could not resolve directory: {dir}"))?;
     let dir_str = abs_dir.to_string_lossy().to_string();
 
     let effective_mode = mode.unwrap_or("build");
@@ -441,8 +450,109 @@ pub fn list() -> Result<Vec<PaneInfo>> {
     Ok(panes)
 }
 
-/// Kill a pane.
+/// Attempt to remove a git worktree at `path` if it looks like a temporary
+/// worktree created by superharness (path is under /tmp/ and contains a .git
+/// FILE — which is the worktree marker — rather than a .git directory).
+///
+/// Errors are logged as warnings; the caller's pane kill always proceeds
+/// regardless of whether this succeeds.
+fn cleanup_worktree(path: &str) {
+    // Only act on paths under /tmp/ — we never auto-remove production worktrees.
+    if !path.starts_with("/tmp/") {
+        return;
+    }
+
+    let git_marker = std::path::Path::new(path).join(".git");
+
+    // A worktree has a .git FILE; a normal repo has a .git DIRECTORY.
+    if !git_marker.is_file() {
+        return;
+    }
+
+    // Read the .git file to extract the gitdir path.
+    // Format: "gitdir: /path/to/main/.git/worktrees/<name>"
+    let content = match std::fs::read_to_string(&git_marker) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[kill] WARNING: could not read {}: {e}",
+                git_marker.display()
+            );
+            return;
+        }
+    };
+
+    let gitdir = content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("gitdir:")
+            .map(|rest| rest.trim().to_string())
+    });
+
+    let gitdir = match gitdir {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "[kill] WARNING: malformed .git file (no 'gitdir:' line) at {}",
+                git_marker.display()
+            );
+            return;
+        }
+    };
+
+    // Resolve to an absolute path (gitdir may be relative to the worktree).
+    let gitdir_abs = if std::path::Path::new(&gitdir).is_absolute() {
+        std::path::PathBuf::from(&gitdir)
+    } else {
+        std::path::Path::new(path).join(&gitdir)
+    };
+
+    // gitdir_abs is typically  <main_repo>/.git/worktrees/<name>
+    // Navigate up three levels:  <name> → worktrees/ → .git/ → <main_repo>
+    let main_repo = gitdir_abs
+        .parent() // worktrees/<name> → worktrees/
+        .and_then(|p| p.parent()) // worktrees/ → .git/
+        .and_then(|p| p.parent()); // .git/ → <main_repo>
+
+    let main_repo = match main_repo {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => {
+            eprintln!(
+                "[kill] WARNING: could not determine main repo from gitdir '{gitdir}' — skipping worktree cleanup"
+            );
+            return;
+        }
+    };
+
+    // Run: git -C <main_repo> worktree remove --force <path>
+    match std::process::Command::new("git")
+        .args(["-C", &main_repo, "worktree", "remove", "--force", path])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            eprintln!("[kill] auto-removed git worktree: {path}");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("[kill] WARNING: 'git worktree remove --force {path}' failed: {stderr}");
+        }
+        Err(e) => {
+            eprintln!("[kill] WARNING: could not run git worktree remove: {e}");
+        }
+    }
+}
+
+/// Kill a pane, auto-cleaning up any git worktree associated with its working
+/// directory when that directory is under /tmp/.
 pub fn kill(pane: &str) -> Result<()> {
+    // Query the pane's current working directory BEFORE killing it.
+    // If we can determine it, attempt worktree cleanup.
+    if let Ok(raw) = tmux(&["display-message", "-t", pane, "-p", "#{pane_current_path}"]) {
+        let path = raw.trim();
+        if !path.is_empty() {
+            cleanup_worktree(path);
+        }
+    }
+
     tmux_ok(&["kill-pane", "-t", pane])
 }
 

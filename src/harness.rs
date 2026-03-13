@@ -101,11 +101,14 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
     if installed.is_empty() {
         bail!(
             "No AI coding harness found on PATH.\n\
-             Install one of the following:\n\
              \n\
-             • opencode (OpenCode)    — https://opencode.ai\n\
-             • claude  (Claude Code)  — https://claude.ai/code\n\
-             • codex   (OpenAI Codex) — https://github.com/openai/codex"
+             Install one of the following and make sure it is on your PATH:\n\
+             \n\
+               • opencode (OpenCode)    — https://opencode.ai\n\
+               • claude  (Claude Code)  — https://claude.ai/code\n\
+               • codex   (OpenAI Codex) — https://github.com/openai/codex\n\
+             \n\
+             After installing, verify with:  which opencode  (or claude / codex)"
         );
     }
 
@@ -117,10 +120,14 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
         {
             return Ok(preferred);
         }
-        // Preferred harness is configured but not installed — warn and fall through
+        // Preferred harness is configured but not installed — warn and fall through.
+        // Include the install URL so the user knows exactly how to fix it.
+        let url = install_url(&preferred);
         eprintln!(
-            "WARNING: configured default_harness '{preferred}' is not installed. \
-             Falling back to first available harness."
+            "WARNING: configured default_harness '{preferred}' is not installed or not on PATH.\n\
+             Install it from: {url}\n\
+             Falling back to first available harness: {first}.",
+            first = installed[0].binary
         );
     }
 
