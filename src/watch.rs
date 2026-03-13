@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::events;
 use crate::health::{classify_pane, HealthStatus};
+use crate::layout;
 use crate::monitor::load_state;
 use crate::pending_tasks;
 use crate::relay;
@@ -369,6 +370,21 @@ fn handle_done(pane_id: &str) -> PaneAction {
         .take(120)
         .collect();
 
+    // If the pane is currently visible in the main window, hide it to a
+    // background tab first.  This lets the main window re-layout cleanly
+    // before the pane is destroyed (a direct kill of a foreground pane can
+    // leave the layout in an awkward state).
+    if pane_is_in_main_window(pane_id) {
+        eprintln!("[watch] handle_done: pane {pane_id} is in main window — hiding before kill");
+        if let Err(e) = tmux::hide(pane_id, Some(pane_id)) {
+            eprintln!("[watch] handle_done: failed to hide {pane_id}: {e}");
+        } else {
+            // Re-apply layout and enforce min size now that the done pane is gone.
+            let _ = tmux::smart_layout();
+            let _ = layout::enforce_min_pane_size();
+        }
+    }
+
     // Kill the pane.
     match tmux::kill(pane_id) {
         Ok(_) => {
@@ -518,6 +534,25 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
 }
 
 // ---------------------------------------------------------------------------
+// Pane window membership helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `pane_id` is currently in the main window (window 0)
+/// of the superharness session.
+fn pane_is_in_main_window(pane_id: &str) -> bool {
+    let output = std::process::Command::new("tmux")
+        .args(["list-panes", "-t", "superharness:0", "-F", "#{pane_id}"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .any(|l| l.trim() == pane_id),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Relay-request surfacing
 // ---------------------------------------------------------------------------
 
@@ -612,10 +647,34 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
     // Timestamp of the last heartbeat sent to %0.  Initialise to 0 so that
     // the very first cycle always fires a heartbeat immediately.
     let mut last_heartbeat: u64 = 0;
+    // Track the last observed terminal size so we can react to resize events.
+    let mut last_terminal_size: Option<(u32, u32)> = None;
+    // Track how many consecutive watch cycles each pane has been in "waiting" state.
+    let mut waiting_cycles: HashMap<String, u32> = HashMap::new();
 
     loop {
         let cycle_ts = now_unix();
         let monitor_state = load_state();
+
+        // ── Terminal resize detection ─────────────────────────────────────────
+        // If the terminal grew or shrank significantly, re-apply the layout and
+        // enforce the minimum pane size so nothing becomes unreadably small.
+        if let Some((w, h)) = tmux::terminal_size() {
+            let should_relayout = match last_terminal_size {
+                None => false, // first cycle — no previous size to compare
+                Some((lw, lh)) => {
+                    let dw = if w > lw { w - lw } else { lw - w };
+                    let dh = if h > lh { h - lh } else { lh - h };
+                    dw > 5 || dh > 3
+                }
+            };
+            if should_relayout {
+                eprintln!("[RESIZE] terminal changed to {w}x{h}, re-applying layout");
+                let _ = tmux::smart_layout();
+                let _ = layout::enforce_min_pane_size();
+            }
+            last_terminal_size = Some((w, h));
+        }
 
         // Collect pane IDs to inspect.
         let pane_ids: Vec<String> = if let Some(pane) = pane_filter {
@@ -647,12 +706,35 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
 
             let mut action = match health.status {
                 HealthStatus::Done => {
-                    // Reset stall counter on transition.
+                    // Reset stall and waiting counters on transition.
                     stall_counts.remove(pane_id.as_str());
+                    waiting_cycles.remove(pane_id.as_str());
                     handle_done(pane_id)
                 }
                 HealthStatus::Waiting => {
                     stall_counts.remove(pane_id.as_str());
+
+                    // Track consecutive waiting cycles for this pane.
+                    let wc = waiting_cycles.entry(pane_id.clone()).or_insert(0);
+                    *wc += 1;
+                    let cycles_waiting = *wc;
+
+                    // If the pane has been waiting for more than 2 consecutive cycles
+                    // and is currently in a background tab, surface it automatically
+                    // so the human can see it without manual hunting.
+                    if cycles_waiting > 2 && !pane_is_in_main_window(pane_id) {
+                        eprintln!(
+                            "[watch] pane {pane_id} has been waiting for {cycles_waiting} cycles \
+                             and is in background — surfacing automatically"
+                        );
+                        match tmux::surface(pane_id) {
+                            Ok(_) => {
+                                let _ = layout::enforce_min_pane_size();
+                            }
+                            Err(e) => eprintln!("[watch] failed to surface {pane_id}: {e}"),
+                        }
+                    }
+
                     // Surface and expand the waiting pane so the orchestrator
                     // can see it clearly without manual hunting.
                     match smart_layout_with_attention(Some(pane_id)) {
@@ -665,10 +747,14 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
                     }
                     handle_waiting(pane_id)
                 }
-                HealthStatus::Stalled => handle_stalled(pane_id, &mut stall_counts),
+                HealthStatus::Stalled => {
+                    waiting_cycles.remove(pane_id.as_str());
+                    handle_stalled(pane_id, &mut stall_counts)
+                }
                 HealthStatus::Working | HealthStatus::Idle => {
-                    // Reset stall counter when pane becomes active again.
+                    // Reset stall and waiting counters when pane becomes active again.
                     stall_counts.remove(pane_id.as_str());
+                    waiting_cycles.remove(pane_id.as_str());
                     PaneAction {
                         pane: pane_id.clone(),
                         status: health.status.to_string(),

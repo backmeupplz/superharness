@@ -244,6 +244,76 @@ pub fn apply_strategy(
 }
 
 // ---------------------------------------------------------------------------
+// Minimum pane size enforcement
+// ---------------------------------------------------------------------------
+
+/// Minimum readable pane width (columns).
+pub const MIN_PANE_COLS: u32 = 60;
+/// Minimum readable pane height (rows).
+pub const MIN_PANE_ROWS: u32 = 12;
+
+/// Scan all panes in the main window (window 0) and hide any that are smaller
+/// than [`MIN_PANE_COLS`] × [`MIN_PANE_ROWS`], except for `%0` (orchestrator).
+///
+/// Called automatically at the end of `smart_layout()` and `auto_compact()` in
+/// `tmux.rs` to ensure the main window never shows unreadably-small panes.
+pub fn enforce_min_pane_size() -> anyhow::Result<()> {
+    // List all panes across all windows with dimensions and window index.
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-t",
+            SESSION,
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_width} #{pane_height} #{window_index} #{pane_title}",
+        ])
+        .output();
+
+    let raw = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return Ok(()),
+    };
+
+    for line in raw.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        // Split on spaces — title is the rest (may contain spaces) but we only
+        // need up to index 4 for title so use splitn(5, ' ').
+        let parts: Vec<&str> = line.splitn(5, ' ').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+
+        let id = parts[0];
+        let width: u32 = parts[1].parse().unwrap_or(0);
+        let height: u32 = parts[2].parse().unwrap_or(0);
+        let window_index: u32 = parts[3].parse().unwrap_or(999);
+        let title = parts.get(4).copied().unwrap_or("worker");
+
+        // Only enforce in the main window; never touch %0 or background panes.
+        if id == "%0" || window_index != 0 {
+            continue;
+        }
+
+        if width < MIN_PANE_COLS || height < MIN_PANE_ROWS {
+            eprintln!(
+                "[layout] enforce_min_pane_size: hiding pane {id} ({width}×{height} \
+                 below minimum {MIN_PANE_COLS}×{MIN_PANE_ROWS})"
+            );
+            // Derive a sensible tab name from the pane title.
+            let tab_name: String = title.chars().take(20).collect();
+            let tab_name = tab_name.trim();
+            let tab_name = if tab_name.is_empty() { id } else { tab_name };
+            run_tmux(&["break-pane", "-s", id, "-d", "-n", tab_name]);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Internal tmux helper
 // ---------------------------------------------------------------------------
 
