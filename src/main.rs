@@ -17,6 +17,7 @@ mod watch;
 
 use anyhow::Context as _;
 use clap::Parser;
+use util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 
 #[derive(Parser)]
 #[command(
@@ -953,16 +954,6 @@ fn main() -> anyhow::Result<()> {
         Some(Command::StatusHuman) => {
             use std::time::{SystemTime, UNIX_EPOCH};
 
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const RED: &str = "\x1b[31m";
-            const GREEN: &str = "\x1b[32m";
-            const YELLOW: &str = "\x1b[33m";
-            const BRIGHT_RED: &str = "\x1b[91m";
-
             // Read mode from project state file
             let state_dir = project::get_project_state_dir()?;
             let state_file = state_dir.join("state.json");
@@ -1092,13 +1083,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::Workers) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const CYAN: &str = "\x1b[36m";
-
             let panes = tmux::list().unwrap_or_default();
 
             // Abbreviate home directory in path
@@ -1995,15 +1979,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::EventFeed) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const GREEN: &str = "\x1b[32m";
-            const RED: &str = "\x1b[31m";
-            const YELLOW: &str = "\x1b[33m";
-            const CYAN: &str = "\x1b[36m";
-
             let state_dir = project::get_project_state_dir()?;
             let events_path = state_dir.join("events.json");
 
@@ -2066,15 +2041,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::TasksModal) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const GREEN: &str = "\x1b[32m";
-            const RED: &str = "\x1b[31m";
-            const YELLOW: &str = "\x1b[33m";
-
             #[derive(serde::Deserialize)]
             struct OrchestratorTask {
                 id: String,
