@@ -2297,6 +2297,7 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(secs) = snooze {
                 // Snooze mode: update snooze_until WITHOUT sending a heartbeat.
+                // Preserve the disabled flag — snooze is independent of toggle.
                 let state = watch::read_heartbeat_state();
                 let snooze_until = now + secs;
                 watch::write_heartbeat_state_full(
@@ -2305,6 +2306,7 @@ fn main() -> anyhow::Result<()> {
                     state.last_sent,
                     state.needs_attention,
                     snooze_until,
+                    state.disabled,
                 );
                 eprintln!("[heartbeat] snoozed for {secs}s (until unix {snooze_until})");
             } else {
@@ -2325,34 +2327,32 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::HeartbeatToggle) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
             let state = watch::read_heartbeat_state();
 
-            if state.snooze_until > now {
-                // Currently snoozed — resume heartbeat by clearing the snooze.
+            if state.disabled {
+                // Currently disabled — re-enable by clearing the disabled flag.
+                // Leave snooze_until unchanged so any active timed snooze is preserved.
                 watch::write_heartbeat_state_full(
                     state.last_beat_ts,
                     state.interval_secs,
                     state.last_sent,
                     state.needs_attention,
-                    0, // clear snooze
+                    state.snooze_until,
+                    false, // clear disabled
                 );
                 eprintln!("[heartbeat] toggled on (resumed)");
             } else {
-                // Not snoozed — snooze for a very long time (~11 days = "off").
-                let snooze_until = now + 999_999;
+                // Currently enabled — disable by setting the disabled flag.
+                // Leave snooze_until unchanged so timed snoozes are not disturbed.
                 watch::write_heartbeat_state_full(
                     state.last_beat_ts,
                     state.interval_secs,
                     state.last_sent,
                     state.needs_attention,
-                    snooze_until,
+                    state.snooze_until,
+                    true, // set disabled
                 );
-                eprintln!("[heartbeat] toggled off (snoozed)");
+                eprintln!("[heartbeat] toggled off (disabled)");
             }
         }
 
@@ -2364,21 +2364,22 @@ fn main() -> anyhow::Result<()> {
 
             let state = watch::read_heartbeat_state();
 
-            if state.last_beat_ts == 0 && state.snooze_until == 0 {
+            if state.last_beat_ts == 0 && state.snooze_until == 0 && !state.disabled {
                 // No heartbeat state file yet.
                 print!("● --");
                 return Ok(());
             }
 
-            // Snooze takes priority in display.
+            // Permanent toggle-off takes priority over timed snooze in display.
+            if state.disabled {
+                print!("‖");
+                return Ok(());
+            }
+
+            // Timed snooze display.
             if state.snooze_until > now {
                 let remaining = state.snooze_until - now;
-                // Very long snooze (> 1 day) means the user toggled it off — show clean ‖.
-                if remaining > 86400 {
-                    print!("‖");
-                } else {
-                    print!("‖ {remaining}s");
-                }
+                print!("‖ {remaining}s");
                 return Ok(());
             }
 
