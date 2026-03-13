@@ -215,6 +215,7 @@ pub fn get_pending_relays() -> Result<Vec<RelayRequest>> {
 }
 
 /// Return all relay requests for a specific pane (all statuses).
+#[allow(dead_code)]
 pub fn get_relays_for_pane(pane_id: &str) -> Result<Vec<RelayRequest>> {
     let all = load_all()?;
     Ok(all.into_iter().filter(|r| r.pane_id == pane_id).collect())
@@ -240,6 +241,7 @@ pub fn answer_relay(request_id: &str, answer: &str) -> Result<()> {
 }
 
 /// Cancel a pending relay request.
+#[allow(dead_code)]
 pub fn cancel_relay(request_id: &str) -> Result<()> {
     let mut requests = load_all()?;
     let req = requests
@@ -294,6 +296,7 @@ pub fn list_all() -> Result<Vec<RelayRequest>> {
 /// Run `cmd` directly with `sudo` via a shell one-liner.
 /// Returns Ok(()) if the command exits successfully.
 /// Returns Err if the command fails or exits non-zero.
+#[allow(dead_code)]
 pub fn run_sudo_direct(cmd: &str) -> Result<std::process::ExitStatus> {
     let status = std::process::Command::new("sudo")
         .args(["sh", "-c", cmd])
