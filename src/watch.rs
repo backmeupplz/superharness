@@ -437,6 +437,24 @@ fn orchestrator_has_pending_input() -> bool {
 ///
 /// Returns `true` when the heartbeat was sent; `false` when it was skipped.
 pub fn heartbeat() -> Result<bool> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Check snooze: if snooze_until is in the future, skip without sending.
+    {
+        let state = read_heartbeat_state();
+        if state.snooze_until > now {
+            let remaining = state.snooze_until - now;
+            eprintln!(
+                "[watch] heartbeat skipped — snoozed for {remaining}s more (until unix {})",
+                state.snooze_until
+            );
+            return Ok(false);
+        }
+    }
+
     // Skip if %0 looks busy to avoid interrupting an active response.
     if orchestrator_is_busy() {
         eprintln!("[watch] heartbeat skipped — %0 appears to be actively processing");
@@ -486,6 +504,20 @@ pub fn heartbeat() -> Result<bool> {
     tmux::send("%0", &msg)?;
     let _ = tmux::flash_notification(&msg);
 
+    // Clear any active snooze now that a heartbeat was successfully delivered.
+    {
+        let state = read_heartbeat_state();
+        if state.snooze_until > 0 {
+            write_heartbeat_state_full(
+                now,
+                state.interval_secs,
+                true,
+                state.needs_attention,
+                0, // clear snooze
+            );
+        }
+    }
+
     Ok(true)
 }
 
@@ -506,6 +538,10 @@ pub struct HeartbeatState {
     pub next_beat_ts: u64,
     /// True when at least one worker is stalled/waiting and needs attention.
     pub needs_attention: bool,
+    /// Unix timestamp until which heartbeats are snoozed (0 = not snoozed).
+    /// Set by `superharness heartbeat --snooze N`.
+    #[serde(default)]
+    pub snooze_until: u64,
 }
 
 /// Return the path to the heartbeat state file.
@@ -523,12 +559,32 @@ pub fn write_heartbeat_state(
     sent: bool,
     needs_attention: bool,
 ) {
+    // Preserve existing snooze_until so it survives normal heartbeat cycles.
+    let existing = read_heartbeat_state();
+    write_heartbeat_state_full(
+        last_beat_ts,
+        interval_secs,
+        sent,
+        needs_attention,
+        existing.snooze_until,
+    );
+}
+
+/// Write heartbeat state with explicit snooze_until value.
+pub fn write_heartbeat_state_full(
+    last_beat_ts: u64,
+    interval_secs: u64,
+    sent: bool,
+    needs_attention: bool,
+    snooze_until: u64,
+) {
     let state = HeartbeatState {
         last_beat_ts,
         interval_secs,
         last_sent: sent,
         next_beat_ts: last_beat_ts + interval_secs,
         needs_attention,
+        snooze_until,
     };
     let path = heartbeat_state_path();
     if let Ok(json) = serde_json::to_string_pretty(&state) {
@@ -1086,87 +1142,97 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         // since the last *delivered* heartbeat, force-send even if %0 looks busy.
         // This prevents the heartbeat from being suppressed indefinitely.
         if cycle_ts.saturating_sub(last_heartbeat) >= HEARTBEAT_INTERVAL_SECS {
-            let force =
-                cycle_ts.saturating_sub(last_forced_heartbeat) > 2 * HEARTBEAT_INTERVAL_SECS;
+            // Check snooze before doing anything — if snoozed, skip entirely.
+            let hb_snooze = read_heartbeat_state().snooze_until;
+            if hb_snooze > cycle_ts {
+                let remaining = hb_snooze - cycle_ts;
+                eprintln!(
+                    "[watch] [HEARTBEAT] snoozed for {remaining}s more — skipping this cycle"
+                );
+                last_heartbeat = cycle_ts; // advance so we don't spin every cycle
+            } else {
+                let force =
+                    cycle_ts.saturating_sub(last_forced_heartbeat) > 2 * HEARTBEAT_INTERVAL_SECS;
 
-            // Pre-compute needs_attention for state file regardless of send outcome.
-            let hb_all_panes = tmux::list().unwrap_or_default();
-            let hb_workers: Vec<_> = hb_all_panes.iter().filter(|p| p.id != "%0").collect();
-            let hb_monitor = load_state();
-            let hb_needs_attention = hb_workers.iter().any(|p| {
-                matches!(
-                    classify_pane(&p.id, &hb_monitor, 60),
-                    Ok(h) if matches!(h.status, HealthStatus::Stalled | HealthStatus::Waiting)
-                )
-            });
+                // Pre-compute needs_attention for state file regardless of send outcome.
+                let hb_all_panes = tmux::list().unwrap_or_default();
+                let hb_workers: Vec<_> = hb_all_panes.iter().filter(|p| p.id != "%0").collect();
+                let hb_monitor = load_state();
+                let hb_needs_attention = hb_workers.iter().any(|p| {
+                    matches!(
+                        classify_pane(&p.id, &hb_monitor, 60),
+                        Ok(h) if matches!(h.status, HealthStatus::Stalled | HealthStatus::Waiting)
+                    )
+                });
 
-            let sent = if force {
-                // Force-send: bypass the busy check, but NEVER bypass the
-                // pending-input check — we must not clobber what the user is typing.
-                if orchestrator_has_pending_input() {
-                    eprintln!(
+                let sent = if force {
+                    // Force-send: bypass the busy check, but NEVER bypass the
+                    // pending-input check — we must not clobber what the user is typing.
+                    if orchestrator_has_pending_input() {
+                        eprintln!(
                         "[watch] [HEARTBEAT] force-send skipped — %0 has unsent input in prompt"
                     );
-                    // Do NOT update last_forced_heartbeat so the guard retries next cycle.
-                    false
-                } else {
-                    eprintln!("[watch] [HEARTBEAT] force-sending — max-skip guard triggered");
-                    let worker_count = hb_workers.len();
-                    let time = time_hhmm();
-                    let status_part = if worker_count == 0 {
-                        "No workers running".to_string()
-                    } else if hb_needs_attention {
-                        let cnt = hb_workers
-                            .iter()
-                            .filter(|p| {
-                                matches!(
-                                    classify_pane(&p.id, &hb_monitor, 60),
-                                    Ok(h) if matches!(
-                                        h.status,
-                                        HealthStatus::Stalled | HealthStatus::Waiting
-                                    )
-                                )
-                            })
-                            .count();
-                        format!("{cnt} worker(s) need attention")
+                        // Do NOT update last_forced_heartbeat so the guard retries next cycle.
+                        false
                     } else {
-                        "All systems nominal".to_string()
-                    };
-                    let msg = format!(
+                        eprintln!("[watch] [HEARTBEAT] force-sending — max-skip guard triggered");
+                        let worker_count = hb_workers.len();
+                        let time = time_hhmm();
+                        let status_part = if worker_count == 0 {
+                            "No workers running".to_string()
+                        } else if hb_needs_attention {
+                            let cnt = hb_workers
+                                .iter()
+                                .filter(|p| {
+                                    matches!(
+                                        classify_pane(&p.id, &hb_monitor, 60),
+                                        Ok(h) if matches!(
+                                            h.status,
+                                            HealthStatus::Stalled | HealthStatus::Waiting
+                                        )
+                                    )
+                                })
+                                .count();
+                            format!("{cnt} worker(s) need attention")
+                        } else {
+                            "All systems nominal".to_string()
+                        };
+                        let msg = format!(
                         "[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}"
                     );
-                    let ok = tmux::send("%0", &msg).is_ok();
-                    if ok {
-                        let _ = tmux::flash_notification(&msg);
+                        let ok = tmux::send("%0", &msg).is_ok();
+                        if ok {
+                            let _ = tmux::flash_notification(&msg);
+                        }
+                        ok
                     }
-                    ok
-                }
-            } else {
-                match heartbeat() {
-                    Ok(true) => {
-                        eprintln!("[watch] sent [HEARTBEAT] to %0");
-                        true
+                } else {
+                    match heartbeat() {
+                        Ok(true) => {
+                            eprintln!("[watch] sent [HEARTBEAT] to %0");
+                            true
+                        }
+                        Ok(false) => {
+                            eprintln!(
+                                "[watch] [HEARTBEAT] skipped — %0 is busy, will retry next cycle"
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!("[watch] heartbeat error: {e}");
+                            true // treat errors as "sent" to avoid retry storms
+                        }
                     }
-                    Ok(false) => {
-                        eprintln!(
-                            "[watch] [HEARTBEAT] skipped — %0 is busy, will retry next cycle"
-                        );
-                        false
-                    }
-                    Err(e) => {
-                        eprintln!("[watch] heartbeat error: {e}");
-                        true // treat errors as "sent" to avoid retry storms
-                    }
-                }
-            };
+                };
 
-            // Write heartbeat state to disk (sent or skipped).
-            write_heartbeat_state(cycle_ts, HEARTBEAT_INTERVAL_SECS, sent, hb_needs_attention);
+                // Write heartbeat state to disk (sent or skipped).
+                write_heartbeat_state(cycle_ts, HEARTBEAT_INTERVAL_SECS, sent, hb_needs_attention);
 
-            last_heartbeat = cycle_ts;
-            if sent {
-                last_forced_heartbeat = cycle_ts;
-            }
+                last_heartbeat = cycle_ts;
+                if sent {
+                    last_forced_heartbeat = cycle_ts;
+                }
+            } // end else (not snoozed)
         }
 
         std::thread::sleep(Duration::from_secs(interval_secs));

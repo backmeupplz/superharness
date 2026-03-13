@@ -42,6 +42,8 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 /home/borodutch/code/superharness/target/debug/superharness notify [--message "..."]               # workers: alert orchestrator immediately on completion
 /home/borodutch/code/superharness/target/debug/superharness wait [--timeout 60]                    # orchestrator: sleep until next event (replaces sleep N)
 /home/borodutch/code/superharness/target/debug/superharness heartbeat-status                       # print heartbeat emoji + seconds to next beat (status bar)
+/home/borodutch/code/superharness/target/debug/superharness heartbeat                              # workers: immediately trigger heartbeat check (bypasses 30s cooldown)
+/home/borodutch/code/superharness/target/debug/superharness heartbeat --snooze <secs>             # orchestrator: suppress heartbeats for N seconds (e.g. --snooze 90)
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
@@ -896,6 +898,22 @@ When your task is complete, run: superharness notify
 This alerts the orchestrator immediately so it can process your output without waiting.
 ```
 
+### Heartbeat subcommand
+
+Workers can trigger a heartbeat immediately (without waiting for the 30-second cooldown):
+
+```bash
+superharness heartbeat          # trigger heartbeat check right now
+```
+
+The orchestrator can suppress incoming heartbeats while it is busy:
+
+```bash
+superharness heartbeat --snooze 90   # don't send me a heartbeat for 90 seconds
+```
+
+When snoozed, `heartbeat-status` shows `⏸ <remaining>s` instead of the normal emoji. The snooze is automatically cleared the next time a heartbeat is successfully delivered.
+
 ### Summary of event sources
 
 | Event | How it reaches you |
@@ -904,6 +922,7 @@ This alerts the orchestrator immediately so it can process your output without w
 | Worker killed | `/home/borodutch/code/superharness/target/debug/superharness kill` auto-sends `[NOTIFY]` → `[NOTIFY]` in %0 |
 | Worker spawned/stalled/waiting | Logged to events.json → `/home/borodutch/code/superharness/target/debug/superharness wait` returns early |
 | Heartbeat (fallback) | Every 30s unconditionally → `[HEARTBEAT]` in %0 |
+| Worker-triggered heartbeat | Worker runs `superharness heartbeat` → immediate `[HEARTBEAT]` in %0 (if orchestrator idle) |
 
 ## Detecting Finished Workers
 

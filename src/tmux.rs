@@ -110,7 +110,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // Bottom status bar: always on, shows mode / worker count / key hints.
     tmux_ok(&["set-option", "-t", SESSION, "status", "on"])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-position", "bottom"])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-interval", "5"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-interval", "1"])?;
     tmux_ok(&[
         "set-option",
         "-t",
