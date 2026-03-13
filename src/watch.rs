@@ -227,6 +227,84 @@ pub fn pulse(force_send: bool) -> Result<PulseResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Heartbeat — unconditional periodic message to keep %0 active
+// ---------------------------------------------------------------------------
+
+/// Interval between heartbeat messages (seconds).
+const HEARTBEAT_INTERVAL_SECS: u64 = 30;
+
+/// Return the local wall-clock time as "HH:MM".
+/// Falls back to UTC derived from the Unix timestamp if the `date` command fails.
+fn time_hhmm() -> String {
+    std::process::Command::new("date")
+        .arg("+%H:%M")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let secs_in_day = ts % 86400;
+            let h = secs_in_day / 3600;
+            let m = (secs_in_day % 3600) / 60;
+            format!("{h:02}:{m:02}UTC")
+        })
+}
+
+/// Send an unconditional [HEARTBEAT] status message to %0.
+///
+/// The message includes:
+/// - number of active worker panes
+/// - current local time (HH:MM)
+/// - whether any workers need attention or if everything is nominal
+///
+/// Also fires a tmux flash notification so the message is visible in the
+/// status bar even when the orchestrator pane is not focused.
+pub fn heartbeat() -> Result<()> {
+    let all_panes = tmux::list().unwrap_or_default();
+    let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+    let worker_count = worker_panes.len();
+    let time = time_hhmm();
+
+    let status_part = if worker_count == 0 {
+        "No workers running".to_string()
+    } else {
+        // Count workers that are stalled or waiting for approval.
+        let monitor_state = load_state();
+        let needs_attention = worker_panes
+            .iter()
+            .filter(|p| {
+                matches!(
+                    classify_pane(&p.id, &monitor_state, 60),
+                    Ok(h)
+                        if matches!(
+                            h.status,
+                            HealthStatus::Stalled | HealthStatus::Waiting
+                        )
+                )
+            })
+            .count();
+
+        if needs_attention == 0 {
+            "All systems nominal".to_string()
+        } else {
+            format!("{needs_attention} worker(s) need attention")
+        }
+    };
+
+    let msg = format!("[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}");
+
+    tmux::send("%0", &msg)?;
+    let _ = tmux::flash_notification(&msg);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Core logic helpers
 // ---------------------------------------------------------------------------
 
@@ -488,6 +566,9 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
 
     // In-process stall counters — reset when the pane transitions away from stalled.
     let mut stall_counts: StallCounts = HashMap::new();
+    // Timestamp of the last heartbeat sent to %0.  Initialise to 0 so that
+    // the very first cycle always fires a heartbeat immediately.
+    let mut last_heartbeat: u64 = 0;
 
     loop {
         let cycle_ts = now_unix();
@@ -618,6 +699,16 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
             "cycle_actions": actions,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
+
+        // Unconditional timed heartbeat — fires every HEARTBEAT_INTERVAL_SECS regardless
+        // of worker state so that the orchestrator pane (%0) never goes idle.
+        if cycle_ts.saturating_sub(last_heartbeat) >= HEARTBEAT_INTERVAL_SECS {
+            match heartbeat() {
+                Ok(_) => eprintln!("[watch] sent [HEARTBEAT] to %0"),
+                Err(e) => eprintln!("[watch] heartbeat error: {e}"),
+            }
+            last_heartbeat = cycle_ts;
+        }
 
         std::thread::sleep(Duration::from_secs(interval_secs));
     }
