@@ -562,6 +562,21 @@ enum Command {
         timeout: u64,
     },
 
+    /// Immediately trigger a heartbeat check (workers call this when they finish).
+    ///
+    /// If the orchestrator is idle, sends [HEARTBEAT] to %0 right away without
+    /// waiting for the 30-second watch-loop cooldown.
+    ///
+    /// If --snooze N is given, no heartbeat is sent — instead the snooze timer
+    /// is set for N seconds (the orchestrator calls this to suppress heartbeats
+    /// while it is busy).
+    Heartbeat {
+        /// Suppress heartbeats for the next N seconds (snooze mode).
+        /// When set, no heartbeat is sent; only the snooze timer is updated.
+        #[arg(long)]
+        snooze: Option<u64>,
+    },
+
     /// Print a short heartbeat status string for the tmux status bar.
     /// Reads heartbeat_state.json and emits an emoji + seconds-to-next-beat.
     HeartbeatStatus,
@@ -2373,6 +2388,51 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        Some(Command::Heartbeat { snooze }) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            if let Some(secs) = snooze {
+                // Snooze mode: update snooze_until WITHOUT sending a heartbeat.
+                let state = watch::read_heartbeat_state();
+                let snooze_until = now + secs;
+                watch::write_heartbeat_state_full(
+                    state.last_beat_ts,
+                    state.interval_secs,
+                    state.last_sent,
+                    state.needs_attention,
+                    snooze_until,
+                );
+                eprintln!("[heartbeat] snoozed for {secs}s (until unix {snooze_until})");
+            } else {
+                // Immediate heartbeat: run idle checks and send if %0 is ready.
+                match watch::heartbeat() {
+                    Ok(true) => {
+                        // Heartbeat sent — write updated state with cleared snooze.
+                        let state = watch::read_heartbeat_state();
+                        watch::write_heartbeat_state_full(
+                            now,
+                            state.interval_secs,
+                            true,
+                            state.needs_attention,
+                            0, // clear snooze
+                        );
+                        eprintln!("[heartbeat] sent [HEARTBEAT] to %0");
+                    }
+                    Ok(false) => {
+                        // Orchestrator is busy — silently do nothing.
+                        // The watch loop will send when %0 is idle.
+                        eprintln!("[heartbeat] skipped — %0 is busy or snoozed");
+                    }
+                    Err(e) => {
+                        eprintln!("[heartbeat] error: {e}");
+                    }
+                }
+            }
+        }
+
         Some(Command::HeartbeatStatus) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2381,9 +2441,16 @@ fn main() -> anyhow::Result<()> {
 
             let state = watch::read_heartbeat_state();
 
-            if state.last_beat_ts == 0 {
+            if state.last_beat_ts == 0 && state.snooze_until == 0 {
                 // No heartbeat state file yet.
                 print!("❤ --");
+                return Ok(());
+            }
+
+            // Snooze takes priority in display.
+            if state.snooze_until > now {
+                let remaining = state.snooze_until - now;
+                print!("⏸ {remaining}s");
                 return Ok(());
             }
 
