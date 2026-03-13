@@ -523,9 +523,6 @@ enum Command {
 
     /// Show orchestrator tasks from .superharness/tasks.json grouped by status
     TasksModal,
-
-    /// Show pending relay requests in human-readable colorized format (used by F2)
-    RelayHuman,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1936,68 +1933,6 @@ fn main() -> anyhow::Result<()> {
                     println!(
                         "  {DIM}[{time_str}]{RESET}  {color}{kind_str:<20}{RESET}{pane_str}  {details}"
                     );
-                }
-            }
-            println!();
-        }
-
-        Some(Command::RelayHuman) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const YELLOW: &str = "\x1b[33m";
-            const CYAN: &str = "\x1b[36m";
-
-            use std::time::{SystemTime, UNIX_EPOCH};
-
-            let pending = relay::get_pending_relays().unwrap_or_default();
-
-            println!();
-            println!("  {BOLD}{UNDERLINE}Pending Relay Requests{RESET}");
-            println!();
-
-            if pending.is_empty() {
-                println!("  No pending relay requests.");
-            } else {
-                for (i, r) in pending.iter().enumerate() {
-                    // Format time queued as relative age
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let age = now.saturating_sub(r.created_at);
-                    let age_str = if age < 60 {
-                        format!("{age}s ago")
-                    } else if age < 3600 {
-                        format!("{}m ago", age / 60)
-                    } else {
-                        format!("{}h {}m ago", age / 3600, (age % 3600) / 60)
-                    };
-
-                    let sens = if r.sensitive {
-                        format!("  {DIM}[sensitive]{RESET}")
-                    } else {
-                        String::new()
-                    };
-
-                    println!(
-                        "  {BOLD}[{}]{RESET}  Agent {YELLOW}{}{RESET}  {DIM}{age_str}{RESET}{}",
-                        i + 1,
-                        r.pane_id,
-                        sens
-                    );
-                    println!("  {BOLD}    ID:{RESET}      {DIM}{}{RESET}", r.id);
-                    println!("  {BOLD}    Question:{RESET} {CYAN}{}{RESET}", r.question);
-                    if !r.context.is_empty() {
-                        println!("  {BOLD}    Context:{RESET}  {}", r.context);
-                    }
-                    println!(
-                        "  {DIM}    Answer with: superharness relay-answer --id {} --answer \"<value>\"{RESET}",
-                        r.id
-                    );
-                    println!();
                 }
             }
             println!();

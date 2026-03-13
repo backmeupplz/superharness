@@ -153,11 +153,11 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:relays #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "130"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "110"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
@@ -186,22 +186,6 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "F1",
         "run-shell",
         &format!("{bin_path} toggle-mode"),
-    ])?;
-
-    // F2 → relay-human (pending relay requests, human-readable)
-    tmux_ok(&[
-        "bind-key",
-        "-n",
-        "F2",
-        "display-popup",
-        "-E",
-        "-b",
-        "rounded",
-        "-w",
-        "110",
-        "-h",
-        "36",
-        &format!("{bin_path} relay-human 2>&1; echo; echo '  Press any key to close...'; read -n1"),
     ])?;
 
     // F3 → status-human (mode + pending decisions + worker health, human-readable)
