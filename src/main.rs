@@ -540,6 +540,31 @@ enum Command {
     /// Active = workers whose output changed on the last monitor cycle (stall_count == 0).
     /// Total = all worker panes (excluding the orchestrator %0).
     StatusCounts,
+
+    /// Notify the orchestrator (%0) that something has happened.
+    ///
+    /// Workers call this when they finish a task so the orchestrator wakes up
+    /// immediately instead of waiting for the next heartbeat cycle.
+    /// The kill subcommand also auto-notifies after every kill.
+    Notify {
+        /// Optional human-readable message to include in the notification.
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+
+    /// Wait for a worker event or timeout (replaces `sleep N` in polling loops).
+    ///
+    /// Returns immediately when events.json changes (any worker event fires),
+    /// or after --timeout seconds if no event arrives first.
+    Wait {
+        /// Maximum seconds to wait (default 60)
+        #[arg(short, long, default_value_t = 60)]
+        timeout: u64,
+    },
+
+    /// Print a short heartbeat status string for the tmux status bar.
+    /// Reads heartbeat_state.json and emits an emoji + seconds-to-next-beat.
+    HeartbeatStatus,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -808,6 +833,20 @@ fn main() -> anyhow::Result<()> {
                 Some(&pane),
                 "worker killed",
             );
+
+            // Auto-notify the orchestrator so it wakes up immediately.
+            let all_panes = tmux::list().unwrap_or_default();
+            let n_active = all_panes.iter().filter(|p| p.id != "%0").count();
+            let notify_msg = format!(
+                "[NOTIFY] Worker {pane} killed: {n_active} remaining"
+            );
+            let _ = tmux::send("%0", &notify_msg);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            watch::write_heartbeat_state(now, 30, true, false);
+
             let out = serde_json::json!({ "pane": pane, "killed": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -2210,6 +2249,117 @@ fn main() -> anyhow::Result<()> {
 
         Some(Command::StatusCounts) => {
             println!("{}", watch::status_counts());
+        }
+
+        Some(Command::Notify { message }) => {
+            // Build a short summary of current worker state.
+            let all_panes = tmux::list().unwrap_or_default();
+            let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+            let n_active = worker_panes.len();
+            let n_total = all_panes.len().saturating_sub(1); // exclude %0
+
+            let msg_suffix = message
+                .as_deref()
+                .map(|m| format!(". {m}"))
+                .unwrap_or_default();
+            let msg = format!(
+                "[NOTIFY] Worker done: {n_active} active, {n_total} total{msg_suffix}"
+            );
+
+            tmux::send("%0", &msg)?;
+
+            // Update heartbeat state so the status bar reflects the notification.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            watch::write_heartbeat_state(now, 30, true, false);
+
+            let out = serde_json::json!({ "notified": true, "message": msg });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::Wait { timeout }) => {
+            use std::time::{Duration, Instant};
+
+            let events_path = {
+                let state_dir = project::get_project_state_dir()?;
+                state_dir.join("events.json")
+            };
+
+            // Record baseline: file size at the start.
+            let baseline_len = std::fs::metadata(&events_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let start = Instant::now();
+            let deadline = Duration::from_secs(timeout);
+
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+
+                let elapsed = start.elapsed();
+
+                // Check if events.json has grown (new event appended).
+                let current_len = std::fs::metadata(&events_path)
+                    .map(|m| m.len())
+                    .unwrap_or(baseline_len);
+
+                if current_len != baseline_len {
+                    let out = serde_json::json!({
+                        "reason": "event",
+                        "elapsed": elapsed.as_secs(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    return Ok(());
+                }
+
+                if elapsed >= deadline {
+                    let out = serde_json::json!({
+                        "reason": "timeout",
+                        "elapsed": elapsed.as_secs(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    return Ok(());
+                }
+            }
+        }
+
+        Some(Command::HeartbeatStatus) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let state = watch::read_heartbeat_state();
+
+            if state.last_beat_ts == 0 {
+                // No heartbeat state file yet.
+                print!("❤️  --");
+                return Ok(());
+            }
+
+            let secs_since_beat = now.saturating_sub(state.last_beat_ts);
+            let secs_to_next = state.next_beat_ts.saturating_sub(now);
+
+            let emoji = if secs_since_beat <= 3 {
+                // Just fired.
+                "💓"
+            } else if !state.last_sent {
+                // Last beat was skipped (busy).
+                "💙"
+            } else if state.needs_attention {
+                // Flashing: alternate every 5 seconds.
+                if (now % 10) < 5 {
+                    "❤️"
+                } else {
+                    "💓"
+                }
+            } else {
+                "❤️"
+            };
+
+            print!("{emoji} {secs_to_next}s");
         }
     }
 

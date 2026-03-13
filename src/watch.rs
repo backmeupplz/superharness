@@ -12,7 +12,7 @@
 //! 5. Prints a JSON status update each cycle.
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ use crate::health::{classify_pane, HealthStatus};
 use crate::layout;
 use crate::monitor::load_state;
 use crate::pending_tasks;
+use crate::project;
 use crate::relay;
 use crate::tmux;
 use crate::tmux::smart_layout_with_attention;
@@ -257,8 +258,11 @@ fn time_hhmm() -> String {
 }
 
 /// Return `true` when the last few lines of %0's output suggest it is
-/// actively processing (spinner characters, build steps, agent tool calls).
+/// actively processing (spinner characters visible in multiple recent lines).
 /// When %0 is busy, the heartbeat is skipped to avoid interrupting it.
+///
+/// Requires at least 3 spinner chars across the last 5 lines to trigger —
+/// a single spinner char is not enough (avoids over-skipping on static output).
 fn orchestrator_is_busy() -> bool {
     let output = match tmux::read("%0", 5) {
         Ok(o) => o,
@@ -268,22 +272,14 @@ fn orchestrator_is_busy() -> bool {
     // Spinner characters used by opencode / claude / shell progress indicators
     let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-    for line in output.lines() {
-        // Check for spinner characters
-        if spinner_chars.iter().any(|c| line.contains(*c)) {
-            return true;
-        }
-        // Check for active build/run steps
-        if line.contains("Compiling") || line.contains("Running") {
-            return true;
-        }
-        // Check for agent mid-operation marker
-        if line.contains("Tool use") {
-            return true;
-        }
-    }
+    // Count total spinner chars across all recent lines.
+    // Require at least 3 to reduce false-positives from stale output.
+    let spinner_count: usize = output
+        .lines()
+        .map(|line| spinner_chars.iter().filter(|&&c| line.contains(c)).count())
+        .sum();
 
-    false
+    spinner_count >= 3
 }
 
 /// Send an unconditional [HEARTBEAT] status message to %0.
@@ -343,6 +339,65 @@ pub fn heartbeat() -> Result<bool> {
     let _ = tmux::flash_notification(&msg);
 
     Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat state persistence
+// ---------------------------------------------------------------------------
+
+/// On-disk record written after every heartbeat attempt.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct HeartbeatState {
+    /// Unix timestamp of the last heartbeat attempt (sent or skipped).
+    pub last_beat_ts: u64,
+    /// Configured heartbeat interval in seconds.
+    pub interval_secs: u64,
+    /// Whether the last beat was actually sent to %0 (`false` = skipped).
+    pub last_sent: bool,
+    /// Predicted unix timestamp of the next beat attempt.
+    pub next_beat_ts: u64,
+    /// True when at least one worker is stalled/waiting and needs attention.
+    pub needs_attention: bool,
+}
+
+/// Return the path to the heartbeat state file.
+/// Stored alongside events.json in the project-local .superharness/ directory.
+pub fn heartbeat_state_path() -> std::path::PathBuf {
+    project::get_project_state_dir()
+        .map(|d| d.join("heartbeat_state.json"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-heartbeat-state.json"))
+}
+
+/// Write heartbeat state to disk after every beat attempt.
+pub fn write_heartbeat_state(
+    last_beat_ts: u64,
+    interval_secs: u64,
+    sent: bool,
+    needs_attention: bool,
+) {
+    let state = HeartbeatState {
+        last_beat_ts,
+        interval_secs,
+        last_sent: sent,
+        next_beat_ts: last_beat_ts + interval_secs,
+        needs_attention,
+    };
+    let path = heartbeat_state_path();
+    if let Ok(json) = serde_json::to_string_pretty(&state) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Read the heartbeat state from disk (returns default if file is missing).
+pub fn read_heartbeat_state() -> HeartbeatState {
+    let path = heartbeat_state_path();
+    if !path.exists() {
+        return HeartbeatState::default();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -683,6 +738,10 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
     // Timestamp of the last heartbeat sent to %0.  Initialise to 0 so that
     // the very first cycle always fires a heartbeat immediately.
     let mut last_heartbeat: u64 = 0;
+    // Timestamp of the last time a heartbeat was *actually delivered* to %0.
+    // Used for the maximum-skip guard: if too much time has passed without a
+    // delivery (even when %0 appears busy), we force-send anyway.
+    let mut last_forced_heartbeat: u64 = 0;
     // Track the last observed terminal size so we can react to resize events.
     let mut last_terminal_size: Option<(u32, u32)> = None;
     // Track how many consecutive watch cycles each pane has been in "waiting" state.
@@ -868,21 +927,82 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         // Unconditional timed heartbeat — fires every HEARTBEAT_INTERVAL_SECS regardless
         // of worker state so that the orchestrator pane (%0) never goes idle.
         // Skipped automatically when %0 is actively processing.
+        //
+        // Maximum-skip guard: if more than 2 × HEARTBEAT_INTERVAL_SECS have passed
+        // since the last *delivered* heartbeat, force-send even if %0 looks busy.
+        // This prevents the heartbeat from being suppressed indefinitely.
         if cycle_ts.saturating_sub(last_heartbeat) >= HEARTBEAT_INTERVAL_SECS {
-            match heartbeat() {
-                Ok(true) => {
-                    eprintln!("[watch] sent [HEARTBEAT] to %0");
-                    last_heartbeat = cycle_ts;
+            let force =
+                cycle_ts.saturating_sub(last_forced_heartbeat) > 2 * HEARTBEAT_INTERVAL_SECS;
+
+            // Pre-compute needs_attention for state file regardless of send outcome.
+            let hb_all_panes = tmux::list().unwrap_or_default();
+            let hb_workers: Vec<_> = hb_all_panes.iter().filter(|p| p.id != "%0").collect();
+            let hb_monitor = load_state();
+            let hb_needs_attention = hb_workers.iter().any(|p| {
+                matches!(
+                    classify_pane(&p.id, &hb_monitor, 60),
+                    Ok(h) if matches!(h.status, HealthStatus::Stalled | HealthStatus::Waiting)
+                )
+            });
+
+            let sent = if force {
+                // Force-send: bypass the busy check.
+                eprintln!("[watch] [HEARTBEAT] force-sending — max-skip guard triggered");
+                let worker_count = hb_workers.len();
+                let time = time_hhmm();
+                let status_part = if worker_count == 0 {
+                    "No workers running".to_string()
+                } else if hb_needs_attention {
+                    let cnt = hb_workers
+                        .iter()
+                        .filter(|p| {
+                            matches!(
+                                classify_pane(&p.id, &hb_monitor, 60),
+                                Ok(h) if matches!(
+                                    h.status,
+                                    HealthStatus::Stalled | HealthStatus::Waiting
+                                )
+                            )
+                        })
+                        .count();
+                    format!("{cnt} worker(s) need attention")
+                } else {
+                    "All systems nominal".to_string()
+                };
+                let msg = format!(
+                    "[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}"
+                );
+                let ok = tmux::send("%0", &msg).is_ok();
+                if ok {
+                    let _ = tmux::flash_notification(&msg);
                 }
-                Ok(false) => {
-                    // Heartbeat was skipped because %0 is busy.
-                    // Don't update last_heartbeat so we retry next cycle.
-                    eprintln!("[watch] [HEARTBEAT] skipped — %0 is busy, will retry next cycle");
+                ok
+            } else {
+                match heartbeat() {
+                    Ok(true) => {
+                        eprintln!("[watch] sent [HEARTBEAT] to %0");
+                        true
+                    }
+                    Ok(false) => {
+                        eprintln!(
+                            "[watch] [HEARTBEAT] skipped — %0 is busy, will retry next cycle"
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!("[watch] heartbeat error: {e}");
+                        true // treat errors as "sent" to avoid retry storms
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[watch] heartbeat error: {e}");
-                    last_heartbeat = cycle_ts;
-                }
+            };
+
+            // Write heartbeat state to disk (sent or skipped).
+            write_heartbeat_state(cycle_ts, HEARTBEAT_INTERVAL_SECS, sent, hb_needs_attention);
+
+            last_heartbeat = cycle_ts;
+            if sent {
+                last_forced_heartbeat = cycle_ts;
             }
         }
 

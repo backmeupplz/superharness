@@ -151,14 +151,19 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // Falls back to "?/?" if the binary is unavailable.
     let pane_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '?/?')");
 
+    // Heartbeat indicator: shows emoji + seconds to next beat.
+    // Uses 💙 (not 🩶 which is Unicode 14 and corrupts in some terminals).
+    let heartbeat_snippet = format!("#({bin_path} heartbeat-status 2>/dev/null || echo '❤️  --')");
+
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
+         #[fg=colour240]│ #[fg=colour196]{heartbeat_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS: {pane_count_snippet} \
          #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "130"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "160"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;

@@ -152,6 +152,9 @@ $BIN harness-settings                        # interactive settings popup (press
 $BIN sudo-relay --pane %ID --command "..."   # workers: relay a sudo command that needs a password
 $BIN sudo-relay --pane %ID --command "..." --execute  # relay + wait + execute
 $BIN sudo-exec --pane %ID --command "..."    # workers: run sudo (NOPASSWD or relay fallback)
+$BIN notify [--message "..."]               # workers: alert orchestrator immediately on completion
+$BIN wait [--timeout 60]                    # orchestrator: sleep until next event (replaces sleep N)
+$BIN heartbeat-status                       # print heartbeat emoji + seconds to next beat (status bar)
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
@@ -423,6 +426,8 @@ Workers should manage git themselves. When instructing a worker, include this gu
 Include this in every worker task prompt:
 
 > "**Commit after every logical unit of work** — do not wait until the task is done. Run `git add -A && git commit -m 'wip: <description>'` after each file you edit or each subtask you complete. The session can crash at any time and uncommitted work will be lost."
+>
+> "**When your task is complete, run: `superharness notify`** — this immediately alerts the orchestrator so it wakes up instead of waiting for the next heartbeat cycle."
 
 ### Merging worker branches
 
@@ -622,10 +627,50 @@ The `respawn` command:
 - Use manual `send` when the worker just needs a nudge or clarification.
 - After respawning, monitor the new pane closely — if the same crash recurs, dig into the root cause before trying again.
 
+## Event-Driven Polling
+
+SuperHarness is designed to be **event-driven** — you never need to `sleep N` to wait for workers. Instead:
+
+- **Workers self-report completion** with `$BIN notify` at the end of their task.
+- **The kill command auto-notifies** — whenever you run `$BIN kill --pane %ID`, a `[NOTIFY]` message is automatically sent to `%0`. You do not need to poll after killing.
+- **`$BIN wait --timeout 60`** replaces `sleep 60` in your polling loops. It returns immediately when any worker event fires (spawn, kill, complete), or after the timeout expires.
+- **The heartbeat fires every 30 seconds** as a fallback, ensuring `%0` always wakes up even if no events arrive.
+
+### Replacing sleep loops
+
+```bash
+# OLD — dumb sleep (wastes time, you wake up late)
+sleep 60
+$BIN read --pane %ID --lines 50
+
+# NEW — event-driven (wakes up immediately when something happens)
+$BIN wait --timeout 60
+$BIN read --pane %ID --lines 50
+```
+
+### Worker task completion template
+
+Always append this to the task prompt for every worker:
+
+```
+When your task is complete, run: superharness notify
+This alerts the orchestrator immediately so it can process your output without waiting.
+```
+
+### Summary of event sources
+
+| Event | How it reaches you |
+|---|---|
+| Worker finishes task | Worker runs `$BIN notify` → `[NOTIFY]` in %0 |
+| Worker killed | `$BIN kill` auto-sends `[NOTIFY]` → `[NOTIFY]` in %0 |
+| Worker spawned/stalled/waiting | Logged to events.json → `$BIN wait` returns early |
+| Heartbeat (fallback) | Every 30s unconditionally → `[HEARTBEAT]` in %0 |
+
 ## Detecting Finished Workers
 
 > **CRITICAL: Process each finished worker IMMEDIATELY — do NOT wait for other workers to finish first. The moment a worker is done, act on it right away, even if other workers are still running.**
 
+When you receive a `[NOTIFY]` message, or when `$BIN wait` returns, check worker panes immediately.
 When you `$BIN read` a worker and see it has completed its task (e.g. "Task completed", back at a prompt, or no more activity after multiple polls), you MUST process it immediately — without waiting for any other worker:
 
 1. Read the final output to capture results
@@ -651,7 +696,7 @@ You must actively manage workers. Do not spawn and forget.
 4. **Create a git worktree** for each worker
 5. **Spawn** workers with clear, scoped tasks and `--dir` pointing to the worktree
 6. **Update tasks** — set `status: "in-progress"` and record `worker_pane` when spawning
-7. **Poll** each worker every 30-60s with `$BIN read` or `$BIN ask`
+7. **Wait for events** with `$BIN wait --timeout 60` instead of `sleep N`, then check workers with `$BIN read` or `$BIN ask`
 8. **Relay questions** — when `ask` detects a prompt, show it to the human and send back their answer
 9. **Approve or deny** permission requests from workers (see above)
 10. **Hide** workers to background tabs when you have too many visible
@@ -673,7 +718,7 @@ When the user gives you a list of tasks (numbered, bulleted, or described), foll
 
 4. **Decompose and spawn parallel workers**: For each independent task, create a git worktree and spawn a worker. Spawn **ALL** independent workers simultaneously in one batch — never sequentially unless there is a hard dependency between them.
 
-5. **Monitor actively**: Poll workers every 30-60s. Update task `status` in `tasks.json` as workers progress (`pending` → `in-progress` → `done`). Relay any worker questions to the user immediately.
+5. **Monitor actively**: Use `$BIN wait --timeout 60` to wake up on events, then check workers with `$BIN read` or `$BIN ask`. Update task `status` in `tasks.json` as workers progress (`pending` → `in-progress` → `done`). Relay any worker questions to the user immediately.
 
 6. **Mark done and clean up**: As workers complete, mark their tasks `done` in `tasks.json`, kill the pane, and remove the worktree.
 
