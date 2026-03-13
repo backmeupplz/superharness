@@ -650,6 +650,33 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
 
+            // ── First-run setup ──────────────────────────────────────────────
+            // If the user has no config file yet, ask the model to run the
+            // setup conversation instead of injecting session state.
+            let config_path = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("superharness")
+                .join("config.json");
+
+            if !config_path.exists() {
+                let config_path_str = config_path.to_string_lossy().to_string();
+                let setup_msg = format!(
+                    "[SUPERHARNESS FIRST RUN] Welcome! Before we start, please set up model preferences. \
+                    Run `opencode models` to see all available models, and `opencode auth list` to see \
+                    authenticated providers. Then ask the user: which provider they prefer, and which \
+                    model should be the default when spawning workers. Keep it conversational — just a \
+                    couple of questions. Once you have their answers, write the config to {config_path_str} \
+                    as JSON with fields: default_model (string), preferred_providers (array of strings), \
+                    preferred_models (array of strings). Create the directory if needed. After saving, \
+                    confirm it's done and ask what they'd like to work on today."
+                );
+                let _ = Command::new("tmux")
+                    .args(["send-keys", "-t", "%0", &setup_msg, "Enter"])
+                    .status();
+                return;
+            }
+
+            // ── Resuming session state injection ────────────────────────────
             let state_file = std::path::PathBuf::from(&state_dir)
                 .join(".superharness")
                 .join("state.json");
@@ -661,7 +688,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 .join("decisions.json");
 
             if !state_file.exists() {
-                return; // Fresh session — no context to inject
+                return; // Fresh project session — no context to inject
             }
 
             let state_content =
@@ -684,7 +711,6 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 decisions_content,
             );
 
-            // Send to pane %0 (the orchestrator)
             let _ = Command::new("tmux")
                 .args(["send-keys", "-t", "%0", &msg, "Enter"])
                 .status();
