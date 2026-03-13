@@ -939,13 +939,13 @@ fn main() -> anyhow::Result<()> {
 
             // ── WORKER HEALTH ─────────────────────────────────────────────────
             println!();
-            println!("{BOLD}{UNDERLINE}Workers{RESET}");
+            println!("  {BOLD}{UNDERLINE}Workers{RESET}");
 
             let monitor_state = monitor::load_state();
             let panes = tmux::list().unwrap_or_default();
 
             if panes.is_empty() {
-                println!("  {DIM}(no workers running){RESET}");
+                println!("    {DIM}(no workers running){RESET}");
             } else {
                 for p in &panes {
                     let health = health::classify_pane(&p.id, &monitor_state, 60).ok();
@@ -983,7 +983,7 @@ fn main() -> anyhow::Result<()> {
                     };
                     let short_title: String = title.chars().take(48).collect();
                     println!(
-                        "  {DIM}{}{RESET}  {status_colored}  {BOLD}{:<48}{RESET}{}",
+                        "    {DIM}{}{RESET}  {status_colored}  {BOLD}{:<48}{RESET}{}",
                         p.id, short_title, attn
                     );
                 }
@@ -1012,12 +1012,13 @@ fn main() -> anyhow::Result<()> {
                 }
             };
 
+            println!();
             if panes.is_empty() {
-                println!("{BOLD}Active Workers:{RESET} none");
+                println!("  {BOLD}Active Workers:{RESET} none");
                 println!();
-                println!("{DIM}No workers currently running.{RESET}");
+                println!("  {DIM}No workers currently running.{RESET}");
                 println!(
-                    "{DIM}Spawn one with:{RESET} superharness spawn --task \"...\" --dir /path --model <model>"
+                    "  {DIM}Spawn one with:{RESET} superharness spawn --task \"...\" --dir /path --model <model>"
                 );
             } else {
                 // Column widths: PANE 6, CMD 10, STATUS 8, TITLE 40, PATH 30
@@ -1028,13 +1029,13 @@ fn main() -> anyhow::Result<()> {
                 // total separator width
                 let sep_width = W_PANE + 2 + W_CMD + 2 + W_TITLE + 2 + W_PATH;
 
-                println!("{BOLD}Active Workers:{RESET} {}", panes.len());
+                println!("  {BOLD}Active Workers:{RESET} {}", panes.len());
                 println!();
                 println!(
-                    "{BOLD}{UNDERLINE}{:<W_PANE$}  {:<W_CMD$}  {:<W_TITLE$}  {:<W_PATH$}{RESET}",
+                    "  {BOLD}{UNDERLINE}{:<W_PANE$}  {:<W_CMD$}  {:<W_TITLE$}  {:<W_PATH$}{RESET}",
                     "AGENT", "CMD", "TITLE", "PATH"
                 );
-                println!("{DIM}{}{RESET}", "─".repeat(sep_width));
+                println!("  {DIM}{}{RESET}", "─".repeat(sep_width));
                 for p in &panes {
                     let title = if p.title.is_empty() {
                         &p.command
@@ -1046,11 +1047,12 @@ fn main() -> anyhow::Result<()> {
                     let short_path: String = path_abbrev.chars().take(W_PATH).collect();
                     let short_cmd: String = p.command.chars().take(W_CMD).collect();
                     println!(
-                        "{DIM}{:<W_PANE$}{RESET}  {CYAN}{:<W_CMD$}{RESET}  {BOLD}{:<W_TITLE$}{RESET}  {DIM}{:<W_PATH$}{RESET}",
+                        "  {DIM}{:<W_PANE$}{RESET}  {CYAN}{:<W_CMD$}{RESET}  {BOLD}{:<W_TITLE$}{RESET}  {DIM}{:<W_PATH$}{RESET}",
                         p.id, short_cmd, short_title, short_path
                     );
                 }
             }
+            println!();
         }
 
         Some(Command::TerminalSize) => {
