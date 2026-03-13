@@ -198,23 +198,6 @@ pub fn get_loop_status(pane_id: &str) -> Result<Option<LoopDetection>> {
     ))
 }
 
-/// Get loop detection status for all known panes.
-#[allow(dead_code)]
-pub fn get_all_loop_status() -> Result<Vec<LoopDetection>> {
-    let state = load_state()?;
-    let mut results = Vec::new();
-
-    for (pane_id, pane_state) in &state.panes {
-        if let Some(detection) =
-            analyze_window(pane_id, &pane_state.actions, pane_state.window_size)
-        {
-            results.push(detection);
-        }
-    }
-
-    Ok(results)
-}
-
 /// Get all known pane IDs with their action counts (even if no loop detected).
 pub fn get_all_panes() -> Result<Vec<(String, usize)>> {
     let state = load_state()?;

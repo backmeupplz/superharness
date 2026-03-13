@@ -197,13 +197,6 @@ pub fn get_pending_relays() -> Result<Vec<RelayRequest>> {
         .collect())
 }
 
-/// Return all relay requests for a specific pane (all statuses).
-#[allow(dead_code)]
-pub fn get_relays_for_pane(pane_id: &str) -> Result<Vec<RelayRequest>> {
-    let all = load_all()?;
-    Ok(all.into_iter().filter(|r| r.pane_id == pane_id).collect())
-}
-
 /// Record the human's answer for a relay request, marking it answered.
 pub fn answer_relay(request_id: &str, answer: &str) -> Result<()> {
     let mut requests = load_all()?;
@@ -219,19 +212,6 @@ pub fn answer_relay(request_id: &str, answer: &str) -> Result<()> {
     req.status = RelayStatus::Answered;
     req.answer = Some(answer.to_string());
     req.answered_at = Some(now_unix());
-    save_all(&requests)?;
-    Ok(())
-}
-
-/// Cancel a pending relay request.
-#[allow(dead_code)]
-pub fn cancel_relay(request_id: &str) -> Result<()> {
-    let mut requests = load_all()?;
-    let req = requests
-        .iter_mut()
-        .find(|r| r.id == request_id)
-        .with_context(|| format!("relay request not found: {request_id}"))?;
-    req.status = RelayStatus::Cancelled;
     save_all(&requests)?;
     Ok(())
 }
@@ -275,18 +255,6 @@ pub fn list_all() -> Result<Vec<RelayRequest>> {
 // ---------------------------------------------------------------------------
 // Sudo execution helpers
 // ---------------------------------------------------------------------------
-
-/// Run `cmd` directly with `sudo` via a shell one-liner.
-/// Returns Ok(()) if the command exits successfully.
-/// Returns Err if the command fails or exits non-zero.
-#[allow(dead_code)]
-pub fn run_sudo_direct(cmd: &str) -> Result<std::process::ExitStatus> {
-    let status = std::process::Command::new("sudo")
-        .args(["sh", "-c", cmd])
-        .status()
-        .with_context(|| format!("failed to spawn sudo for: {cmd}"))?;
-    Ok(status)
-}
 
 /// Run `cmd` via `echo <password> | sudo -S sh -c <cmd>`.
 /// Used after the password has been supplied through the relay mechanism.

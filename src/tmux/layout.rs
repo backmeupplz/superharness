@@ -16,7 +16,7 @@ fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
         "-t",
         &format!("{SESSION}:0"),
         "-F",
-        "#{pane_id}\t#{pane_title}",
+        "#{pane_id}",
     ]) {
         Ok(o) => o,
         Err(_) => return Vec::new(),
@@ -26,16 +26,12 @@ fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
         .lines()
         .filter(|l| !l.is_empty())
         .map(|line| {
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            let id = parts.first().unwrap_or(&"").to_string();
-            let title = parts.get(1).unwrap_or(&"").to_string();
+            let id = line.splitn(2, '\t').next().unwrap_or("").to_string();
             let is_orch = id == "%0";
             layout::PaneLayout {
-                priority: if is_orch { 255 } else { 0 },
                 is_orchestrator: is_orch,
                 needs_attention: false,
                 id,
-                title,
             }
         })
         .collect()
@@ -76,7 +72,6 @@ pub fn smart_layout_with_attention(attention_pane: Option<&str>) -> Result<()> {
         .map(|mut p| {
             if attention_pane.map(|ap| ap == p.id).unwrap_or(false) {
                 p.needs_attention = true;
-                p.priority = 200;
             }
             p
         })

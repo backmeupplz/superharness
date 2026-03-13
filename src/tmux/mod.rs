@@ -11,7 +11,7 @@ pub use panes::*;
 pub use session::*;
 pub use terminal::*;
 
-const SESSION: &str = "superharness";
+pub(crate) const SESSION: &str = "superharness";
 
 /// Run a tmux command, return stdout
 fn tmux(args: &[&str]) -> Result<String> {

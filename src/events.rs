@@ -84,10 +84,3 @@ pub fn load_events() -> Result<Vec<Event>> {
         .with_context(|| format!("failed to parse events file: {}", path.display()))?;
     Ok(events)
 }
-
-/// Return only events with timestamp >= since.
-#[allow(dead_code)]
-pub fn events_since(since: u64) -> Result<Vec<Event>> {
-    let all = load_events()?;
-    Ok(all.into_iter().filter(|e| e.timestamp >= since).collect())
-}

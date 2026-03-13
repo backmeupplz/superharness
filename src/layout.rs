@@ -19,7 +19,7 @@
 
 use std::process::Command;
 
-const SESSION: &str = "superharness";
+use crate::tmux::SESSION;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -27,20 +27,14 @@ const SESSION: &str = "superharness";
 
 /// Per-pane metadata used by the layout engine to make sizing decisions.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PaneLayout {
     /// Tmux pane ID (e.g. `"%3"`).
     pub id: String,
-    /// Human-readable title (from pane_title).
-    pub title: String,
     /// True when the pane is waiting for human input / has a question.
     /// Attention panes are given more screen space and surfaced to the front.
     pub needs_attention: bool,
     /// True when this is the orchestrator pane (`%0`).
     pub is_orchestrator: bool,
-    /// Relative priority 0–255.  Higher priority panes get more space.
-    /// The orchestrator is always 255; attention panes use 200; others 0.
-    pub priority: u8,
 }
 
 /// Layout strategies the engine can apply.
