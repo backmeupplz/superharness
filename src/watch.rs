@@ -282,6 +282,40 @@ fn orchestrator_is_busy() -> bool {
     spinner_count >= 3
 }
 
+/// Return `true` when the user appears to have pending (unsent) input in the
+/// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
+///
+/// Implemented by querying the tmux cursor X position for %0.  A cursor
+/// position of 0, 1, or 2 covers the common `> ` / `$ ` prompt prefixes
+/// where no user text has been entered yet.  Anything beyond that means the
+/// user is actively typing.
+///
+/// Returns `false` on any error (safe default — if we can't tell, assume no
+/// pending input rather than permanently suppressing the heartbeat).
+fn orchestrator_has_pending_input() -> bool {
+    let output = match std::process::Command::new("tmux")
+        .args(["display-message", "-t", "%0", "-p", "#{cursor_x}"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let cursor_x_str = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return false,
+    };
+
+    match cursor_x_str.parse::<u64>() {
+        Ok(x) => x > 2,
+        Err(_) => false,
+    }
+}
+
 /// Send an unconditional [HEARTBEAT] status message to %0.
 ///
 /// The message includes:
@@ -299,6 +333,13 @@ pub fn heartbeat() -> Result<bool> {
     // Skip if %0 looks busy to avoid interrupting an active response.
     if orchestrator_is_busy() {
         eprintln!("[watch] heartbeat skipped — %0 appears to be actively processing");
+        return Ok(false);
+    }
+
+    // Skip if the user has unsent input in the %0 prompt — we must never
+    // clobber what the user is typing.
+    if orchestrator_has_pending_input() {
+        eprintln!("[watch] heartbeat skipped — %0 has unsent input in prompt");
         return Ok(false);
     }
 
@@ -947,37 +988,46 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
             });
 
             let sent = if force {
-                // Force-send: bypass the busy check.
-                eprintln!("[watch] [HEARTBEAT] force-sending — max-skip guard triggered");
-                let worker_count = hb_workers.len();
-                let time = time_hhmm();
-                let status_part = if worker_count == 0 {
-                    "No workers running".to_string()
-                } else if hb_needs_attention {
-                    let cnt = hb_workers
-                        .iter()
-                        .filter(|p| {
-                            matches!(
-                                classify_pane(&p.id, &hb_monitor, 60),
-                                Ok(h) if matches!(
-                                    h.status,
-                                    HealthStatus::Stalled | HealthStatus::Waiting
-                                )
-                            )
-                        })
-                        .count();
-                    format!("{cnt} worker(s) need attention")
+                // Force-send: bypass the busy check, but NEVER bypass the
+                // pending-input check — we must not clobber what the user is typing.
+                if orchestrator_has_pending_input() {
+                    eprintln!(
+                        "[watch] [HEARTBEAT] force-send skipped — %0 has unsent input in prompt"
+                    );
+                    // Do NOT update last_forced_heartbeat so the guard retries next cycle.
+                    false
                 } else {
-                    "All systems nominal".to_string()
-                };
-                let msg = format!(
-                    "[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}"
-                );
-                let ok = tmux::send("%0", &msg).is_ok();
-                if ok {
-                    let _ = tmux::flash_notification(&msg);
+                    eprintln!("[watch] [HEARTBEAT] force-sending — max-skip guard triggered");
+                    let worker_count = hb_workers.len();
+                    let time = time_hhmm();
+                    let status_part = if worker_count == 0 {
+                        "No workers running".to_string()
+                    } else if hb_needs_attention {
+                        let cnt = hb_workers
+                            .iter()
+                            .filter(|p| {
+                                matches!(
+                                    classify_pane(&p.id, &hb_monitor, 60),
+                                    Ok(h) if matches!(
+                                        h.status,
+                                        HealthStatus::Stalled | HealthStatus::Waiting
+                                    )
+                                )
+                            })
+                            .count();
+                        format!("{cnt} worker(s) need attention")
+                    } else {
+                        "All systems nominal".to_string()
+                    };
+                    let msg = format!(
+                        "[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}"
+                    );
+                    let ok = tmux::send("%0", &msg).is_ok();
+                    if ok {
+                        let _ = tmux::flash_notification(&msg);
+                    }
+                    ok
                 }
-                ok
             } else {
                 match heartbeat() {
                     Ok(true) => {
