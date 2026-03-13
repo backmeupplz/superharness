@@ -259,10 +259,11 @@ const PANE_COLOR_HEX: &[&str] = &[
 
 /// Spawn a new opencode worker as a pane in the superharness window.
 ///
-/// When `no_hide` is `false` (the default), the new pane is immediately moved
-/// to its own background tmux tab named after `name` (or a short task snippet)
-/// so it does not clutter the main orchestrator window.
-/// Pass `no_hide = true` to keep the pane visible in the main window.
+/// When `no_hide` is `false` (the default), the new pane remains visible in
+/// the main orchestrator window and `smart_layout` + `auto_compact` are applied
+/// to keep the layout tidy.
+/// Pass `no_hide = true` to skip even smart_layout/compact — this is an escape
+/// hatch for rare cases where you want to suppress all post-spawn layout changes.
 pub fn spawn(
     task: &str,
     dir: &str,
@@ -342,29 +343,14 @@ pub fn spawn(
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
     if no_hide {
-        // Keep pane in main window — apply smart layout and auto-compact as before.
+        // no_hide=true: skip smart_layout and auto_compact entirely.
+        // This is a rarely-needed escape hatch to suppress all post-spawn layout
+        // changes (e.g. when the caller will manage layout manually).
+    } else {
+        // Default: keep pane visible in main window — apply smart layout and
+        // auto-compact so the orchestrator always sees a tidy arrangement.
         let _ = smart_layout();
         let _ = auto_compact();
-    } else {
-        // Immediately move the new pane to its own background tab so it never
-        // appears in the main orchestrator window.  The tab is named after the
-        // worker's --name argument; if no name was given, use the first 20
-        // characters of the task as a fallback label.
-        let tab_name: String = match name {
-            Some(n) if !n.is_empty() => n.chars().take(20).collect(),
-            _ => {
-                let s: String = task.chars().take(20).collect();
-                s.trim().to_string()
-            }
-        };
-        let tab_name = if tab_name.is_empty() {
-            "worker".to_string()
-        } else {
-            tab_name
-        };
-        let _ = tmux_ok(&["break-pane", "-t", &pane_id, "-d", "-n", &tab_name]);
-        // Re-balance the main window now that the new pane is gone from it.
-        let _ = smart_layout();
     }
 
     Ok(pane_id)

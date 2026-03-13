@@ -64,8 +64,9 @@ enum Command {
         #[arg(long)]
         depends_on: Option<String>,
 
-        /// Keep the new pane visible in the main window instead of hiding it to a background tab.
-        /// By default every spawned worker is immediately moved to its own background tab.
+        /// Skip post-spawn smart_layout and auto_compact.
+        /// By default every spawned worker is shown in the main window with smart layout applied.
+        /// Pass --no-hide to suppress all layout changes after spawning (rarely needed).
         #[arg(long)]
         no_hide: bool,
     },
@@ -687,7 +688,7 @@ fn main() -> anyhow::Result<()> {
                     t.name.as_deref(),
                     t.model.as_deref(),
                     t.mode.as_deref(),
-                    false, // auto-hide by default
+                    false, // show in main window (default)
                 ) {
                     Ok(pane_id) => {
                         pending_tasks::remove_task(&t.id)?;
@@ -1177,7 +1178,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&name),
                 model.as_deref(),
                 Some("build"),
-                false, // auto-hide by default
+                false, // show in main window (default)
             )?;
             let out = serde_json::json!({
                 "pane": pane_id,
@@ -1351,7 +1352,7 @@ fn main() -> anyhow::Result<()> {
                 None,
                 model.as_deref(),
                 mode.as_deref(),
-                false,
+                false, // show in main window (default)
             )?;
 
             println!("Crashed agent {} killed.", pane);

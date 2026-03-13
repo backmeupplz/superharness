@@ -353,7 +353,7 @@ fn handle_done(pane_id: &str) -> PaneAction {
                     ) {
                         Ok(new_pane) => {
                             let _ = pending_tasks::remove_task(&t.id);
-                            Some(new_pane)
+                            Some(new_pane) // show in main window (default)
                         }
                         Err(_) => None,
                     }
