@@ -120,20 +120,29 @@ pub struct PulseResult {
 ///               actionable state (done, waiting, stalled, or error); used
 ///               by the watch loop.
 pub fn pulse(force_send: bool) -> Result<PulseResult> {
-    // Respect heartbeat snooze (toggle off) — suppress all automated messages to %0.
+    // Respect heartbeat disabled flag and timed snooze — suppress all automated messages to %0.
     {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let state = read_heartbeat_state();
+        if state.disabled {
+            return Ok(PulseResult {
+                sent: false,
+                target_pane: "%0".to_string(),
+                message: None,
+                worker_count: 0,
+                reason_skipped: Some("heartbeat toggled off (disabled)".to_string()),
+            });
+        }
         if state.snooze_until > now {
             return Ok(PulseResult {
                 sent: false,
                 target_pane: "%0".to_string(),
                 message: None,
                 worker_count: 0,
-                reason_skipped: Some("heartbeat snoozed/toggled off".to_string()),
+                reason_skipped: Some("heartbeat snoozed".to_string()),
             });
         }
     }
@@ -460,9 +469,13 @@ pub fn heartbeat() -> Result<bool> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Check snooze: if snooze_until is in the future, skip without sending.
+    // Check disabled flag and timed snooze: skip without sending if either is active.
     {
         let state = read_heartbeat_state();
+        if state.disabled {
+            eprintln!("[watch] heartbeat skipped — toggled off (disabled)");
+            return Ok(false);
+        }
         if state.snooze_until > now {
             let remaining = state.snooze_until - now;
             eprintln!(
@@ -544,8 +557,14 @@ pub struct HeartbeatState {
     pub needs_attention: bool,
     /// Unix timestamp until which heartbeats are snoozed (0 = not snoozed).
     /// Set by `superharness heartbeat --snooze N`.
+    /// Only used for timed snoozes — do NOT use as a toggle proxy.
     #[serde(default)]
     pub snooze_until: u64,
+    /// When true, heartbeats are permanently disabled until explicitly toggled
+    /// back on.  This field survives restarts and has no expiry math.
+    /// Set/cleared by `superharness heartbeat` (the toggle subcommand).
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 /// Return the path to the heartbeat state file.
@@ -563,7 +582,7 @@ pub fn write_heartbeat_state(
     sent: bool,
     needs_attention: bool,
 ) {
-    // Preserve existing snooze_until so it survives normal heartbeat cycles.
+    // Preserve existing snooze_until and disabled so they survive normal heartbeat cycles.
     let existing = read_heartbeat_state();
     write_heartbeat_state_full(
         last_beat_ts,
@@ -571,16 +590,18 @@ pub fn write_heartbeat_state(
         sent,
         needs_attention,
         existing.snooze_until,
+        existing.disabled,
     );
 }
 
-/// Write heartbeat state with explicit snooze_until value.
+/// Write heartbeat state with explicit snooze_until and disabled values.
 pub fn write_heartbeat_state_full(
     last_beat_ts: u64,
     interval_secs: u64,
     sent: bool,
     needs_attention: bool,
     snooze_until: u64,
+    disabled: bool,
 ) {
     let state = HeartbeatState {
         last_beat_ts,
@@ -589,6 +610,7 @@ pub fn write_heartbeat_state_full(
         next_beat_ts: last_beat_ts + interval_secs,
         needs_attention,
         snooze_until,
+        disabled,
     };
     let path = heartbeat_state_path();
     if let Ok(json) = serde_json::to_string_pretty(&state) {
