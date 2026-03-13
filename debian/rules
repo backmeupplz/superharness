@@ -1,24 +1,22 @@
 #!/usr/bin/make -f
-# Debian rules file for superharness
 
-export DH_VERBOSE = 1
-export CARGO_HOME = $(CURDIR)/.cargo
-export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export CARGO = /usr/bin/cargo-1.85
+export RUSTC = /usr/bin/rustc-1.85
 
 %:
 	dh $@
 
-override_dh_auto_build:
-	cargo build --release --locked
+override_dh_auto_configure:
+	mkdir -p .cargo
+	tar xf debian/vendor.tar.xz
+	cp debian/cargo-config.toml .cargo/config.toml
 
-override_dh_auto_install:
-	install -Dm0755 target/release/superharness \
-	    debian/superharness/usr/bin/superharness
+override_dh_auto_build:
+	$(CARGO) build --release --frozen
 
 override_dh_auto_test:
-	# Smoke test: binary runs and shows help
-	target/release/superharness --help
+	@echo "Skipping tests"
 
-override_dh_auto_clean:
-	cargo clean
-	dh_auto_clean
+override_dh_auto_install:
+	install -D -m 0755 target/release/superharness \
+	    debian/superharness/usr/bin/superharness

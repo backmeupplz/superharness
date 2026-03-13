@@ -2,7 +2,10 @@ Source: superharness
 Section: utils
 Priority: optional
 Maintainer: Nikita Kolmogorov <ubuntu@borodutch.com>
-Build-Depends: debhelper-compat (= 13), cargo, rustc, libssl-dev, pkg-config
+Build-Depends: debhelper-compat (= 13),
+               cargo-1.85,
+               rustc-1.85,
+               libstd-rust-1.85-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/backmeupplz/superharness
 Vcs-Git: https://github.com/backmeupplz/superharness.git
