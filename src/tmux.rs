@@ -154,9 +154,9 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // The shell snippet produces "AWAY" or "PRESENT" from the state file.
     let mode_snippet = r##"#(p=$(cat $HOME/.local/share/superharness/active_project.txt 2>/dev/null); f="$p/.superharness/state.json"; if [ -f "$f" ]; then m=$(jq -r '.mode' "$f" 2>/dev/null | tr '[:lower:]' '[:upper:]'); [ -z "$m" ] && m=$(grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" | grep -o '"[^"]*"$' | tr -d '"' | tr '[:lower:]' '[:upper:]'); [ "$m" = "AWAY" ] && echo "#[fg=colour214,bold]AWAY#[default]" || echo "#[fg=colour71,bold]PRESENT#[default]"; else echo "#[fg=colour71,bold]PRESENT#[default]"; fi)"##;
 
-    // Heartbeat indicator: shows emoji + seconds to next beat.
-    // Uses ❤ (U+2764 without variation selector) which is single-width in terminals.
-    let heartbeat_snippet = format!("#({bin_path} heartbeat-status 2>/dev/null || echo '❤ --')");
+    // Heartbeat indicator: shows icon + seconds to next beat.
+    // Uses ● (U+25CF filled circle) which is single-width in all terminals.
+    let heartbeat_snippet = format!("#({bin_path} heartbeat-status 2>/dev/null || echo '● --')");
 
     // Worker count for F4 button label: total worker pane count.
     let worker_count_snippet =

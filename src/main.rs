@@ -2478,18 +2478,18 @@ fn main() -> anyhow::Result<()> {
 
             if state.last_beat_ts == 0 && state.snooze_until == 0 {
                 // No heartbeat state file yet.
-                print!("❤ --");
+                print!("● --");
                 return Ok(());
             }
 
             // Snooze takes priority in display.
             if state.snooze_until > now {
                 let remaining = state.snooze_until - now;
-                // Very long snooze (> 1 day) means the user toggled it off — show clean ⏸.
+                // Very long snooze (> 1 day) means the user toggled it off — show clean ‖.
                 if remaining > 86400 {
-                    print!("⏸");
+                    print!("‖");
                 } else {
-                    print!("⏸ {remaining}s");
+                    print!("‖ {remaining}s");
                 }
                 return Ok(());
             }
@@ -2499,19 +2499,19 @@ fn main() -> anyhow::Result<()> {
 
             let emoji = if secs_since_beat <= 3 {
                 // Just fired.
-                "💓"
+                "◉"
             } else if !state.last_sent {
                 // Last beat was skipped (busy).
-                "💙"
+                "○"
             } else if state.needs_attention {
                 // Flashing: alternate every 5 seconds.
                 if (now % 10) < 5 {
-                    "❤"
+                    "●"
                 } else {
-                    "💓"
+                    "◉"
                 }
             } else {
-                "❤"
+                "●"
             };
 
             print!("{emoji} {secs_to_next}s");
