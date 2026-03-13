@@ -4,15 +4,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::util;
+
 fn memory_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("cannot determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
-        .join("memory"))
+    Ok(util::superharness_data_dir().join("memory"))
 }
 
 fn memory_file(pane_id: &str) -> Result<PathBuf> {

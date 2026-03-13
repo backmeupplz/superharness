@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
 
-use crate::handlers::spawn::check_worktree_status;
-
 /// Handle `Command::GitCheck` — detailed git repo status check for worktree creation.
 pub fn handle_git_check(dir: String) -> Result<()> {
     let abs_dir =
@@ -69,12 +67,6 @@ pub fn handle_git_check(dir: String) -> Result<()> {
         println!("  Option C — Proceed anyway (dirty files stay in main only):");
         println!("    git worktree add /tmp/worker-N HEAD");
     }
-
-    // Also run the shared warning check (which checks for detached HEAD as well)
-    // but only as a secondary informational pass if the repo is dirty.
-    // The primary output above is more structured; we just ensure the shared
-    // function is used so it stays in sync with spawn.rs.
-    let _ = check_worktree_status; // ensure it's visible from spawn.rs
 
     Ok(())
 }

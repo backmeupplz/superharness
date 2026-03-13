@@ -45,26 +45,7 @@ pub fn handle_harness_list() -> Result<()> {
 /// Handle `Command::HarnessSet`.
 pub fn handle_harness_set(name: String) -> Result<()> {
     let config_dir = util::superharness_config_dir();
-
-    // Validate: must be a known harness name
-    let known = ["opencode", "claude", "codex"];
-    if !known.contains(&name.as_str()) {
-        anyhow::bail!(
-            "Unknown harness {:?}. Valid options: opencode, claude, codex",
-            name
-        );
-    }
-
-    // Warn if the chosen harness is not actually installed
-    let installed = harness::detect_installed();
-    if !installed.iter().any(|h| h.name == name || h.binary == name) {
-        eprintln!(
-            "WARNING: '{name}' does not appear to be installed on PATH.\n\
-             Install it from: {}",
-            harness::install_url(&name)
-        );
-    }
-
+    harness::validate_harness_name(&name)?;
     harness::set_default_harness(&config_dir, &name)?;
     println!("Default harness set to: {name}");
     Ok(())
@@ -84,24 +65,7 @@ pub fn handle_harness_switch(name: String) -> Result<()> {
         );
     }
 
-    // Validate name
-    let known = ["opencode", "claude", "codex"];
-    if !known.contains(&name.as_str()) {
-        anyhow::bail!(
-            "Unknown harness {:?}. Valid options: opencode, claude, codex",
-            name
-        );
-    }
-
-    // Warn if not installed
-    let installed = harness::detect_installed();
-    if !installed.iter().any(|h| h.name == name || h.binary == name) {
-        eprintln!(
-            "WARNING: '{name}' does not appear to be installed on PATH.\n\
-             Install it from: {}",
-            harness::install_url(&name)
-        );
-    }
+    harness::validate_harness_name(&name)?;
 
     let config_dir = util::superharness_config_dir();
     harness::set_default_harness(&config_dir, &name)?;

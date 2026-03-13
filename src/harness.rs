@@ -196,6 +196,28 @@ fn model_flag(model: Option<&str>) -> String {
     }
 }
 
+/// Validate a harness name against known candidates, returning an error for unknown names.
+/// Also warns on stderr if the harness is not actually installed on PATH.
+pub fn validate_harness_name(name: &str) -> Result<()> {
+    let known = ["opencode", "claude", "codex"];
+    if !known.contains(&name) {
+        bail!(
+            "Unknown harness {:?}. Valid options: opencode, claude, codex",
+            name
+        );
+    }
+    let installed = detect_installed();
+    if !installed.iter().any(|h| h.name == name || h.binary == name) {
+        eprintln!(
+            "WARNING: '{}' does not appear to be installed on PATH.\n\
+             Install it from: {}",
+            name,
+            install_url(name)
+        );
+    }
+    Ok(())
+}
+
 /// Return a short, install-guide URL for a harness name.
 pub fn install_url(name: &str) -> &'static str {
     match name {

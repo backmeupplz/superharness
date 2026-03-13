@@ -90,23 +90,16 @@ pub fn handle_status_human() -> Result<()> {
     } else {
         for p in &panes {
             let health = health::classify_pane(&p.id, &monitor_state, 60).ok();
-            let (status_colored, status_plain) = match &health {
+            let status_colored = match &health {
                 Some(h) => match h.status {
-                    health::HealthStatus::Working => {
-                        (format!("{DIM}{GREEN}working{RESET} "), "working ")
-                    }
-                    health::HealthStatus::Idle => (format!("{DIM}idle{RESET}    "), "idle    "),
-                    health::HealthStatus::Stalled => {
-                        (format!("{BOLD}{RED}STALLED{RESET} "), "STALLED ")
-                    }
-                    health::HealthStatus::Waiting => {
-                        (format!("{BOLD}{YELLOW}WAITING{RESET} "), "WAITING ")
-                    }
-                    health::HealthStatus::Done => (format!("{DIM}done{RESET}    "), "done    "),
+                    health::HealthStatus::Working => format!("{DIM}{GREEN}working{RESET} "),
+                    health::HealthStatus::Idle => format!("{DIM}idle{RESET}    "),
+                    health::HealthStatus::Stalled => format!("{BOLD}{RED}STALLED{RESET} "),
+                    health::HealthStatus::Waiting => format!("{BOLD}{YELLOW}WAITING{RESET} "),
+                    health::HealthStatus::Done => format!("{DIM}done{RESET}    "),
                 },
-                None => (format!("{DIM}unknown{RESET} "), "unknown "),
+                None => format!("{DIM}unknown{RESET} "),
             };
-            let _ = status_plain; // suppress unused warning
             let attn = match &health {
                 Some(h) if h.needs_attention => {
                     format!("  {BOLD}{BRIGHT_RED}!! NEEDS ATTENTION{RESET}")

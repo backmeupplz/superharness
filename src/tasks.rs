@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::project;
-use crate::util::{generate_id, now_unix, BOLD, RESET};
+use crate::util::{generate_id, now_unix, BOLD, CYAN, GREEN, RED, RESET, YELLOW};
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -44,11 +44,11 @@ impl TaskStatus {
 
     pub fn color_code(&self) -> &'static str {
         match self {
-            TaskStatus::Pending => "\x1b[33m",    // yellow
-            TaskStatus::InProgress => "\x1b[32m", // green
-            TaskStatus::Done => "\x1b[34m",       // blue
-            TaskStatus::Blocked => "\x1b[31m",    // red
-            TaskStatus::Cancelled => "\x1b[90m",  // dark grey
+            TaskStatus::Pending => YELLOW,
+            TaskStatus::InProgress => GREEN,
+            TaskStatus::Done => "\x1b[34m", // blue (no constant)
+            TaskStatus::Blocked => RED,
+            TaskStatus::Cancelled => "\x1b[90m", // dark grey (no constant)
         }
     }
 }
@@ -74,9 +74,9 @@ impl std::fmt::Display for Priority {
 impl Priority {
     pub fn color_code(&self) -> &'static str {
         match self {
-            Priority::High => "\x1b[31m",   // red
-            Priority::Medium => "\x1b[33m", // yellow
-            Priority::Low => "\x1b[36m",    // cyan
+            Priority::High => RED,
+            Priority::Medium => YELLOW,
+            Priority::Low => CYAN,
         }
     }
 }

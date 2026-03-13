@@ -3,17 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-use crate::util::now_unix;
+use crate::util::{self, now_unix};
 
 fn checkpoints_base_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("cannot determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
-        .join("checkpoints"))
+    Ok(util::superharness_data_dir().join("checkpoints"))
 }
 
 fn pane_checkpoint_dir(pane_id: &str) -> Result<PathBuf> {

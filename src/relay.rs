@@ -22,7 +22,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::util::{generate_id, now_unix, shell_escape};
+use crate::util::{self, generate_id, now_unix, shell_escape};
 
 // ---------------------------------------------------------------------------
 // Relay request schema
@@ -93,14 +93,7 @@ pub struct RelayRequest {
 // ---------------------------------------------------------------------------
 
 fn relay_file() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("cannot determine home directory")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
-        .join("relay_requests.json"))
+    Ok(util::superharness_data_dir().join("relay_requests.json"))
 }
 
 fn load_all() -> Result<Vec<RelayRequest>> {

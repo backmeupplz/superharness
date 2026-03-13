@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::util;
+
 /// State persisted between monitor runs.
 #[derive(Serialize, Deserialize, Default)]
 pub struct MonitorState {
@@ -14,15 +16,7 @@ pub struct MonitorState {
 }
 
 fn state_path() -> PathBuf {
-    let base = dirs_home().unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join(".local")
-        .join("share")
-        .join("superharness")
-        .join("monitor_state.json")
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    util::superharness_data_dir().join("monitor_state.json")
 }
 
 pub fn load_state() -> MonitorState {

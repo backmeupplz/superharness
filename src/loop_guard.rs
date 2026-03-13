@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::util::{hash_string, now_unix};
+use crate::util::{self, hash_string, now_unix};
 
 const DEFAULT_WINDOW_SIZE: usize = 10;
 const REPEAT_THRESHOLD: u32 = 3;
@@ -44,11 +44,7 @@ fn data_path() -> PathBuf {
 }
 
 fn dirs_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
+    util::superharness_data_dir()
 }
 
 fn load_state() -> Result<PersistState> {
