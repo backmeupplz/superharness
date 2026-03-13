@@ -931,7 +931,7 @@ Monitor state (stall counts, output hashes, recovery attempts) is persisted in `
 
 ## Auto-Watch
 
-The `watch` subcommand is a higher-level supervisor that auto-manages all panes — approving safe permission prompts, sending follow-up messages, and cleaning up finished workers without manual intervention.
+The `watch` subcommand is a higher-level supervisor that auto-manages all panes — approving safe permission prompts, sending follow-up messages, cleaning up finished workers, and keeping the main window tidy — all without manual intervention.
 
 ```bash
 /home/borodutch/code/superharness/target/debug/superharness watch                   # auto-manage all panes (default 60s interval)
@@ -939,6 +939,14 @@ The `watch` subcommand is a higher-level supervisor that auto-manages all panes 
 /home/borodutch/code/superharness/target/debug/superharness watch --pane %ID        # watch a specific pane only
 ```
 
-Use `watch` when you want fully hands-off supervision: it combines health checking, permission approval, and cleanup into a single long-running command. For finer control or away-mode use, prefer `monitor` + manual `send`/`kill`.
+### Autonomous pane management
+
+`watch` now actively manages pane visibility each cycle:
+
+- **Surfaces panes that need attention** — when a pane has a destructive permission prompt (`skipped_destructive`) or has exhausted all nudge attempts (`needs_attention`), `watch` automatically brings it to the main window so you can see it immediately. The JSON cycle output includes `"surfaced": true` on those pane entries.
+
+- **Keeps the main window clean** — after every cycle, `watch` calls `auto_compact()` to move excess worker panes (beyond the visible limit) to background tabs. This prevents the main window from becoming cluttered as workers accumulate.
+
+Use `watch` when you want fully hands-off supervision: it combines health checking, permission approval, cleanup, and pane layout management into a single long-running command. For finer control or away-mode use, prefer `monitor` + manual `send`/`kill`.
 
 $TASK

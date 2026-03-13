@@ -84,6 +84,8 @@ pub struct PaneAction {
     pub status: String,
     pub action: String,
     pub detail: Option<String>,
+    /// True when this pane was surfaced to the main window during this cycle.
+    pub surfaced: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +157,7 @@ fn handle_done(pane_id: &str) -> PaneAction {
                 status: "done".to_string(),
                 action: "killed".to_string(),
                 detail: Some(detail),
+                surfaced: false,
             }
         }
         Err(e) => PaneAction {
@@ -162,6 +165,7 @@ fn handle_done(pane_id: &str) -> PaneAction {
             status: "done".to_string(),
             action: "kill_failed".to_string(),
             detail: Some(e.to_string()),
+            surfaced: false,
         },
     }
 }
@@ -180,6 +184,7 @@ fn handle_waiting(pane_id: &str) -> PaneAction {
             status: "waiting".to_string(),
             action: "skipped_destructive".to_string(),
             detail: Some("destructive pattern detected — manual approval required".to_string()),
+            surfaced: false,
         };
     }
 
@@ -190,12 +195,14 @@ fn handle_waiting(pane_id: &str) -> PaneAction {
             status: "waiting".to_string(),
             action: "approved".to_string(),
             detail: Some("sent 'y' to safe permission prompt".to_string()),
+            surfaced: false,
         },
         Err(e) => PaneAction {
             pane: pane_id.to_string(),
             status: "waiting".to_string(),
             action: "approve_failed".to_string(),
             detail: Some(e.to_string()),
+            surfaced: false,
         },
     }
 }
@@ -215,6 +222,7 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
                 status: "stalled".to_string(),
                 action: "nudged".to_string(),
                 detail: Some(format!("stall #{stall_number}: sent {msg:?}")),
+                surfaced: false,
             }
         }
         2 => {
@@ -225,6 +233,7 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
                 status: "stalled".to_string(),
                 action: "nudged".to_string(),
                 detail: Some(format!("stall #{stall_number}: sent {msg:?}")),
+                surfaced: false,
             }
         }
         _ => {
@@ -238,6 +247,7 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
                 detail: Some(format!(
                     "stall #{stall_number}: exhausted nudges — human intervention required"
                 )),
+                surfaced: false,
             }
         }
     }
@@ -286,12 +296,13 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
                         status: "error".to_string(),
                         action: "skipped".to_string(),
                         detail: Some(e.to_string()),
+                        surfaced: false,
                     });
                     continue;
                 }
             };
 
-            let action = match health.status {
+            let mut action = match health.status {
                 HealthStatus::Done => {
                     // Reset stall counter on transition.
                     stall_counts.remove(pane_id.as_str());
@@ -310,12 +321,38 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
                         status: health.status.to_string(),
                         action: "observed".to_string(),
                         detail: None,
+                        surfaced: false,
                     }
                 }
             };
 
+            // --- Autonomous pane management ---
+
+            // Rule 1: Surface panes that need immediate human attention so the
+            // human can see them in the main window without having to hunt for them.
+            if action.action == "skipped_destructive" || action.action == "needs_attention" {
+                match tmux::surface(pane_id) {
+                    Ok(_) => {
+                        action.surfaced = true;
+                        eprintln!(
+                            "[watch] surfaced pane {pane_id} to main window (action={})",
+                            action.action
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[watch] failed to surface pane {pane_id}: {e}");
+                    }
+                }
+            }
+
             actions.push(action);
         }
+
+        // Rule 2 & 3: Keep the main window tidy after every cycle.
+        // auto_compact() moves excess worker panes (beyond MAX_WORKERS_VISIBLE=4) to
+        // background tabs.  This also handles the case where several working/idle panes
+        // are accumulating in the main window.
+        let _ = tmux::auto_compact();
 
         // Print JSON status update for this cycle.
         let out = serde_json::json!({
