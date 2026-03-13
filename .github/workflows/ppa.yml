@@ -47,7 +47,6 @@ jobs:
             --exclude='./.git' \
             --exclude='./debian' \
             --exclude='./target' \
-            --exclude='./packaging' \
             .
 
       - name: Import GPG key
