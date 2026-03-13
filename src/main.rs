@@ -64,9 +64,9 @@ enum Command {
         #[arg(long)]
         depends_on: Option<String>,
 
-        /// Skip post-spawn smart_layout and auto_compact.
-        /// By default every spawned worker is shown in the main window with smart layout applied.
-        /// Pass --no-hide to suppress all layout changes after spawning (rarely needed).
+        /// Keep the spawned worker visible in the main orchestrator window.
+        /// By default workers are immediately hidden to a background tab so the
+        /// main window stays clean. Pass --no-hide to keep the pane visible instead.
         #[arg(long)]
         no_hide: bool,
     },

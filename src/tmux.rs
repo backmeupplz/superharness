@@ -270,11 +270,10 @@ const PANE_COLOR_HEX: &[&str] = &[
 
 /// Spawn a new opencode worker as a pane in the superharness window.
 ///
-/// When `no_hide` is `false` (the default), the new pane remains visible in
-/// the main orchestrator window and `smart_layout` + `auto_compact` are applied
-/// to keep the layout tidy.
-/// Pass `no_hide = true` to skip even smart_layout/compact — this is an escape
-/// hatch for rare cases where you want to suppress all post-spawn layout changes.
+/// By default the new pane is immediately hidden to a background tab so the
+/// main orchestrator window stays clean and full-size. Pass `no_hide = true`
+/// to keep the worker visible in the main window (useful when you want to
+/// watch a worker directly without surfacing it manually).
 pub fn spawn(
     task: &str,
     dir: &str,
@@ -354,14 +353,18 @@ pub fn spawn(
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
     if no_hide {
-        // no_hide=true: skip smart_layout and auto_compact entirely.
-        // This is a rarely-needed escape hatch to suppress all post-spawn layout
-        // changes (e.g. when the caller will manage layout manually).
-    } else {
-        // Default: keep pane visible in main window — apply smart layout and
-        // auto-compact so the orchestrator always sees a tidy arrangement.
+        // --no-hide: keep the worker visible in the main orchestrator window.
+        // Apply smart_layout + auto_compact to keep the arrangement tidy.
         let _ = smart_layout();
         let _ = auto_compact();
+    } else {
+        // Default: immediately move the new pane to a background tab so the
+        // orchestrator window stays clean and full-size.
+        let label = match name {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => pane_id.clone(),
+        };
+        let _ = hide(&pane_id, Some(&label));
     }
 
     Ok(pane_id)
