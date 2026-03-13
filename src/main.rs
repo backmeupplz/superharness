@@ -615,18 +615,10 @@ fn main() -> anyhow::Result<()> {
                         .unwrap_or(false);
 
                     if is_detached {
-                        eprintln!(
-                            "WARNING: {check_dir_str} is in detached HEAD state."
-                        );
-                        eprintln!(
-                            "  A worktree created from here will not be on any branch."
-                        );
-                        eprintln!(
-                            "  Consider checking out a branch first:"
-                        );
-                        eprintln!(
-                            "    git -C {check_dir_str} checkout -b <branch-name>"
-                        );
+                        eprintln!("WARNING: {check_dir_str} is in detached HEAD state.");
+                        eprintln!("  A worktree created from here will not be on any branch.");
+                        eprintln!("  Consider checking out a branch first:");
+                        eprintln!("    git -C {check_dir_str} checkout -b <branch-name>");
                     }
 
                     // ── Dirty-files check ────────────────────────────────────
@@ -657,10 +649,8 @@ fn main() -> anyhow::Result<()> {
                                     b.len() > 1 && b[1] != b' ' && b[0] == b' '
                                 })
                                 .count();
-                            let untracked = dirty_lines
-                                .iter()
-                                .filter(|l| l.starts_with("??"))
-                                .count();
+                            let untracked =
+                                dirty_lines.iter().filter(|l| l.starts_with("??")).count();
 
                             eprintln!(
                                 "WARNING: {check_dir_str} has {dirty_count} file(s) with uncommitted changes \
@@ -669,12 +659,8 @@ fn main() -> anyhow::Result<()> {
                             eprintln!(
                                 "  If you are using a git worktree, dirty files will NOT be included."
                             );
-                            eprintln!(
-                                "  Commit or stash them first, or run for details:"
-                            );
-                            eprintln!(
-                                "    superharness git-check --dir {check_dir_str}"
-                            );
+                            eprintln!("  Commit or stash them first, or run for details:");
+                            eprintln!("    superharness git-check --dir {check_dir_str}");
                         }
                     }
                 }
@@ -972,6 +958,10 @@ fn main() -> anyhow::Result<()> {
                 ("present".to_string(), None, None)
             };
 
+            // ── Hint bar ─────────────────────────────────────────────────────
+            println!("  {DIM}any key to close{RESET}");
+            println!("  {DIM}{}{RESET}", "─".repeat(70));
+
             // ── MODE ──────────────────────────────────────────────────────────
             println!();
             if mode_str == "away" {
@@ -1098,6 +1088,10 @@ fn main() -> anyhow::Result<()> {
                     path.to_string()
                 }
             };
+
+            // Hint bar
+            println!("  {DIM}any key to close{RESET}");
+            println!("  {DIM}{}{RESET}", "─".repeat(70));
 
             println!();
             if panes.is_empty() {
@@ -2042,6 +2036,10 @@ fn main() -> anyhow::Result<()> {
             let start = all_events.len().saturating_sub(200);
             let events = &all_events[start..];
 
+            // Hint bar (first thing shown; q closes less, arrows scroll)
+            println!("  {DIM}q:close  ↑/↓ or PgUp/PgDn:scroll  /:search{RESET}");
+            println!("  {DIM}{}{RESET}", "─".repeat(70));
+
             println!();
             println!(
                 "  {BOLD}Event Log:{RESET} {}  {DIM}({} total, showing last {}){RESET}",
@@ -2077,9 +2075,15 @@ fn main() -> anyhow::Result<()> {
 
                     let details = &ev.details;
 
+                    // Print first line inline; indent any continuation lines so they
+                    // don't appear flush against the left edge.
                     println!(
-                        "  {DIM}[{time_str}]{RESET}  {color}{kind_str:<20}{RESET}{pane_str}  {details}"
+                        "  {DIM}[{time_str}]{RESET}  {color}{kind_str:<20}{RESET}{pane_str}  {}",
+                        details.lines().next().unwrap_or("")
                     );
+                    for cont_line in details.lines().skip(1) {
+                        println!("    {DIM}{cont_line}{RESET}");
+                    }
                 }
             }
             println!();
@@ -2124,6 +2128,10 @@ fn main() -> anyhow::Result<()> {
             let count_blocked = tasks.iter().filter(|t| t.status == "blocked").count();
             let count_done = tasks.iter().filter(|t| t.status == "done").count();
             let count_cancelled = tasks.iter().filter(|t| t.status == "cancelled").count();
+
+            // Hint bar (first thing shown; q closes less, arrows scroll)
+            println!("  {DIM}q:close  ↑/↓ or PgUp/PgDn:scroll  /:search{RESET}");
+            println!("  {DIM}{}{RESET}", "─".repeat(70));
 
             println!();
             println!(
