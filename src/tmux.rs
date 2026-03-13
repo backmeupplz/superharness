@@ -119,15 +119,26 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "bg=#1a2d4a,fg=colour250",
     ])?;
 
-    // Left side: static session name label.
+    // Left side: session name label — wrapped in range=window|1 so clicking it
+    // navigates back to the main orchestrator window (tmux 3.2+ feature).
+    // Also bind MouseDown1StatusLeft as a belt-and-suspenders fallback.
     tmux_ok(&[
         "set-option",
         "-t",
         SESSION,
         "status-left",
-        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS ",
+        "#[range=window|1]#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[range=default]",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
+    // Fallback mouse binding: clicking anywhere in status-left area goes to window 1.
+    let _ = tmux_ok(&[
+        "bind-key",
+        "-n",
+        "MouseDown1StatusLeft",
+        "select-window",
+        "-t",
+        ":1",
+    ]);
 
     // Right side: dynamic shell fragments read mode + pane count.
     // Uses grep to extract mode from the project-local .superharness/state.json.
@@ -259,10 +270,11 @@ const PANE_COLOR_HEX: &[&str] = &[
 
 /// Spawn a new opencode worker as a pane in the superharness window.
 ///
-/// When `no_hide` is `false` (the default), the new pane is immediately moved
-/// to its own background tmux tab named after `name` (or a short task snippet)
-/// so it does not clutter the main orchestrator window.
-/// Pass `no_hide = true` to keep the pane visible in the main window.
+/// When `no_hide` is `false` (the default), the new pane remains visible in
+/// the main orchestrator window and `smart_layout` + `auto_compact` are applied
+/// to keep the layout tidy.
+/// Pass `no_hide = true` to skip even smart_layout/compact — this is an escape
+/// hatch for rare cases where you want to suppress all post-spawn layout changes.
 pub fn spawn(
     task: &str,
     dir: &str,
@@ -342,29 +354,14 @@ pub fn spawn(
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
     if no_hide {
-        // Keep pane in main window — apply smart layout and auto-compact as before.
+        // no_hide=true: skip smart_layout and auto_compact entirely.
+        // This is a rarely-needed escape hatch to suppress all post-spawn layout
+        // changes (e.g. when the caller will manage layout manually).
+    } else {
+        // Default: keep pane visible in main window — apply smart layout and
+        // auto-compact so the orchestrator always sees a tidy arrangement.
         let _ = smart_layout();
         let _ = auto_compact();
-    } else {
-        // Immediately move the new pane to its own background tab so it never
-        // appears in the main orchestrator window.  The tab is named after the
-        // worker's --name argument; if no name was given, use the first 20
-        // characters of the task as a fallback label.
-        let tab_name: String = match name {
-            Some(n) if !n.is_empty() => n.chars().take(20).collect(),
-            _ => {
-                let s: String = task.chars().take(20).collect();
-                s.trim().to_string()
-            }
-        };
-        let tab_name = if tab_name.is_empty() {
-            "worker".to_string()
-        } else {
-            tab_name
-        };
-        let _ = tmux_ok(&["break-pane", "-t", &pane_id, "-d", "-n", &tab_name]);
-        // Re-balance the main window now that the new pane is gone from it.
-        let _ = smart_layout();
     }
 
     Ok(pane_id)
@@ -528,6 +525,63 @@ pub fn auto_compact() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Information returned by the `terminal-size` subcommand.
+#[derive(Serialize)]
+pub struct TerminalSizeInfo {
+    pub width: u32,
+    pub height: u32,
+    /// Fixed row count for the orchestrator pane (%0).
+    pub main_pane_rows: u32,
+    /// Number of non-%0 panes currently visible in window 0.
+    pub workers_visible: usize,
+    /// Recommended maximum number of workers to show simultaneously,
+    /// based on terminal width:
+    ///   < 120  → 1
+    ///   120–200 → 2
+    ///   200–300 → 3
+    ///   300+   → 4
+    pub recommended_max_workers: usize,
+}
+
+/// Compute terminal size metadata and return it as a [`TerminalSizeInfo`].
+pub fn terminal_size_info() -> TerminalSizeInfo {
+    let (width, height) = get_terminal_size();
+
+    // Count non-%0 panes in window 0.
+    let workers_visible: usize = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-t",
+            &format!("{SESSION}:0"),
+            "-F",
+            "#{pane_id}",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty() && *l != "%0")
+                .count()
+        })
+        .unwrap_or(0);
+
+    let recommended_max_workers = match width {
+        w if w >= 300 => 4,
+        w if w >= 200 => 3,
+        w if w >= 120 => 2,
+        _ => 1,
+    };
+
+    TerminalSizeInfo {
+        width,
+        height,
+        main_pane_rows: 82,
+        workers_visible,
+        recommended_max_workers,
+    }
 }
 
 /// Query the current tmux window dimensions dynamically.
@@ -832,6 +886,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
             trimmed.is_empty() || trimmed == "[]" || trimmed == "null"
         };
 
+        let tasks_file_path = tasks_file.to_string_lossy().to_string();
         if !has_state || tasks_empty {
             // Planning mode: prefill the prompt but let the user submit manually.
             (format!(
@@ -841,12 +896,14 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 2. Ask clarifying questions to understand scope, constraints, and priorities. \
                 3. Break the goal down into concrete tasks. \
                 4. Identify which tasks can run in parallel and which depend on each other. \
-                5. Write the resulting tasks to .superharness/tasks.json (create .superharness/ dir if needed). \
+                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed). \
                 6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
                 Be conversational — this is a planning chat, not a form to fill out."
             ), false)
         } else {
             // Resume mode: inject previous context and auto-submit.
+            // Tasks are NOT inlined here — the orchestrator reads them fresh from disk to avoid
+            // working from a stale startup-time snapshot.
             let state_content =
                 std::fs::read_to_string(&state_file).unwrap_or_else(|_| "{}".to_string());
             let decisions_content = if decisions_file.exists() {
@@ -855,10 +912,12 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 "none".to_string()
             };
             (format!(
-                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. Tasks: {}. Decisions pending: {}. \
+                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. \
+                Tasks file: {} — please read this file to see current tasks. \
+                Decisions pending: {}. \
                 Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
                 state_content,
-                tasks_content_raw,
+                tasks_file_path,
                 decisions_content,
             ), true)
         }

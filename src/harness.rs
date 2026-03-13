@@ -2,8 +2,8 @@
 //!
 //! Supported harnesses and their CLI interfaces:
 //!   - opencode:  opencode [--model <m>] --prompt <task>
-//!   - claude:    claude [--model <m>] --print <task>   (Claude Code, non-interactive)
-//!   - codex:     codex [--model <m>] <task>            (positional argument)
+//!   - claude:    claude [--model <m>] --dangerously-skip-permissions --print <task>
+//!   - codex:     codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>
 
 use anyhow::{bail, Result};
 use std::path::Path;
@@ -137,19 +137,26 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
 ///
 /// CLI conventions per harness:
 ///   - opencode: `opencode [--model <m>] --prompt <task>`
-///   - claude:   `claude [--model <m>] --print <task>`
-///   - codex:    `codex [--model <m>] <task>`
+///   - claude:   `claude [--model <m>] --dangerously-skip-permissions --print <task>`
+///   - codex:    `codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>`
+///
+/// The `--dangerously-skip-permissions` flag for claude bypasses per-tool-call approval
+/// prompts, enabling fully non-interactive agentic work inside isolated git worktrees.
+///
+/// The `codex exec` subcommand runs codex non-interactively (without the TUI).
+/// `--dangerously-bypass-approvals-and-sandbox` skips confirmation prompts; intended for
+/// externally-sandboxed environments such as git worktrees.
 pub fn build_harness_cmd(harness: &str, model: Option<&str>, prompt: &str) -> String {
     let escaped = shell_escape(prompt);
 
     match harness {
         "claude" => {
             let model_flag = model_flag(model);
-            format!("claude{model_flag} --print {escaped}")
+            format!("claude{model_flag} --dangerously-skip-permissions --print {escaped}")
         }
         "codex" => {
             let model_flag = model_flag(model);
-            format!("codex{model_flag} {escaped}")
+            format!("codex exec --dangerously-bypass-approvals-and-sandbox{model_flag} {escaped}")
         }
         // Default (opencode or any unknown harness): opencode-style interface
         _ => {
