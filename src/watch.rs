@@ -20,6 +20,7 @@ use crate::health::{classify_pane, HealthStatus};
 use crate::monitor::load_state;
 use crate::pending_tasks;
 use crate::tmux;
+use crate::tmux::smart_layout_with_attention;
 
 // ---------------------------------------------------------------------------
 // Destructive-pattern detection
@@ -445,6 +446,16 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
                 }
                 HealthStatus::Waiting => {
                     stall_counts.remove(pane_id.as_str());
+                    // Surface and expand the waiting pane so the orchestrator
+                    // can see it clearly without manual hunting.
+                    match smart_layout_with_attention(Some(pane_id)) {
+                        Ok(_) => eprintln!(
+                            "[watch] smart_layout_with_attention({pane_id}): attention layout applied"
+                        ),
+                        Err(e) => eprintln!(
+                            "[watch] smart_layout_with_attention({pane_id}) failed: {e}"
+                        ),
+                    }
                     handle_waiting(pane_id)
                 }
                 HealthStatus::Stalled => handle_stalled(pane_id, &mut stall_counts),
