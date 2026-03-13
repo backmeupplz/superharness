@@ -119,15 +119,26 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "bg=#1a2d4a,fg=colour250",
     ])?;
 
-    // Left side: static session name label.
+    // Left side: session name label — wrapped in range=window|1 so clicking it
+    // navigates back to the main orchestrator window (tmux 3.2+ feature).
+    // Also bind MouseDown1StatusLeft as a belt-and-suspenders fallback.
     tmux_ok(&[
         "set-option",
         "-t",
         SESSION,
         "status-left",
-        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS ",
+        "#[range=window|1]#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[range=default]",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
+    // Fallback mouse binding: clicking anywhere in status-left area goes to window 1.
+    let _ = tmux_ok(&[
+        "bind-key",
+        "-n",
+        "MouseDown1StatusLeft",
+        "select-window",
+        "-t",
+        ":1",
+    ]);
 
     // Right side: dynamic shell fragments read mode + pane count.
     // Uses grep to extract mode from the project-local .superharness/state.json.
