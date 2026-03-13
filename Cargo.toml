@@ -5,6 +5,10 @@ edition = "2024"
 description = "Autonomous multi-agent orchestrator for AI coding agents via tmux"
 license = "MIT"
 repository = "https://github.com/backmeupplz/superharness"
+homepage = "https://backmeupplz.github.io/superharness"
+keywords = ["ai", "agent", "tmux", "orchestrator", "opencode"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
