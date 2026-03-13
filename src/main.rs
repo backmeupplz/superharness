@@ -184,6 +184,9 @@ enum Command {
     /// List active workers in human-readable format (used by F4)
     Workers,
 
+    /// Report terminal dimensions and recommended worker layout (outputs JSON)
+    TerminalSize,
+
     /// Monitor agents for stalls and auto-recover
     Monitor {
         /// Seconds between each check cycle
@@ -1047,6 +1050,18 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+        }
+
+        Some(Command::TerminalSize) => {
+            let info = tmux::terminal_size_info();
+            let out = serde_json::json!({
+                "width": info.width,
+                "height": info.height,
+                "main_pane_rows": info.main_pane_rows,
+                "workers_visible": info.workers_visible,
+                "recommended_max_workers": info.recommended_max_workers,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
 
         Some(Command::Monitor {
