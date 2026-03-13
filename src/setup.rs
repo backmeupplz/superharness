@@ -18,10 +18,16 @@ use std::path::Path;
 /// }
 /// ```
 #[derive(Debug, Deserialize, Default)]
+pub struct ProviderRouting {
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub struct UserConfig {
     pub default_model: Option<String>,
     pub preferred_providers: Option<Vec<String>>,
     pub preferred_models: Option<Vec<String>>,
+    pub provider_routing: Option<ProviderRouting>,
 }
 
 pub fn load_user_config() -> UserConfig {
@@ -52,8 +58,14 @@ fn build_preferences_section(cfg: &UserConfig) -> String {
         .as_ref()
         .map(|v| !v.is_empty())
         .unwrap_or(false);
+    let has_routing = cfg
+        .provider_routing
+        .as_ref()
+        .and_then(|r| r.note.as_ref())
+        .map(|n| !n.is_empty())
+        .unwrap_or(false);
 
-    if !has_default && !has_providers && !has_models {
+    if !has_default && !has_providers && !has_models && !has_routing {
         return String::new();
     }
 
@@ -65,6 +77,17 @@ fn build_preferences_section(cfg: &UserConfig) -> String {
 
     if let Some(ref m) = cfg.default_model {
         out.push_str(&format!("**Default model:** `{m}`\n\n"));
+    }
+
+    if has_routing {
+        let note = cfg
+            .provider_routing
+            .as_ref()
+            .unwrap()
+            .note
+            .as_ref()
+            .unwrap();
+        out.push_str(&format!("**Provider routing rule:** {note}\n\n"));
     }
 
     if has_providers {

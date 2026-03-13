@@ -145,7 +145,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-mode #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
@@ -585,6 +585,99 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         let _ = tmux_ok(&["kill-session", "-t", SESSION]);
     }
 
+    // ── Determine initial prompt BEFORE launching opencode ───────────────────
+    // This lets us pass the prompt directly via --prompt rather than using
+    // send-keys after the fact (which is unreliable for long/multi-line messages).
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+        .join("superharness")
+        .join("config.json");
+
+    // Read default_model from config so the orchestrator uses the user's preferred model.
+    let default_model: Option<String> = if config_path.exists() {
+        std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .and_then(|v| v["default_model"].as_str().map(String::from))
+    } else {
+        None
+    };
+    let orch_model_flag = match &default_model {
+        Some(m) => format!(" --model {}", shell_escape(m)),
+        None => String::new(),
+    };
+
+    // auto_submit = true  → pass --prompt to opencode (it submits immediately)
+    // auto_submit = false → launch opencode without --prompt and prefill the input
+    //                       via a background tmux send-keys (no Enter) so the user
+    //                       can review and edit before sending.
+    let (initial_prompt, auto_submit): (String, bool) = if !config_path.exists() {
+        // First-run: ask model to set up preferences (auto-submit is fine here)
+        let config_path_str = config_path.to_string_lossy().to_string();
+        (format!(
+            "[SUPERHARNESS FIRST RUN] Welcome! Before we start, please set up model preferences. \
+            Run `opencode models` to see all available models, and `opencode auth list` to see \
+            authenticated providers. Then ask the user: which provider they prefer, and which \
+            model should be the default when spawning workers. Keep it conversational — just a \
+            couple of questions. Once you have their answers, write the config to {config_path_str} \
+            as JSON with fields: default_model (string), preferred_providers (array of strings), \
+            preferred_models (array of strings). Create the directory if needed. After saving, \
+            confirm it's done and ask what they'd like to work on today."
+        ), true)
+    } else {
+        let state_file = std::path::PathBuf::from(&dir_str)
+            .join(".superharness")
+            .join("state.json");
+        let tasks_file = std::path::PathBuf::from(&dir_str)
+            .join(".superharness")
+            .join("tasks.json");
+        let decisions_file = std::path::PathBuf::from(&dir_str)
+            .join(".superharness")
+            .join("decisions.json");
+
+        let has_state = state_file.exists();
+        let tasks_content_raw = if tasks_file.exists() {
+            std::fs::read_to_string(&tasks_file).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let tasks_empty = {
+            let trimmed = tasks_content_raw.trim();
+            trimmed.is_empty() || trimmed == "[]" || trimmed == "null"
+        };
+
+        if !has_state || tasks_empty {
+            // Planning mode: prefill the prompt but let the user submit manually.
+            (format!(
+                "[SUPERHARNESS PLANNING] No project plan found for this directory ({dir_str}). \
+                Please start a planning conversation with the user: \
+                1. Ask what they want to build or what the goal of this project is. \
+                2. Ask clarifying questions to understand scope, constraints, and priorities. \
+                3. Break the goal down into concrete tasks. \
+                4. Identify which tasks can run in parallel and which depend on each other. \
+                5. Write the resulting tasks to .superharness/tasks.json (create .superharness/ dir if needed). \
+                6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
+                Be conversational — this is a planning chat, not a form to fill out."
+            ), false)
+        } else {
+            // Resume mode: inject previous context and auto-submit.
+            let state_content =
+                std::fs::read_to_string(&state_file).unwrap_or_else(|_| "{}".to_string());
+            let decisions_content = if decisions_file.exists() {
+                std::fs::read_to_string(&decisions_file).unwrap_or_else(|_| "none".to_string())
+            } else {
+                "none".to_string()
+            };
+            (format!(
+                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. Tasks: {}. Decisions pending: {}. \
+                Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
+                state_content,
+                tasks_content_raw,
+                decisions_content,
+            ), true)
+        }
+    };
+
     // Get current terminal size (this is the real terminal we'll attach to)
     let (cols, rows): (i32, i32) = term_size::dimensions()
         .map(|(c, r)| (c as i32, r as i32))
@@ -630,92 +723,26 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Launch opencode with --prompt to pre-fill and submit the initial message.
+    // This is reliable for any prompt length, unlike send-keys which can lose
+    // characters or mis-handle newlines in long messages.
+    let opencode_cmd = format!(
+        "opencode{orch_model_flag} --prompt {}",
+        shell_escape(&initial_prompt)
+    );
+
     let splash = format!(
-        "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec opencode"
+        "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec {opencode_cmd}"
     );
 
     tmux_ok(&["new-session", "-d", "-s", SESSION, "-c", &dir_str])?;
     configure_session(bin_path)?;
     export_env_to_session()?;
 
-    // Replace default shell with splash+opencode
-    tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-c", &splash])?;
-
-    // ── Startup state injection ──────────────────────────────────────────────
-    // After opencode has had time to start (3 seconds), check if there is an
-    // existing .superharness/state.json in the project directory and, if so,
-    // send a context message to the main pane so the AI can resume.
-    {
-        let state_dir = dir_str.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-
-            // ── First-run setup ──────────────────────────────────────────────
-            // If the user has no config file yet, ask the model to run the
-            // setup conversation instead of injecting session state.
-            let config_path = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness")
-                .join("config.json");
-
-            if !config_path.exists() {
-                let config_path_str = config_path.to_string_lossy().to_string();
-                let setup_msg = format!(
-                    "[SUPERHARNESS FIRST RUN] Welcome! Before we start, please set up model preferences. \
-                    Run `opencode models` to see all available models, and `opencode auth list` to see \
-                    authenticated providers. Then ask the user: which provider they prefer, and which \
-                    model should be the default when spawning workers. Keep it conversational — just a \
-                    couple of questions. Once you have their answers, write the config to {config_path_str} \
-                    as JSON with fields: default_model (string), preferred_providers (array of strings), \
-                    preferred_models (array of strings). Create the directory if needed. After saving, \
-                    confirm it's done and ask what they'd like to work on today."
-                );
-                let _ = Command::new("tmux")
-                    .args(["send-keys", "-t", "%0", &setup_msg, "Enter"])
-                    .status();
-                return;
-            }
-
-            // ── Resuming session state injection ────────────────────────────
-            let state_file = std::path::PathBuf::from(&state_dir)
-                .join(".superharness")
-                .join("state.json");
-            let tasks_file = std::path::PathBuf::from(&state_dir)
-                .join(".superharness")
-                .join("tasks.json");
-            let decisions_file = std::path::PathBuf::from(&state_dir)
-                .join(".superharness")
-                .join("decisions.json");
-
-            if !state_file.exists() {
-                return; // Fresh project session — no context to inject
-            }
-
-            let state_content =
-                std::fs::read_to_string(&state_file).unwrap_or_else(|_| "{}".to_string());
-            let tasks_content = if tasks_file.exists() {
-                std::fs::read_to_string(&tasks_file).unwrap_or_else(|_| "none".to_string())
-            } else {
-                "none".to_string()
-            };
-            let decisions_content = if decisions_file.exists() {
-                std::fs::read_to_string(&decisions_file).unwrap_or_else(|_| "none".to_string())
-            } else {
-                "none".to_string()
-            };
-
-            let msg = format!(
-                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. Tasks: {}. Decisions pending: {}. Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
-                state_content,
-                tasks_content,
-                decisions_content,
-            );
-
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", "%0", &msg, "Enter"])
-                .status();
-        });
-    }
+    // Replace default shell with splash+opencode.
+    // Use bash -lc (login shell) so that ~/.profile and ~/.bash_profile are
+    // sourced, ensuring PATH and credential env vars are fully initialised.
+    tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-lc", &splash])?;
 
     let status = Command::new("tmux")
         .args(["attach-session", "-t", SESSION])
