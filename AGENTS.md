@@ -2,32 +2,7 @@
 
 > **CRITICAL: You are an orchestrator. ALWAYS spawn workers for implementation tasks. Never do code editing yourself. Your only job is to decompose, spawn, monitor, and coordinate.**
 
-## Are you a worker or the orchestrator?
-
-**Check your pane ID first:**
-```bash
-tmux display-message -p '#{pane_id}'
-```
-
-- **If your pane ID is `%0`** → You are the orchestrator. Read all sections below and follow them.
-- **If your pane ID is NOT `%0`** → You are a worker. See [Worker Rules](#worker-rules) below. **Stop reading the orchestrator instructions.**
-
----
-
-## Worker Rules
-
-> **You are a WORKER agent. These rules override everything else.**
-
-1. **Do NOT spawn sub-workers.** Never run `superharness spawn`. Never create tmux panes. Never launch other agents. You work alone.
-2. **Do NOT read or follow the orchestrator sections** of this file (pane management, away mode, startup behavior, etc.).
-3. **Implement your assigned task directly** — read files, write code, run builds, commit. That's it.
-4. **Commit after every logical unit of work.** Run `git add -A && git commit -m 'wip: <what you did>'` after each file edit or subtask. Do not batch commits. The session can crash at any time.
-5. **Ask questions via relay if you need human input** — use `superharness relay`, not spawning more workers.
-6. **When done, stop.** Your pane will auto-kill after your task completes.
-
----
-
-You are an orchestrator managing Claude workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
+You are an orchestrator managing opencode workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
 
 ## Commands
 
@@ -65,47 +40,10 @@ Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `e
 
 ## Pane Management
 
-**CRITICAL RULES — follow these without exception:**
-
-1. **The orchestrator pane (%0) is sacred.** Never split its window. Never tile it with workers. It must always be a single, full-size pane in its own window so you can read/write comfortably.
-
-2. **You decide what's visible.** Workers spawn in the main window by default. Use `terminal-size` to check how much space you have, then decide: surface important workers, hide idle ones. Never blindly show everything.
-
-3. **Run `compact` any time there are stray panes in the main window** (after a crash, session resume, etc.).
-
-### Checking available space before surfacing workers
-
-Always run `terminal-size` before deciding how many workers to show:
+Workers are automatically moved to background tabs when the main window gets crowded (>4 panes). Use these commands to manage visibility:
 
 ```bash
-/home/borodutch/code/superharness/target/debug/superharness terminal-size
-# => { "width": 482, "height": 83, "main_pane_rows": 81, "workers_visible": 2, "recommended_max_workers": 3 }
-```
-
-Use `recommended_max_workers` as your guide:
-- If `workers_visible < recommended_max_workers` → you can surface another worker
-- If `workers_visible >= recommended_max_workers` → hide a low-priority worker first, then surface the new one
-- If a worker just needs a quick check, surface it, read it, then hide it again
-
-### Surface → monitor → hide cycle
-
-```bash
-# Bring worker forward to check on it
-/home/borodutch/code/superharness/target/debug/superharness surface --pane %ID
-
-# Read its output
-/home/borodutch/code/superharness/target/debug/superharness read --pane %ID --lines 40
-
-# Answer questions or approve actions, then hide again if space is tight
-/home/borodutch/code/superharness/target/debug/superharness send --pane %ID --text "y"
-/home/borodutch/code/superharness/target/debug/superharness hide --pane %ID --name "feature-name"
-```
-
-### Utility commands
-
-```bash
-/home/borodutch/code/superharness/target/debug/superharness terminal-size        # get terminal dimensions + recommended max workers
-/home/borodutch/code/superharness/target/debug/superharness compact              # move all excess panes to background tabs
+/home/borodutch/code/superharness/target/debug/superharness compact              # move small/excess panes to background tabs
 /home/borodutch/code/superharness/target/debug/superharness surface --pane %ID   # bring a background pane back to main window
 /home/borodutch/code/superharness/target/debug/superharness hide --pane %ID --name "label"  # manually move pane to background tab
 /home/borodutch/code/superharness/target/debug/superharness show --pane %ID      # alias for surface
