@@ -12,6 +12,7 @@ mod relay;
 mod setup;
 mod tasks;
 mod tmux;
+mod util;
 mod watch;
 
 use anyhow::Context as _;

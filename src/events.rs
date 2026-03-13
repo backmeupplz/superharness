@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::project;
+use crate::util::now_unix;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -49,13 +49,6 @@ fn events_path() -> PathBuf {
     project::get_project_state_dir()
         .map(|d| d.join("events.json"))
         .unwrap_or_else(|_| PathBuf::from("/tmp/superharness-events.json"))
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Append one event to the event log file (creates it if it doesn't exist).
