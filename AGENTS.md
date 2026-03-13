@@ -18,6 +18,8 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 /home/borodutch/code/superharness/target/debug/superharness kill --pane %ID                          # kill worker
 /home/borodutch/code/superharness/target/debug/superharness hide --pane %ID --name "worker-1"        # move pane to background tab
 /home/borodutch/code/superharness/target/debug/superharness show --pane %ID --split h                # surface pane (h or v)
+/home/borodutch/code/superharness/target/debug/superharness surface --pane %ID                       # bring background pane back to main window
+/home/borodutch/code/superharness/target/debug/superharness compact                                  # move small/excess panes to background tabs
 /home/borodutch/code/superharness/target/debug/superharness resize --pane %ID --direction R --amount 20  # resize (U/D/L/R)
 /home/borodutch/code/superharness/target/debug/superharness layout --name tiled                      # apply layout preset
 /home/borodutch/code/superharness/target/debug/superharness status-human                             # human-readable status + worker health (press F3)
@@ -27,6 +29,17 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 ```
 
 Layout presets: `tiled`, `main-vertical`, `main-horizontal`, `even-vertical`, `even-horizontal`
+
+## Pane Management
+
+Workers are automatically moved to background tabs when the main window gets crowded (>4 panes). Use these commands to manage visibility:
+
+```bash
+/home/borodutch/code/superharness/target/debug/superharness compact              # move small/excess panes to background tabs
+/home/borodutch/code/superharness/target/debug/superharness surface --pane %ID   # bring a background pane back to main window
+/home/borodutch/code/superharness/target/debug/superharness hide --pane %ID --name "label"  # manually move pane to background tab
+/home/borodutch/code/superharness/target/debug/superharness show --pane %ID      # alias for surface
+```
 
 ## Agent Modes
 
@@ -524,6 +537,33 @@ When a worker asks a question or needs input, you MUST relay it to the human imm
 - If in away mode, use `queue-decision` instead of auto-answering.
 - Check all active workers with `ask` at least every 60 seconds.
 
+### Credentials and Secret Keys
+
+When a worker needs credentials, API keys, signing keys, or passwords that only the human can provide:
+
+1. **STOP** — never guess, generate fake keys, or proceed without the real credential
+2. **Read the worker output** carefully to identify:
+   - What exactly is needed (env var name, file path, key format)
+   - Which tool/service requires it
+   - Whether it needs to be generated first
+3. **Come back to the human** and provide:
+   - What credential is needed (e.g. "GPG signing key ID")
+   - Why it is needed (e.g. "Worker %5 is building an AUR package and needs to sign it")
+   - How to get it (step-by-step, e.g. "Run: gpg --list-secret-keys to see existing keys, or gpg --gen-key to create one")
+   - How to provide it (e.g. "I will send it to the worker with: /home/borodutch/code/superharness/target/debug/superharness send --pane %5 --text YOUR_KEY_ID")
+4. **Wait** for the human to obtain and provide the value
+5. **Verify** if possible (run a quick check without exposing the secret)
+6. **Send to worker**: `/home/borodutch/code/superharness/target/debug/superharness send --pane %ID --text "the-credential-value"`
+7. **Confirm** the worker continues and monitor until it completes
+
+Example conversation flow:
+> Worker %3 needs a GPG signing key to publish to AUR.
+> To get your key ID, run: gpg --list-secret-keys --keyid-format LONG
+> If you do not have one, create it with: gpg --full-gen-key
+> Once you have the key ID, share it with me and I will pass it to the worker.
+
+**Never** put credentials in the AGENTS.md file, commit messages, or code comments.
+
 ## Worker Failure Recovery
 
 If a worker crashes, panics, or gets stuck in an unrecoverable state, use `respawn` to restart it with the crash context:
@@ -766,6 +806,35 @@ Output includes `loop_detected: true/false` and details on what action is repeat
 5. **After intervening**, run `/home/borodutch/code/superharness/target/debug/superharness loop-clear --pane %ID` to reset detection
 
 **Oscillation detection:** The guard also catches A→B→A→B alternation patterns (e.g. approve/deny cycles) and reports them as loops.
+
+## Task Management
+
+Use the built-in task list to track what needs to be built or fixed across sessions. Unlike `pending_tasks` (which gates worker spawning), this is the human-facing todo list.
+
+```bash
+/home/borodutch/code/superharness/target/debug/superharness task-add "Implement dark mode" --priority high --tags "ui,frontend"
+/home/borodutch/code/superharness/target/debug/superharness task-add "Fix auth bug" --description "JWT tokens expire too early"
+/home/borodutch/code/superharness/target/debug/superharness task-list                          # show all tasks
+/home/borodutch/code/superharness/target/debug/superharness task-list --status pending         # filter by status
+/home/borodutch/code/superharness/target/debug/superharness task-list --tag ui                 # filter by tag
+/home/borodutch/code/superharness/target/debug/superharness task-show <id>                     # show task + subtasks detail
+/home/borodutch/code/superharness/target/debug/superharness task-start <id>                    # mark as in-progress
+/home/borodutch/code/superharness/target/debug/superharness task-done <id>                     # mark as done
+/home/borodutch/code/superharness/target/debug/superharness task-block <id>                    # mark as blocked
+/home/borodutch/code/superharness/target/debug/superharness task-cancel <id>                   # cancel task
+/home/borodutch/code/superharness/target/debug/superharness task-remove <id>                   # delete task
+/home/borodutch/code/superharness/target/debug/superharness subtask-add <task-id> "Write tests"
+/home/borodutch/code/superharness/target/debug/superharness subtask-done <task-id> <subtask-id>
+```
+
+Typical workflow:
+1. At session start: `/home/borodutch/code/superharness/target/debug/superharness task-list` to see what is pending
+2. Pick the highest priority task, spawn workers for it
+3. As workers complete subtasks, mark them done: `/home/borodutch/code/superharness/target/debug/superharness subtask-done <task> <sub>`
+4. When the full task is done: `/home/borodutch/code/superharness/target/debug/superharness task-done <id>`
+5. Repeat
+
+**Difference from `--depends-on`**: `pending_tasks` gates spawning (worker B waits for worker A). Task storage is the project-level backlog — what you are building, not how workers are sequenced.
 
 ## Rules
 
