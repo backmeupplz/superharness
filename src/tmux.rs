@@ -129,7 +129,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-left",
-        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[bg=#1a2d4a,fg=colour240]│ ",
+        "#[bg=colour214,fg=colour232,bold] SUPERHARNESS ",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
 
