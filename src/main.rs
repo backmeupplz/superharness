@@ -557,9 +557,7 @@ fn main() -> anyhow::Result<()> {
             // If no default harness is configured, show an interactive picker
             // before the tmux session starts, so the user can choose.
             {
-                let config_dir = dirs::config_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                    .join("superharness");
+                let config_dir = util::superharness_config_dir();
                 if harness::get_default_harness(&config_dir).is_none() {
                     let candidates = harness::detect_all_candidates();
                     if !candidates.is_empty() {
@@ -1826,9 +1824,7 @@ fn main() -> anyhow::Result<()> {
 
         // ── Harness management ───────────────────────────────────────────────
         Some(Command::HarnessList) => {
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             let installed = harness::detect_installed();
             let default_name = harness::get_default_harness(&config_dir);
@@ -1862,9 +1858,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::HarnessSet { name }) => {
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             // Validate: must be a known harness name
             let known = ["opencode", "claude", "codex"];
@@ -1922,9 +1916,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
 
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             harness::set_default_harness(&config_dir, &name)?;
             println!("Harness switched to: {name}");
@@ -1934,9 +1926,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::HarnessSettings) => {
             use std::io::{self, Write};
 
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             let current_harness = harness::get_default_harness(&config_dir);
             let current_model = harness::get_default_model(&config_dir);

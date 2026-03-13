@@ -5,6 +5,7 @@ use std::process::Command;
 use crate::harness;
 use crate::layout;
 use crate::loop_guard;
+use crate::util;
 
 const SESSION: &str = "superharness";
 
@@ -340,9 +341,7 @@ pub fn spawn(
     };
 
     // Resolve which AI harness to invoke (opencode / claude / codex / …).
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("superharness");
+    let config_dir = util::superharness_config_dir();
     let active_harness = match harness_override {
         Some(h) => h.to_string(),
         None => harness::resolve_harness(&config_dir)?,
@@ -943,9 +942,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     // ── Determine initial prompt BEFORE launching opencode ───────────────────
     // This lets us pass the prompt directly via --prompt rather than using
     // send-keys after the fact (which is unreliable for long/multi-line messages).
-    let config_dir_base = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("superharness");
+    let config_dir_base = util::superharness_config_dir();
     let config_path = config_dir_base.join("config.json");
 
     // ── First-launch harness picker ──────────────────────────────────────────

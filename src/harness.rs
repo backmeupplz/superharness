@@ -8,6 +8,8 @@
 use anyhow::{bail, Result};
 use std::path::Path;
 
+use crate::util::shell_escape;
+
 /// Metadata about a detected AI coding harness.
 #[derive(Debug, Clone)]
 pub struct HarnessInfo {
@@ -192,11 +194,6 @@ fn model_flag(model: Option<&str>) -> String {
         Some(m) => format!(" --model {}", shell_escape(m)),
         None => String::new(),
     }
-}
-
-/// Shell-escape a string by single-quoting it.
-pub fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Return a short, install-guide URL for a harness name.

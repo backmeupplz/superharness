@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+use crate::util;
+
 /// User-level model/provider preferences. Lives at ~/.config/superharness/config.json.
 /// All fields are optional — missing file or missing fields are silently ignored.
 ///
@@ -31,10 +33,7 @@ pub struct UserConfig {
 }
 
 pub fn load_user_config() -> UserConfig {
-    let path = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("superharness")
-        .join("config.json");
+    let path = util::superharness_config_dir().join("config.json");
 
     if !path.exists() {
         return UserConfig::default();
