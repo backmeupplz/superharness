@@ -1,5 +1,6 @@
 mod checkpoint;
 mod events;
+mod harness;
 mod health;
 mod loop_guard;
 mod memory;
@@ -477,6 +478,22 @@ enum Command {
         /// Timeout in seconds when waiting for a relay answer (default 300)
         #[arg(long, default_value_t = 300)]
         timeout: u64,
+    },
+
+    // ── Harness management ───────────────────────────────────────────────────
+    /// List detected AI harnesses and show which one is the current default
+    HarnessList,
+
+    /// Set the default AI harness written to ~/.config/superharness/config.json
+    HarnessSet {
+        /// Harness name: opencode, claude, or codex
+        name: String,
+    },
+
+    /// Switch the active harness (errors if any workers are currently running)
+    HarnessSwitch {
+        /// Harness name to switch to: opencode, claude, or codex
+        name: String,
     },
 }
 
@@ -1667,6 +1684,113 @@ fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+
+        // ── Harness management ───────────────────────────────────────────────
+        Some(Command::HarnessList) => {
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("superharness");
+
+            let installed = harness::detect_installed();
+            let default_name = harness::get_default_harness(&config_dir);
+
+            if installed.is_empty() {
+                println!("No AI harnesses detected on PATH.");
+                println!();
+                println!("Install one of the following:");
+                println!("  opencode  (OpenCode)    — https://opencode.ai");
+                println!("  claude    (Claude Code)  — https://claude.ai/code");
+                println!("  codex     (OpenAI Codex) — https://github.com/openai/codex");
+            } else {
+                println!("Detected harnesses:");
+                println!();
+                for h in &installed {
+                    // Determine if this is the current default
+                    let is_default = default_name.as_deref() == Some(h.name.as_str())
+                        || (default_name.is_none()
+                            && installed.first().map(|f| f.name == h.name).unwrap_or(false));
+                    let marker = if is_default { " *  (default)" } else { "" };
+                    println!("  {:<10}  {}{}", h.binary, h.display_name, marker);
+                }
+                println!();
+                if let Some(ref d) = default_name {
+                    println!("Default (from config): {d}");
+                } else {
+                    println!("Default (auto-selected): {}", installed[0].binary);
+                    println!("Set an explicit default with: superharness harness-set <name>");
+                }
+            }
+        }
+
+        Some(Command::HarnessSet { name }) => {
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("superharness");
+
+            // Validate: must be a known harness name
+            let known = ["opencode", "claude", "codex"];
+            if !known.contains(&name.as_str()) {
+                anyhow::bail!(
+                    "Unknown harness {:?}. Valid options: opencode, claude, codex",
+                    name
+                );
+            }
+
+            // Warn if the chosen harness is not actually installed
+            let installed = harness::detect_installed();
+            if !installed.iter().any(|h| h.name == name || h.binary == name) {
+                eprintln!(
+                    "WARNING: '{name}' does not appear to be installed on PATH.\n\
+                     Install it from: {}",
+                    harness::install_url(&name)
+                );
+            }
+
+            harness::set_default_harness(&config_dir, &name)?;
+            println!("Default harness set to: {name}");
+        }
+
+        Some(Command::HarnessSwitch { name }) => {
+            // Refuse to switch if any worker panes are running
+            let panes = tmux::list().unwrap_or_default();
+            // %0 is the orchestrator — exclude it; any other pane is a worker
+            let worker_panes: Vec<_> = panes.iter().filter(|p| p.id != "%0").collect();
+            if !worker_panes.is_empty() {
+                let ids: Vec<&str> = worker_panes.iter().map(|p| p.id.as_str()).collect();
+                anyhow::bail!(
+                    "Cannot switch harness while workers are running: {}.\n\
+                     Kill all workers first with 'superharness kill --pane <id>', then retry.",
+                    ids.join(", ")
+                );
+            }
+
+            // Validate name
+            let known = ["opencode", "claude", "codex"];
+            if !known.contains(&name.as_str()) {
+                anyhow::bail!(
+                    "Unknown harness {:?}. Valid options: opencode, claude, codex",
+                    name
+                );
+            }
+
+            // Warn if not installed
+            let installed = harness::detect_installed();
+            if !installed.iter().any(|h| h.name == name || h.binary == name) {
+                eprintln!(
+                    "WARNING: '{name}' does not appear to be installed on PATH.\n\
+                     Install it from: {}",
+                    harness::install_url(&name)
+                );
+            }
+
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("superharness");
+
+            harness::set_default_harness(&config_dir, &name)?;
+            println!("Harness switched to: {name}");
+            println!("Workers spawned from now on will use '{name}'.");
         }
     }
 

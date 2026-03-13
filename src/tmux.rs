@@ -2,14 +2,10 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::harness;
 use crate::loop_guard;
 
 const SESSION: &str = "superharness";
-
-/// Escape a string for safe use in a shell command
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
 
 /// Run a tmux command, return stdout
 fn tmux(args: &[&str]) -> Result<String> {
@@ -244,22 +240,20 @@ pub fn spawn(
 
     let effective_mode = mode.unwrap_or("build");
 
-    let model_flag = match model {
-        Some(m) => format!(" --model {}", shell_escape(m)),
-        None => String::new(),
-    };
-
     // In plan mode, prefix the task to instruct the agent not to make changes.
     let effective_task = match effective_mode {
         "plan" => format!("[PLAN MODE - do not make changes, only analyze and plan]: {task}"),
         _ => task.to_string(),
     };
 
-    // The opencode command itself (no auto-kill wrapper yet — we need the pane ID first).
-    let opencode_cmd = format!(
-        "opencode{model_flag} --prompt {}",
-        shell_escape(&effective_task)
-    );
+    // Resolve which AI harness to invoke (opencode / claude / codex / …).
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+        .join("superharness");
+    let active_harness = harness::resolve_harness(&config_dir)?;
+
+    // Build the harness command string (handles per-harness flag differences).
+    let opencode_cmd = harness::build_harness_cmd(&active_harness, model, &effective_task);
 
     // We wrap opencode so that when it exits the pane auto-kills itself.
     // The wrapper uses tmux display-message to get the pane's own ID at runtime,
@@ -594,36 +588,70 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         .join("config.json");
 
     // Read default_model from config so the orchestrator uses the user's preferred model.
-    let default_model: Option<String> = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-            .and_then(|v| v["default_model"].as_str().map(String::from))
+    let (default_model, orch_harness): (Option<String>, String) = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+        let model = v["default_model"].as_str().map(String::from);
+        let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
+        let h = harness::resolve_harness(config_dir).unwrap_or_else(|_| "opencode".to_string());
+        (model, h)
     } else {
-        None
-    };
-    let orch_model_flag = match &default_model {
-        Some(m) => format!(" --model {}", shell_escape(m)),
-        None => String::new(),
+        // No config yet: detect what's available for the first-run harness list
+        let h = harness::detect_installed()
+            .into_iter()
+            .next()
+            .map(|i| i.binary)
+            .unwrap_or_else(|| "opencode".to_string());
+        (None, h)
     };
 
-    // auto_submit = true  → pass --prompt to opencode (it submits immediately)
-    // auto_submit = false → launch opencode without --prompt and prefill the input
+    // auto_submit = true  → pass --prompt to harness (it submits immediately)
+    // auto_submit = false → launch harness without --prompt and prefill the input
     //                       via a background tmux send-keys (no Enter) so the user
     //                       can review and edit before sending.
-    let (initial_prompt, auto_submit): (String, bool) = if !config_path.exists() {
+
+    // Build harness-appropriate model-listing command for first-run guidance
+    let harness_models_cmd = match orch_harness.as_str() {
+        "claude" => "`claude --help` to see available options",
+        "codex" => "`codex --help` to see available options",
+        _ => "`opencode models` to see all available models, and `opencode auth list` to see authenticated providers",
+    };
+
+    // Detect whether multiple harnesses are available for first-run harness selection
+    let installed_harnesses = harness::detect_installed();
+    let harness_selection_prompt = if installed_harnesses.len() > 1 && !config_path.exists() {
+        let names: Vec<String> = installed_harnesses
+            .iter()
+            .map(|h| format!("{} ({})", h.display_name, h.binary))
+            .collect();
+        format!(
+            " Multiple AI harnesses are installed: {}. \
+             Ask the user which one they prefer to use as the default for spawning workers. \
+             Save their preference as 'default_harness' in the config.",
+            names.join(", ")
+        )
+    } else {
+        String::new()
+    };
+
+    let (initial_prompt, _auto_submit): (String, bool) = if !config_path.exists() {
         // First-run: ask model to set up preferences (auto-submit is fine here)
         let config_path_str = config_path.to_string_lossy().to_string();
-        (format!(
+        (
+            format!(
             "[SUPERHARNESS FIRST RUN] Welcome! Before we start, please set up model preferences. \
-            Run `opencode models` to see all available models, and `opencode auth list` to see \
-            authenticated providers. Then ask the user: which provider they prefer, and which \
-            model should be the default when spawning workers. Keep it conversational — just a \
-            couple of questions. Once you have their answers, write the config to {config_path_str} \
-            as JSON with fields: default_model (string), preferred_providers (array of strings), \
-            preferred_models (array of strings). Create the directory if needed. After saving, \
+            Run {harness_models_cmd}. \
+            Then ask the user: which provider they prefer, and which \
+            model should be the default when spawning workers.{harness_selection_prompt} \
+            Keep it conversational — just a couple of questions. \
+            Once you have their answers, write the config to {config_path_str} \
+            as JSON with fields: default_model (string), default_harness (string, optional), \
+            preferred_providers (array of strings), preferred_models (array of strings). \
+            Create the directory if needed. After saving, \
             confirm it's done and ask what they'd like to work on today."
-        ), true)
+        ),
+            true,
+        )
     } else {
         let state_file = std::path::PathBuf::from(&dir_str)
             .join(".superharness")
@@ -723,13 +751,10 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Launch opencode with --prompt to pre-fill and submit the initial message.
-    // This is reliable for any prompt length, unlike send-keys which can lose
-    // characters or mis-handle newlines in long messages.
-    let opencode_cmd = format!(
-        "opencode{orch_model_flag} --prompt {}",
-        shell_escape(&initial_prompt)
-    );
+    // Launch the harness with --prompt / --print / positional arg to pre-fill and submit
+    // the initial message.  build_harness_cmd handles per-harness flag differences.
+    let opencode_cmd =
+        harness::build_harness_cmd(&orch_harness, default_model.as_deref(), &initial_prompt);
 
     let splash = format!(
         "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec {opencode_cmd}"
