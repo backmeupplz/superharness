@@ -1,2 +1,4 @@
 /target
 *.db
+.superharness/
+AGENTS.md
