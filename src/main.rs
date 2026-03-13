@@ -580,6 +580,9 @@ enum Command {
     /// Print a short heartbeat status string for the tmux status bar.
     /// Reads heartbeat_state.json and emits an emoji + seconds-to-next-beat.
     HeartbeatStatus,
+
+    /// Toggle heartbeat on/off. Called by clicking the heartbeat icon in the status bar.
+    HeartbeatToggle,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2433,6 +2436,38 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        Some(Command::HeartbeatToggle) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let state = watch::read_heartbeat_state();
+
+            if state.snooze_until > now {
+                // Currently snoozed — resume heartbeat by clearing the snooze.
+                watch::write_heartbeat_state_full(
+                    state.last_beat_ts,
+                    state.interval_secs,
+                    state.last_sent,
+                    state.needs_attention,
+                    0, // clear snooze
+                );
+                eprintln!("[heartbeat] toggled on (resumed)");
+            } else {
+                // Not snoozed — snooze for a very long time (~11 days = "off").
+                let snooze_until = now + 999_999;
+                watch::write_heartbeat_state_full(
+                    state.last_beat_ts,
+                    state.interval_secs,
+                    state.last_sent,
+                    state.needs_attention,
+                    snooze_until,
+                );
+                eprintln!("[heartbeat] toggled off (snoozed)");
+            }
+        }
+
         Some(Command::HeartbeatStatus) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2450,7 +2485,12 @@ fn main() -> anyhow::Result<()> {
             // Snooze takes priority in display.
             if state.snooze_until > now {
                 let remaining = state.snooze_until - now;
-                print!("⏸ {remaining}s");
+                // Very long snooze (> 1 day) means the user toggled it off — show clean ⏸.
+                if remaining > 86400 {
+                    print!("⏸");
+                } else {
+                    print!("⏸ {remaining}s");
+                }
                 return Ok(());
             }
 

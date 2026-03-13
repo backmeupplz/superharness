@@ -139,6 +139,14 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         ":1",
     ]);
+    // Clicking anywhere on the right side of the status bar toggles the heartbeat on/off.
+    let _ = tmux_ok(&[
+        "bind-key",
+        "-n",
+        "MouseDown1StatusRight",
+        "run-shell",
+        &format!("{bin_path} heartbeat-toggle"),
+    ]);
 
     // Right side: dynamic shell fragments read mode + pane count.
     // Uses grep to extract mode from the project-local .superharness/state.json.
