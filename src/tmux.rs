@@ -142,11 +142,11 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "80"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "110"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
@@ -207,6 +207,38 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-h",
         "36",
         &format!("{bin_path} workers 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
+
+    // F5 → tasks-modal (task list grouped by status)
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F5",
+        "display-popup",
+        "-E",
+        "-b",
+        "rounded",
+        "-w",
+        "110",
+        "-h",
+        "42",
+        &format!("{bin_path} tasks-modal 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+    ])?;
+
+    // F6 → event-feed (scrollable event log via less)
+    tmux_ok(&[
+        "bind-key",
+        "-n",
+        "F6",
+        "display-popup",
+        "-E",
+        "-b",
+        "rounded",
+        "-w",
+        "110",
+        "-h",
+        "42",
+        &format!("bash -c '{bin_path} event-feed 2>&1 | less -R; echo Press any key; read -n1'"),
     ])?;
 
     Ok(())
