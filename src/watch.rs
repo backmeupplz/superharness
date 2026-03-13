@@ -1159,34 +1159,50 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         // Timed heartbeat — fires every HEARTBEAT_INTERVAL_SECS.
         // heartbeat() handles all skip logic: snooze, busy, pending input.
         if cycle_ts.saturating_sub(last_heartbeat) >= HEARTBEAT_INTERVAL_SECS {
-            // Pre-compute needs_attention for state file.
-            let hb_all_panes = tmux::list().unwrap_or_default();
-            let hb_workers: Vec<_> = hb_all_panes.iter().filter(|p| p.id != "%0").collect();
-            let hb_monitor = load_state();
-            let hb_needs_attention = hb_workers.iter().any(|p| {
-                matches!(
-                    classify_pane(&p.id, &hb_monitor, 60),
-                    Ok(h) if matches!(h.status, HealthStatus::Stalled | HealthStatus::Waiting)
-                )
-            });
+            // Belt-and-suspenders: re-read the disabled flag from disk right
+            // before attempting the heartbeat.  This guards against the case
+            // where this watch daemon is an older binary whose HeartbeatState
+            // struct is missing the `disabled` field — in that scenario the
+            // in-memory struct always has disabled=false, so the check inside
+            // heartbeat() would never fire.  Reading from disk here catches
+            // any toggle written by a newer superharness binary and skips both
+            // the heartbeat call AND the subsequent write_heartbeat_state(),
+            // so we never accidentally overwrite the on-disk disabled flag.
+            let pre_check = read_heartbeat_state();
+            if pre_check.disabled {
+                eprintln!("[watch] [HEARTBEAT] skipped — disabled flag set on disk");
+                // Advance last_heartbeat so we don't re-check every cycle.
+                last_heartbeat = cycle_ts;
+            } else {
+                // Pre-compute needs_attention for state file.
+                let hb_all_panes = tmux::list().unwrap_or_default();
+                let hb_workers: Vec<_> = hb_all_panes.iter().filter(|p| p.id != "%0").collect();
+                let hb_monitor = load_state();
+                let hb_needs_attention = hb_workers.iter().any(|p| {
+                    matches!(
+                        classify_pane(&p.id, &hb_monitor, 60),
+                        Ok(h) if matches!(h.status, HealthStatus::Stalled | HealthStatus::Waiting)
+                    )
+                });
 
-            let sent = match heartbeat() {
-                Ok(true) => {
-                    eprintln!("[watch] sent [HEARTBEAT] to %0");
-                    true
-                }
-                Ok(false) => {
-                    eprintln!("[watch] [HEARTBEAT] skipped (snoozed, busy, or has input)");
-                    false
-                }
-                Err(e) => {
-                    eprintln!("[watch] heartbeat error: {e}");
-                    false
-                }
-            };
+                let sent = match heartbeat() {
+                    Ok(true) => {
+                        eprintln!("[watch] sent [HEARTBEAT] to %0");
+                        true
+                    }
+                    Ok(false) => {
+                        eprintln!("[watch] [HEARTBEAT] skipped (snoozed, busy, or has input)");
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!("[watch] heartbeat error: {e}");
+                        false
+                    }
+                };
 
-            write_heartbeat_state(cycle_ts, HEARTBEAT_INTERVAL_SECS, sent, hb_needs_attention);
-            last_heartbeat = cycle_ts;
+                write_heartbeat_state(cycle_ts, HEARTBEAT_INTERVAL_SECS, sent, hb_needs_attention);
+                last_heartbeat = cycle_ts;
+            }
         }
 
         std::thread::sleep(Duration::from_secs(interval_secs));
