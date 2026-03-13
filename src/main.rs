@@ -523,6 +523,11 @@ enum Command {
 
     /// Show orchestrator tasks from .superharness/tasks.json grouped by status
     TasksModal,
+
+    /// Print active/total worker count as "X/Y" for status bar display (e.g. "2/5").
+    /// Active = workers whose output changed on the last monitor cycle (stall_count == 0).
+    /// Total = all worker panes (excluding the orchestrator %0).
+    StatusCounts,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2051,6 +2056,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+        }
+
+        Some(Command::StatusCounts) => {
+            println!("{}", watch::status_counts());
         }
     }
 

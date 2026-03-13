@@ -629,6 +629,41 @@ fn handle_pending_relays() -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Status counts — lightweight active/total worker summary for the status bar
+// ---------------------------------------------------------------------------
+
+/// Return a `"X/Y"` string for the tmux status bar:
+/// - X = workers with recently-changed output (active per monitor state)
+/// - Y = total workers (excluding the orchestrator pane %0)
+///
+/// "Active" is defined as: `stall_count == 0` in the persisted monitor state,
+/// OR the pane has never been seen by the monitor (new pane — assumed active).
+///
+/// This avoids reading pane output so it stays lightweight for the 5-second
+/// status-bar refresh cycle.
+pub fn status_counts() -> String {
+    let all_panes = tmux::list().unwrap_or_default();
+    let workers: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+    let total = workers.len();
+
+    if total == 0 {
+        return "0/0".to_string();
+    }
+
+    let monitor_state = load_state();
+    let active = workers
+        .iter()
+        .filter(|p| {
+            // Active if stall_count is 0 (output changed on last monitor check)
+            // or if the pane has never been seen by the monitor (new — assume active).
+            monitor_state.stall_counts.get(&p.id).copied().unwrap_or(0) == 0
+        })
+        .count();
+
+    format!("{active}/{total}")
+}
+
+// ---------------------------------------------------------------------------
 // Watch loop
 // ---------------------------------------------------------------------------
 
