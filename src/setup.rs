@@ -614,12 +614,20 @@ The `respawn` command:
 
 ## Detecting Finished Workers
 
-When you `superharness read` a worker and see it has completed its task (e.g. "Task completed", back at a prompt, or no more activity after multiple polls), you MUST:
+> **CRITICAL: Process each finished worker IMMEDIATELY — do NOT wait for other workers to finish first. The moment a worker is done, act on it right away, even if other workers are still running.**
+
+When you `$BIN read` a worker and see it has completed its task (e.g. "Task completed", back at a prompt, or no more activity after multiple polls), you MUST process it immediately — without waiting for any other worker:
 
 1. Read the final output to capture results
-2. Kill the pane: `$BIN kill --pane %ID`
-3. Clean up the worktree: `git worktree remove /tmp/worker-N`
-4. Update the corresponding task in `.superharness/tasks.json` to `done`
+2. **Merge the branch immediately** — do NOT batch merges: `git merge worker-N-branch` (from the main repo)
+3. Kill the pane: `$BIN kill --pane %ID`
+4. Clean up the worktree: `git worktree remove /tmp/worker-N`
+5. Update the corresponding task in `.superharness/tasks.json` to `done`
+6. Run `$BIN run-pending` to unblock any tasks waiting on this worker
+
+**Do not batch.** If workers %3, %7, and %9 are running and %3 finishes first, process %3 immediately — merge its branch, kill the pane, clean the worktree — while %7 and %9 keep running. Do not wait for %7 and %9 to finish before handling %3.
+
+**Merge per-worker, not per-batch.** Never accumulate multiple finished branches and merge them all at the end. Merge each branch the moment the worker completes. This prevents compounding conflicts and makes it clear what each merge introduced.
 
 Do NOT leave finished workers running — they waste screen space and make it harder to manage active workers.
 
@@ -761,6 +769,42 @@ Then use `--depends-on` only for tasks that truly require prior results:
 # Integration worker waits for both feature workers
 $BIN spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
 ```
+
+## Spawn New Workers While Others Are Running
+
+> **Do not wait for all current workers to finish before spawning new ones.** New tasks should be spawned the moment they are identified — regardless of how many workers are already active.
+
+Workers run in isolated git worktrees. A new worker starting does not slow down, block, or interfere with existing workers. There is no reason to delay.
+
+**Spawn immediately when:**
+- The user provides new tasks mid-session while workers are active
+- A finished worker's results reveal clear follow-up work
+- A dependency unblocks — run `$BIN run-pending` to auto-spawn queued tasks
+
+**Never think:**
+> "I'll wait for all current workers to finish, then start the next batch."
+
+That reasoning serializes independent work. Spawn immediately.
+
+### Conflict avoidance before spawning
+
+Before spawning a new build worker into an active session, do a quick file-overlap check to avoid two workers editing the same file simultaneously.
+
+**How to check:**
+1. For each active worker, run `$BIN read --pane %ID --lines 50` and scan the output for file paths (filenames mentioned in edits, opens, or writes).
+2. If the new task will touch any of the same files → either use `--depends-on` to sequence it after the conflicting worker, or scope the new task to non-overlapping files/modules.
+3. If there is no overlap → spawn immediately.
+
+```bash
+# Example: Worker %3 output shows it is editing src/auth.rs
+# New task also needs src/auth.rs → defer until %3 finishes
+$BIN spawn --task "fix auth token expiry" --name "fix-auth-expiry" --dir /tmp/w4 --depends-on "%3" --model anthropic/claude-sonnet-4-6
+
+# New task only touches src/api.rs → no overlap → spawn now
+$BIN spawn --task "add rate limiting" --name "add-rate-limit" --dir /tmp/w5 --model anthropic/claude-sonnet-4-6
+```
+
+This check takes seconds and prevents merge conflicts before they start. Do it every time you spawn into an active session.
 
 ## Rules
 
