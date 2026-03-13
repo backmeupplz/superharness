@@ -4,26 +4,25 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/backmeupplz/superharness)](https://github.com/backmeupplz/superharness)
 
-**Your AI coding team. Working while you sleep.**
+**Give opencode a team.**
 
-SuperHarness is an autonomous AI coding team manager. You describe what you want to build, it plans the work, spawns parallel AI agents, supervises them through the night, and gives you a full debrief when you return. Replace `opencode` with `superharness` — that's the whole migration.
+superharness sits on top of [opencode](https://opencode.ai) and gives it the ability to spawn parallel worker agents, manage them, and clean up — all on its own. You just run `superharness` in your project instead of `opencode`.
 
 ## Quick start
 
 ```bash
 cargo install superharness
 cd your-project
-superharness plan "build a REST API with JWT auth"
-superharness away
-# go to sleep
-superharness present
+superharness
 ```
+
+That's it. You get a normal opencode session — the same interface you already know — but now the AI can spawn as many parallel workers as the task needs, coordinate them across isolated git worktrees, handle permission prompts, and clean up when they're done.
 
 ## How it works
 
-- **Plan** — Describe your goal in one sentence. SuperHarness creates a staged roadmap and assigns tasks to parallel agents automatically.
-- **Execute** — A team of AI agents works in isolated git worktrees while you're away. Smart supervision handles stalls, loops, and safe permission prompts without waking you.
-- **Debrief** — `superharness present` shows everything: what was built, what's in progress, and any decisions waiting for you.
+1. **Install** — `cargo install superharness`. Requires tmux and opencode.
+2. **Run** — `superharness` in your project directory.
+3. **Work** — opencode spawns worker agents in parallel when the task warrants it. Each worker runs in its own git worktree. The orchestrating AI reviews permission prompts, detects stalled workers, merges results, and cleans up — without you doing anything.
 
 ## Install
 
@@ -31,20 +30,23 @@ superharness present
 cargo install superharness
 ```
 
-Requires: [tmux](https://github.com/tmux/tmux) · brew and AUR packages coming soon
+Requires: [opencode](https://opencode.ai) · [tmux](https://github.com/tmux/tmux) · brew and AUR packages coming soon
+
+---
+
+## Going somewhere?
+
+superharness has an away mode for when you step out. The AI keeps workers running and handles safe operations, but queues any real decision — architecture choices, destructive operations, anything it isn't sure about — for your return. Full debrief when you're back.
 
 ---
 
 ## Advanced
 
-Full command reference for power users and orchestrator scripting.
+Full command reference for power users and scripting. You don't need any of these day-to-day — just `superharness`.
 
 | Command | Description |
 |---|---|
-| `superharness` | Initialize and open tmux session |
-| `plan` | Describe a goal; SuperHarness creates a roadmap and spawns agents |
-| `away` | Enter away mode; queue critical decisions for review on return |
-| `present` | Return to present mode and see the full debrief |
+| `superharness` | Start opencode in orchestrator mode |
 | `spawn` | Create a new worker pane |
 | `list` | List all active panes (JSON) |
 | `workers` | List workers in human-readable format (F4 popup) |
