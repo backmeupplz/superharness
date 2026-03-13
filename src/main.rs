@@ -541,27 +541,6 @@ enum Command {
     /// Total = all worker panes (excluding the orchestrator %0).
     StatusCounts,
 
-    /// Notify the orchestrator (%0) that something has happened.
-    ///
-    /// Workers call this when they finish a task so the orchestrator wakes up
-    /// immediately instead of waiting for the next heartbeat cycle.
-    /// The kill subcommand also auto-notifies after every kill.
-    Notify {
-        /// Optional human-readable message to include in the notification.
-        #[arg(short, long)]
-        message: Option<String>,
-    },
-
-    /// Wait for a worker event or timeout (replaces `sleep N` in polling loops).
-    ///
-    /// Returns immediately when events.json changes (any worker event fires),
-    /// or after --timeout seconds if no event arrives first.
-    Wait {
-        /// Maximum seconds to wait (default 60)
-        #[arg(short, long, default_value_t = 60)]
-        timeout: u64,
-    },
-
     /// Immediately trigger a heartbeat check (workers call this when they finish).
     ///
     /// If the orchestrator is idle, sends [HEARTBEAT] to %0 right away without
@@ -925,16 +904,8 @@ fn main() -> anyhow::Result<()> {
                 "worker killed",
             );
 
-            // Auto-notify the orchestrator so it wakes up immediately.
-            let all_panes = tmux::list().unwrap_or_default();
-            let n_active = all_panes.iter().filter(|p| p.id != "%0").count();
-            let notify_msg = format!("[NOTIFY] Worker {pane} killed: {n_active} remaining");
-            let _ = tmux::send("%0", &notify_msg);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            watch::write_heartbeat_state(now, 30, true, false);
+            // Trigger a heartbeat so the orchestrator wakes up immediately.
+            let _ = watch::heartbeat();
 
             let out = serde_json::json!({ "pane": pane, "killed": true });
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -2318,79 +2289,6 @@ fn main() -> anyhow::Result<()> {
             println!("{}", watch::status_counts());
         }
 
-        Some(Command::Notify { message }) => {
-            // Build a short summary of current worker state.
-            let all_panes = tmux::list().unwrap_or_default();
-            let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
-            let n_active = worker_panes.len();
-            let n_total = all_panes.len().saturating_sub(1); // exclude %0
-
-            let msg_suffix = message
-                .as_deref()
-                .map(|m| format!(". {m}"))
-                .unwrap_or_default();
-            let msg =
-                format!("[NOTIFY] Worker done: {n_active} active, {n_total} total{msg_suffix}");
-
-            tmux::send("%0", &msg)?;
-
-            // Update heartbeat state so the status bar reflects the notification.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            watch::write_heartbeat_state(now, 30, true, false);
-
-            let out = serde_json::json!({ "notified": true, "message": msg });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-
-        Some(Command::Wait { timeout }) => {
-            use std::time::{Duration, Instant};
-
-            let events_path = {
-                let state_dir = project::get_project_state_dir()?;
-                state_dir.join("events.json")
-            };
-
-            // Record baseline: file size at the start.
-            let baseline_len = std::fs::metadata(&events_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
-
-            let start = Instant::now();
-            let deadline = Duration::from_secs(timeout);
-
-            loop {
-                std::thread::sleep(Duration::from_secs(2));
-
-                let elapsed = start.elapsed();
-
-                // Check if events.json has grown (new event appended).
-                let current_len = std::fs::metadata(&events_path)
-                    .map(|m| m.len())
-                    .unwrap_or(baseline_len);
-
-                if current_len != baseline_len {
-                    let out = serde_json::json!({
-                        "reason": "event",
-                        "elapsed": elapsed.as_secs(),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                    return Ok(());
-                }
-
-                if elapsed >= deadline {
-                    let out = serde_json::json!({
-                        "reason": "timeout",
-                        "elapsed": elapsed.as_secs(),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                    return Ok(());
-                }
-            }
-        }
-
         Some(Command::Heartbeat { snooze }) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2411,22 +2309,12 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("[heartbeat] snoozed for {secs}s (until unix {snooze_until})");
             } else {
                 // Immediate heartbeat: run idle checks and send if %0 is ready.
+                // Respects snooze/toggle — does NOT clear it on success.
                 match watch::heartbeat() {
                     Ok(true) => {
-                        // Heartbeat sent — write updated state with cleared snooze.
-                        let state = watch::read_heartbeat_state();
-                        watch::write_heartbeat_state_full(
-                            now,
-                            state.interval_secs,
-                            true,
-                            state.needs_attention,
-                            0, // clear snooze
-                        );
                         eprintln!("[heartbeat] sent [HEARTBEAT] to %0");
                     }
                     Ok(false) => {
-                        // Orchestrator is busy — silently do nothing.
-                        // The watch loop will send when %0 is idle.
                         eprintln!("[heartbeat] skipped — %0 is busy or snoozed");
                     }
                     Err(e) => {

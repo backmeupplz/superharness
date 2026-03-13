@@ -152,8 +152,8 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 /home/borodutch/code/superharness/target/debug/superharness sudo-relay --pane %ID --command "..."   # workers: relay a sudo command that needs a password
 /home/borodutch/code/superharness/target/debug/superharness sudo-relay --pane %ID --command "..." --execute  # relay + wait + execute
 /home/borodutch/code/superharness/target/debug/superharness sudo-exec --pane %ID --command "..."    # workers: run sudo (NOPASSWD or relay fallback)
-/home/borodutch/code/superharness/target/debug/superharness notify [--message "..."]               # workers: alert orchestrator immediately on completion
-/home/borodutch/code/superharness/target/debug/superharness wait [--timeout 60]                    # orchestrator: sleep until next event (replaces sleep N)
+/home/borodutch/code/superharness/target/debug/superharness heartbeat                              # workers: trigger immediate heartbeat (wakes orchestrator if idle)
+/home/borodutch/code/superharness/target/debug/superharness heartbeat --snooze N                   # orchestrator: suppress heartbeats for N seconds
 /home/borodutch/code/superharness/target/debug/superharness heartbeat-status                       # print heartbeat emoji + seconds to next beat (status bar)
 ```
 
@@ -779,7 +779,7 @@ Include this in every worker task prompt:
 
 > "**Commit after every logical unit of work** — do not wait until the task is done. Run `git add -A && git commit -m 'wip: <description>'` after each file you edit or each subtask you complete. The session can crash at any time and uncommitted work will be lost."
 >
-> "**When your task is complete, run: `superharness notify`** — this immediately alerts the orchestrator so it wakes up instead of waiting for the next heartbeat cycle."
+> "**When your task is complete, run: `superharness heartbeat`** — this immediately triggers a heartbeat so the orchestrator wakes up instead of waiting for the next 30-second cycle."
 
 ### Merging worker branches
 
@@ -979,50 +979,39 @@ The `respawn` command:
 - Use manual `send` when the worker just needs a nudge or clarification.
 - After respawning, monitor the new pane closely — if the same crash recurs, dig into the root cause before trying again.
 
-## Event-Driven Polling
+## Event-Driven Architecture
 
-SuperHarness is designed to be **event-driven** — you never need to `sleep N` to wait for workers. Instead:
+SuperHarness is **event-driven** — you never need to `sleep N` or poll. Instead:
 
-- **Workers self-report completion** with `/home/borodutch/code/superharness/target/debug/superharness notify` at the end of their task.
-- **The kill command auto-notifies** — whenever you run `/home/borodutch/code/superharness/target/debug/superharness kill --pane %ID`, a `[NOTIFY]` message is automatically sent to `%0`. You do not need to poll after killing.
-- **`/home/borodutch/code/superharness/target/debug/superharness wait --timeout 60`** replaces `sleep 60` in your polling loops. It returns immediately when any worker event fires (spawn, kill, complete), or after the timeout expires.
+- **Workers trigger immediate heartbeat** with `/home/borodutch/code/superharness/target/debug/superharness heartbeat` when they finish, waking the orchestrator without waiting for the 30-second cycle.
+- **The kill command auto-triggers heartbeat** — whenever you run `/home/borodutch/code/superharness/target/debug/superharness kill --pane %ID`, a heartbeat is automatically triggered.
 - **The heartbeat fires every 30 seconds** as a fallback, ensuring `%0` always wakes up even if no events arrive.
+- **Snooze** with `/home/borodutch/code/superharness/target/debug/superharness heartbeat --snooze N` to suppress heartbeats for N seconds while you are busy processing.
 
-### Replacing sleep loops
-
-```bash
-# OLD — dumb sleep (wastes time, you wake up late)
-sleep 60
-/home/borodutch/code/superharness/target/debug/superharness read --pane %ID --lines 50
-
-# NEW — event-driven (wakes up immediately when something happens)
-/home/borodutch/code/superharness/target/debug/superharness wait --timeout 60
-/home/borodutch/code/superharness/target/debug/superharness read --pane %ID --lines 50
-```
+**IMPORTANT: Never use `sleep` commands.** Do not use `sleep N` or any polling loops. The heartbeat mechanism handles all timing automatically.
 
 ### Worker task completion template
 
 Always append this to the task prompt for every worker:
 
 ```
-When your task is complete, run: superharness notify
-This alerts the orchestrator immediately so it can process your output without waiting.
+When your task is complete, run: superharness heartbeat
+This triggers an immediate heartbeat so the orchestrator wakes up and processes your output.
 ```
 
 ### Summary of event sources
 
 | Event | How it reaches you |
 |---|---|
-| Worker finishes task | Worker runs `/home/borodutch/code/superharness/target/debug/superharness notify` → `[NOTIFY]` in %0 |
-| Worker killed | `/home/borodutch/code/superharness/target/debug/superharness kill` auto-sends `[NOTIFY]` → `[NOTIFY]` in %0 |
-| Worker spawned/stalled/waiting | Logged to events.json → `/home/borodutch/code/superharness/target/debug/superharness wait` returns early |
-| Heartbeat (fallback) | Every 30s unconditionally → `[HEARTBEAT]` in %0 |
+| Worker finishes task | Worker runs `heartbeat` → `[HEARTBEAT]` in %0 |
+| Worker killed | `kill` auto-triggers heartbeat → `[HEARTBEAT]` in %0 |
+| Heartbeat (fallback) | Every 30s → `[HEARTBEAT]` in %0 (if not snoozed/toggled off) |
 
 ## Detecting Finished Workers
 
 > **CRITICAL: Process each finished worker IMMEDIATELY — do NOT wait for other workers to finish first. The moment a worker is done, act on it right away, even if other workers are still running.**
 
-When you receive a `[NOTIFY]` message, or when `/home/borodutch/code/superharness/target/debug/superharness wait` returns, check worker panes immediately.
+When you receive a `[HEARTBEAT]` message, check worker panes immediately.
 When you `/home/borodutch/code/superharness/target/debug/superharness read` a worker and see it has completed its task (e.g. "Task completed", back at a prompt, or no more activity after multiple polls), you MUST process it immediately — without waiting for any other worker:
 
 1. Read the final output to capture results
@@ -1048,7 +1037,7 @@ You must actively manage workers. Do not spawn and forget.
 4. **Create a git worktree** for each worker
 5. **Spawn** workers with clear, scoped tasks and `--dir` pointing to the worktree
 6. **Update tasks** — set `status: "in-progress"` and record `worker_pane` when spawning
-7. **Wait for events** with `/home/borodutch/code/superharness/target/debug/superharness wait --timeout 60` instead of `sleep N`, then check workers with `/home/borodutch/code/superharness/target/debug/superharness read` or `/home/borodutch/code/superharness/target/debug/superharness ask`
+7. **React to events** — when you receive `[HEARTBEAT]`, check workers with `/home/borodutch/code/superharness/target/debug/superharness read` or `/home/borodutch/code/superharness/target/debug/superharness ask`. Never use `sleep` — the heartbeat handles all timing.
 8. **Relay questions** — when `ask` detects a prompt, show it to the human and send back their answer
 9. **Approve or deny** permission requests from workers (see above)
 10. **Hide** workers to background tabs when you have too many visible
@@ -1072,7 +1061,7 @@ When the user gives you a list of tasks (numbered, bulleted, or described), foll
 
    **ONE WORKER PER TASK UNIT**: Never assign multiple independent tasks to a single worker. If the request has 3 independent parts, spawn 3 workers — not 1 worker doing all 3. The whole point is parallelism.
 
-5. **Monitor actively**: Use `/home/borodutch/code/superharness/target/debug/superharness wait --timeout 60` to wake up on events, then check workers with `/home/borodutch/code/superharness/target/debug/superharness read` or `/home/borodutch/code/superharness/target/debug/superharness ask`. Update task `status` in `tasks.json` as workers progress (`pending` → `in-progress` → `done`). Relay any worker questions to the user immediately.
+5. **Monitor actively**: When `[HEARTBEAT]` arrives, check workers with `/home/borodutch/code/superharness/target/debug/superharness read` or `/home/borodutch/code/superharness/target/debug/superharness ask`. Update task `status` in `tasks.json` as workers progress (`pending` → `in-progress` → `done`). Relay any worker questions to the user immediately. Never use `sleep` — the heartbeat handles all timing.
 
 6. **Mark done and clean up**: As workers complete, mark their tasks `done` in `tasks.json`, kill the pane, and remove the worktree.
 
