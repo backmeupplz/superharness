@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::health::{classify_pane, HealthStatus};
 use crate::monitor::load_state;
 use crate::pending_tasks;
+use crate::relay;
 use crate::tmux;
 
 // ---------------------------------------------------------------------------
@@ -389,6 +390,82 @@ fn handle_stalled(pane_id: &str, stall_counts: &mut StallCounts) -> PaneAction {
 }
 
 // ---------------------------------------------------------------------------
+// Relay-request surfacing
+// ---------------------------------------------------------------------------
+
+/// Check relay_requests.json for pending requests from any pane.
+/// For each pending request:
+///   1. Surface the requesting pane to the main window so the human sees it.
+///   2. Send a [RELAY REQUEST] message to %0 describing the request and how
+///      to answer it.
+///
+/// Returns the number of pending relay requests notified this cycle.
+fn handle_pending_relays() -> usize {
+    let pending = match relay::get_pending_relays() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[watch] failed to read relay requests: {e}");
+            return 0;
+        }
+    };
+
+    if pending.is_empty() {
+        return 0;
+    }
+
+    let mut notified = 0;
+    for req in &pending {
+        // Surface the worker pane so the human can see what it is doing.
+        if let Err(e) = tmux::surface(&req.pane_id) {
+            eprintln!(
+                "[watch] failed to surface pane {} for relay {}: {e}",
+                req.pane_id, req.id
+            );
+        }
+
+        // Build the message to send to %0.
+        let sens_note = if req.sensitive {
+            " [SENSITIVE — answer will not be logged]"
+        } else {
+            ""
+        };
+        let kind_tag = match req.kind {
+            relay::RelayKind::Sudo => "[SUDO RELAY REQUEST]",
+            relay::RelayKind::Question => "[RELAY REQUEST]",
+        };
+        let mut msg = format!(
+            "{kind_tag} from pane {pane}{sens}\nQuestion: {q}",
+            kind_tag = kind_tag,
+            pane = req.pane_id,
+            sens = sens_note,
+            q = req.question,
+        );
+        if !req.context.is_empty() {
+            msg.push_str(&format!("\nContext: {}", req.context));
+        }
+        msg.push_str(&format!(
+            "\n\nAnswer with: superharness relay-answer --id {id} --answer \"<value>\"",
+            id = req.id
+        ));
+
+        if let Err(e) = tmux::send("%0", &msg) {
+            eprintln!(
+                "[watch] failed to send relay notification to %0 for {}: {e}",
+                req.id
+            );
+        } else {
+            notified += 1;
+            eprintln!(
+                "[watch] relayed request {} from pane {} to orchestrator",
+                req.id, req.pane_id
+            );
+        }
+    }
+
+    notified
+}
+
+// ---------------------------------------------------------------------------
 // Watch loop
 // ---------------------------------------------------------------------------
 
@@ -488,6 +565,14 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         // background tabs.  This also handles the case where several working/idle panes
         // are accumulating in the main window.
         let _ = tmux::auto_compact();
+
+        // Check for pending relay requests from any pane and forward them to %0.
+        let relay_notified = handle_pending_relays();
+        if relay_notified > 0 {
+            eprintln!(
+                "[watch] forwarded {relay_notified} pending relay request(s) to orchestrator"
+            );
+        }
 
         // At the end of each cycle, send a [PULSE] digest to the orchestrator
         // pane (%0) when at least one worker had a non-trivial result this cycle
