@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use crate::project;
@@ -51,25 +52,39 @@ fn events_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/superharness-events.json"))
 }
 
-/// Append one event to the event log file (creates it if it doesn't exist).
+/// Append one event to the event log file using JSONL format (one JSON object
+/// per line).  This is an O(1) append — no read-all-rewrite required.
+///
+/// Creates the file if it does not exist.
 pub fn log_event(kind: EventKind, pane: Option<&str>, details: &str) -> Result<()> {
     let path = events_path();
-    // Directory is already created by get_project_state_dir() inside events_path()
-    let mut events = load_events().unwrap_or_default();
-    events.push(Event {
+    let event = Event {
         timestamp: now_unix(),
         kind,
         pane: pane.map(|s| s.to_string()),
         details: details.to_string(),
-    });
+    };
+    let line = serde_json::to_string(&event).context("failed to serialize event")?;
 
-    let json = serde_json::to_string_pretty(&events).context("failed to serialize events")?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("failed to write events file: {}", path.display()))?;
+    // Open file for append (creates it if missing).
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open events file for append: {}", path.display()))?;
+
+    writeln!(file, "{line}")
+        .with_context(|| format!("failed to write event line: {}", path.display()))?;
+
     Ok(())
 }
 
-/// Read all events from the event log (returns empty vec if file is missing).
+/// Read all events from the event log.
+///
+/// Supports both legacy JSON-array format and the new JSONL format (one object
+/// per line), so existing logs continue to work after an upgrade.
+///
+/// Returns an empty vec if the file is missing.
 pub fn load_events() -> Result<Vec<Event>> {
     let path = events_path();
     if !path.exists() {
@@ -80,7 +95,30 @@ pub fn load_events() -> Result<Vec<Event>> {
     if content.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let events: Vec<Event> = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse events file: {}", path.display()))?;
+
+    // Detect legacy format: if the file starts with '[' it is a JSON array.
+    if content.trim_start().starts_with('[') {
+        let events: Vec<Event> = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse events file (array): {}", path.display()))?;
+        return Ok(events);
+    }
+
+    // JSONL format: one JSON object per line, skip blank lines.
+    let mut events = Vec::new();
+    for (lineno, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: Event = serde_json::from_str(trimmed).with_context(|| {
+            format!(
+                "failed to parse event on line {} of {}: {}",
+                lineno + 1,
+                path.display(),
+                trimmed
+            )
+        })?;
+        events.push(event);
+    }
     Ok(events)
 }
