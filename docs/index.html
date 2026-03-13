@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>superharness — your AI coding team, working while you sleep</title>
-  <meta name="description" content="Describe your project. Walk away. Come back to a debrief. SuperHarness is an autonomous AI coding team that plans, executes, and reports — without babysitting." />
+  <title>superharness — give opencode a team</title>
+  <meta name="description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
 
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://superharness.dev" />
-  <meta property="og:title" content="superharness — your AI coding team, working while you sleep" />
-  <meta property="og:description" content="Describe your project. Walk away. Come back to a debrief. SuperHarness is an autonomous AI coding team that plans, executes, and reports." />
+  <meta property="og:title" content="superharness — give opencode a team" />
+  <meta property="og:description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
   <meta property="og:image" content="https://superharness.dev/og-image.png" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:url" content="https://superharness.dev" />
-  <meta name="twitter:title" content="superharness — your AI coding team, working while you sleep" />
-  <meta name="twitter:description" content="Describe your project. Walk away. Come back to a debrief. SuperHarness is an autonomous AI coding team that plans, executes, and reports." />
+  <meta name="twitter:title" content="superharness — give opencode a team" />
+  <meta name="twitter:description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
   <meta name="twitter:image" content="https://superharness.dev/og-image.png" />
 
   <!-- Favicon -->
@@ -452,6 +452,17 @@
       margin-top: 10px;
     }
 
+    /* Away callout */
+    .away-callout {
+      background: rgba(74,158,255,.04);
+      border: 1px solid rgba(74,158,255,.18);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      max-width: 680px;
+    }
+    .away-callout h3 { color: var(--blue); margin-bottom: 8px; }
+    .away-callout p { color: var(--text-dim); font-size: 0.95rem; }
+
     /* Footer */
     footer {
       border-top: 1px solid var(--border);
@@ -492,14 +503,14 @@
       <span class="dot"></span>
       Autonomous &nbsp;·&nbsp; Rust &nbsp;·&nbsp; MIT
     </div>
-    <h1>Your AI coding team.<br/><span class="accent">Working while you sleep.</span></h1>
+    <h1>Give <span class="accent">opencode</span><br/>a whole team.</h1>
     <p class="subtitle">
-      Describe your project. Walk away. Come back to a debrief.
+      superharness sits on top of opencode and lets it spawn parallel worker agents, manage them, and clean up — all on its own.
     </p>
     <div class="hero-ctas">
       <a href="#install" class="btn btn-primary">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        Get started
+        Install now
       </a>
       <a href="https://github.com/backmeupplz/superharness" class="btn btn-ghost" target="_blank" rel="noopener">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
@@ -512,26 +523,28 @@
 <!-- Demo terminal -->
 <section id="demo" style="padding-top:0; padding-bottom:80px;">
   <div class="container">
-    <div class="terminal" style="max-width:620px; margin:0 auto;">
+    <div class="terminal" style="max-width:680px; margin:0 auto;">
       <div class="term-titlebar">
         <span class="term-dot red"></span>
         <span class="term-dot yellow"></span>
         <span class="term-dot green"></span>
-        <span class="term-title">your-project</span>
+        <span class="term-title">your-project — opencode + superharness</span>
       </div>
-      <div class="term-body"><span class="c-green">$</span> <span class="c-bright">superharness plan "build a REST API with JWT auth"</span>
-<span class="c-dim">✓ Roadmap created — 4 stages, 9 tasks queued</span>
-<span class="c-dim">✓ Agents spawned and working in parallel</span>
+      <div class="term-body"><span class="c-green">$</span> <span class="c-bright">superharness</span>
+<span class="c-dim">  opencode starting — orchestrator mode</span>
 
-<span class="c-green">$</span> <span class="c-bright">superharness away</span>
-<span class="c-dim">✓ Away mode. Decisions will be queued for your return.</span>
-<span class="c-dim">  Go to sleep. The team has it from here.</span>
+<span class="c-dim">  You: </span><span class="c-bright">build a REST API with JWT auth</span>
 
-<span class="c-dim"># ... 8 hours later ...</span>
+<span class="c-dim">  [orchestrator] Breaking into 3 parallel workstreams...</span>
+<span class="c-orange">  [worker-1]</span><span class="c-dim"> spawned → implementing JWT middleware</span>
+<span class="c-orange">  [worker-2]</span><span class="c-dim"> spawned → building user CRUD endpoints</span>
+<span class="c-orange">  [worker-3]</span><span class="c-dim"> spawned → creating database schemas &amp; migrations</span>
 
-<span class="c-green">$</span> <span class="c-bright">superharness present</span>
-<span class="c-dim">✓ 7 tasks completed  ·  1 in progress  ·  1 decision waiting</span>
-<span class="c-orange">  Decision: "Use RS256 or HS256 for JWT signing?"</span>
+<span class="c-dim">  [worker-2] asks: allow file write to src/routes/users.ts?</span>
+<span class="c-green">  [orchestrator] approved ✓</span>
+
+<span class="c-dim">  [worker-1] done  ·  [worker-3] done  ·  [worker-2] 80%...</span>
+<span class="c-green">  [orchestrator] all workers finished — cleaning up</span>
 </div>
     </div>
   </div>
@@ -541,27 +554,27 @@
 <section id="how-it-works">
   <div class="container">
     <h2>How it works</h2>
-    <p class="section-lead">Three steps. No babysitting required.</p>
+    <p class="section-lead">Install once. Run instead of opencode. The rest is automatic.</p>
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
         <div class="step-content">
-          <h3>Plan</h3>
-          <p>Tell SuperHarness what you want to build in one sentence. It creates a staged roadmap automatically and assigns tasks to parallel agents — no manual decomposition needed.</p>
+          <h3>Install superharness</h3>
+          <p>One command: <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">cargo install superharness</code>. Requires tmux and opencode already installed.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">2</div>
         <div class="step-content">
-          <h3>Away</h3>
-          <p>Step away or go to sleep. A team of AI agents works in isolated git worktrees simultaneously. Smart supervision handles stalls, loops, and safe permission prompts without waking you.</p>
+          <h3>Run <code style="font-family:var(--font-mono);font-size:.9em;color:var(--orange)">superharness</code> in your project</h3>
+          <p>Navigate to your project directory and run <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">superharness</code>. You get a normal opencode session — the same interface you already know — but now the AI has access to a full team.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">3</div>
         <div class="step-content">
-          <h3>Present</h3>
-          <p>Come back to a full debrief of what was built, what's in progress, and any decisions waiting for you. Review, decide, and optionally kick off the next stage.</p>
+          <h3>Your AI spawns and manages a team</h3>
+          <p>When the task warrants it, opencode spawns parallel worker agents — each in its own isolated git worktree. Workers run concurrently, report back, and are cleaned up automatically. The AI decides how many to spawn, when to spawn them, and when they're done. You just see results.</p>
         </div>
       </div>
     </div>
@@ -571,28 +584,28 @@
 <!-- Features -->
 <section id="features">
   <div class="container">
-    <h2>What you get</h2>
-    <p class="section-lead">Four things that matter.</p>
+    <h2>What you gain</h2>
+    <p class="section-lead">Everything opencode does, plus a team behind it.</p>
     <div class="features-grid">
       <div class="feature-card">
-        <div class="feature-icon">🗺️</div>
-        <h3>Autonomous Planning</h3>
-        <p>Describe a goal. SuperHarness breaks it into a DAG of tasks, assigns the right model to each, and kicks them all off in parallel — no planning required from you.</p>
+        <div class="feature-icon">⚡</div>
+        <h3>Parallel workers</h3>
+        <p>The AI spawns as many worker agents as the task needs — each tackling an independent workstream simultaneously. What takes one agent 4 hours takes a team of 4 about an hour.</p>
       </div>
       <div class="feature-card">
-        <div class="feature-icon">⚡</div>
-        <h3>Parallel Execution</h3>
-        <p>Every agent works in its own isolated git worktree. No conflicts, no waiting. A feature that takes one agent 8 hours takes a team of 4 about 2.</p>
+        <div class="feature-icon">🔒</div>
+        <h3>Isolated workspaces</h3>
+        <p>Every worker gets its own git worktree. No file conflicts. Workers commit their own branches; the orchestrator merges results when everything looks good.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">✅</div>
+        <h3>Permission management</h3>
+        <p>Workers ask for file writes and shell commands as usual. The orchestrating AI reviews them in context — approving safe operations automatically and surfacing anything that needs your eyes.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">👁️</div>
-        <h3>Smart Supervision</h3>
-        <p>Background monitor detects stalled agents and recovers automatically. Loop detection catches agents spinning in circles. Only decisions that actually need you are queued for your return.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">📋</div>
-        <h3>Full Debrief</h3>
-        <p>When you run <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">present</code>, you see a timestamped event log, task completion status, and a list of any decisions the team couldn't make without you.</p>
+        <h3>Automatic cleanup</h3>
+        <p>Stuck workers are detected and recovered. Finished workers are killed and their worktrees removed. The orchestrator keeps the workspace clean without you doing anything.</p>
       </div>
     </div>
   </div>
@@ -601,47 +614,28 @@
 <!-- Comparison -->
 <section id="comparison">
   <div class="container">
-    <h2>opencode alone vs. superharness</h2>
-    <p class="section-lead">SuperHarness replaces opencode. You never need to run opencode directly again.</p>
+      <h2>opencode alone vs. opencode + superharness</h2>
+    <p class="section-lead">Same opencode you love. Now with the ability to run a team.</p>
     <div class="comparison">
       <div class="compare-card opencode">
         <div class="compare-label">opencode alone</div>
         <ul>
-          <li>One agent, one task at a time</li>
-          <li>Sequential execution — you wait</li>
-          <li>You manage the terminal</li>
-          <li>You answer every prompt</li>
-          <li>No memory of what happened</li>
+          <li>Single agent, one task at a time</li>
+          <li>Sequential — slow on complex work</li>
+          <li>All permissions come to you</li>
+          <li>No awareness of parallel execution</li>
+          <li>One context window for everything</li>
         </ul>
       </div>
       <div class="compare-card superharness">
         <div class="compare-label">superharness</div>
         <ul>
-          <li>Team of agents, parallel stages</li>
-          <li>Autonomous — works while you sleep</li>
-          <li>No terminal management needed</li>
-          <li>Safe prompts auto-approved; only real decisions queued</li>
-          <li>Full debrief when you return</li>
+          <li>Orchestrator spawns workers as needed</li>
+          <li>Parallel execution across isolated worktrees</li>
+          <li>Safe permissions auto-handled by orchestrator</li>
+          <li>Workers collaborate and merge results</li>
+          <li>Each worker gets a fresh focused context</li>
         </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Quick start -->
-<section id="quickstart">
-  <div class="container">
-    <h2>Quick start</h2>
-    <p class="section-lead">Four commands. One night. Shipped feature.</p>
-    <div class="quickstart-block">
-      <div class="qs-titlebar">terminal</div>
-      <div class="qs-body">
-        <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">cargo install superharness</span></div>
-        <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">cd your-project</span></div>
-        <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">superharness plan "build a REST API with JWT auth"</span></div>
-        <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">superharness away</span></div>
-        <div class="qs-comment"># go to sleep</div>
-        <div class="qs-line" style="margin-top:6px;"><span class="qs-prompt">$</span><span class="qs-cmd">superharness present</span></div>
       </div>
     </div>
   </div>
@@ -651,9 +645,9 @@
 <section id="install">
   <div class="container">
     <h2>Install</h2>
-    <p class="section-lead">Requires Rust and tmux.</p>
+    <p class="section-lead">Requires Rust, tmux, and opencode.</p>
     <div class="install-block">
-      <div class="install-label">Cargo (recommended)</div>
+      <div class="install-label">Cargo</div>
       <div class="install-cmd">
         <span class="prompt">$</span>
         <span id="install-cmd-2">cargo install superharness</span>
@@ -663,19 +657,29 @@
       </div>
       <div class="install-soon">brew and AUR packages coming soon</div>
     </div>
+    <div style="margin-top:28px;">
+      <div class="quickstart-block" style="max-width:400px;">
+        <div class="qs-titlebar">then, in any project</div>
+        <div class="qs-body">
+          <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd">cd your-project</span></div>
+          <div class="qs-line"><span class="qs-prompt">$</span><span class="qs-cmd" style="color:var(--orange);">superharness</span></div>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
-<!-- Advanced -->
-<section id="advanced">
-  <div class="container text-center">
-    <h2>Power user?</h2>
-    <p class="section-lead" style="margin-bottom:24px;">
-      SuperHarness has a full command reference for scripting, orchestration, and advanced workflows.
-    </p>
-    <a href="https://github.com/backmeupplz/superharness#advanced" class="btn btn-ghost" target="_blank" rel="noopener">
-      View full command reference →
-    </a>
+<!-- Away mode callout -->
+<section id="away">
+  <div class="container">
+    <h2>Going somewhere?</h2>
+    <p class="section-lead">Leave the AI running. It handles things while you're gone.</p>
+    <div class="away-callout">
+      <h3>Away mode</h3>
+      <p>
+        The orchestrating AI can enter an away state when you step out. In away mode it keeps workers running and approves safe operations, but queues any real decision for your return — architecture choices, destructive operations, anything it isn't sure about. Come back to a full debrief of what happened and a short list of things that need your call.
+      </p>
+    </div>
   </div>
 </section>
 
