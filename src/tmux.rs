@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::process::Command;
 
+use crate::layout;
 use crate::loop_guard;
 
 const SESSION: &str = "superharness";
@@ -308,10 +309,10 @@ pub fn spawn(
     let style = format!("bg={color_hex}");
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
 
-    // Auto-layout so panes stay usable
-    let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
+    // Smart layout so panes stay usable
+    let _ = smart_layout();
 
-    // Auto-compact: if the main window has more than 4 worker panes, move excess to background
+    // Auto-compact: if the main window has too many worker panes, move excess to background
     let _ = auto_compact();
 
     Ok(pane_id)
@@ -395,7 +396,7 @@ pub fn show(pane: &str, split: &str) -> Result<()> {
     let flag = if split.starts_with('v') { "-v" } else { "-h" };
     let target = format!("{SESSION}:0");
     tmux_ok(&["join-pane", "-s", pane, "-t", &target, flag, "-d"])?;
-    let _ = tmux_ok(&["select-layout", "-t", SESSION, "tiled"]);
+    let _ = smart_layout();
     Ok(())
 }
 
@@ -441,10 +442,12 @@ pub fn auto_compact() -> Result<()> {
         panes.into_iter().filter(|(id, _, _)| id != "%0").collect();
     workers.sort_by_key(|(_, idx, _)| *idx);
 
-    const MAX_WORKERS_VISIBLE: usize = 4;
+    // Dynamic threshold based on terminal width
+    let (term_w, _) = get_terminal_size();
+    let max_workers_visible = layout::max_workers_visible(term_w);
 
-    if workers.len() > MAX_WORKERS_VISIBLE {
-        let excess = workers.len() - MAX_WORKERS_VISIBLE;
+    if workers.len() > max_workers_visible {
+        let excess = workers.len() - max_workers_visible;
         // Move the highest-index panes (last in sorted order) to background
         let to_move: Vec<_> = workers.into_iter().rev().take(excess).collect();
         for (id, _, title) in to_move {
@@ -529,7 +532,12 @@ pub fn compact_panes() -> Result<(usize, usize)> {
             continue;
         }
 
-        if width < (term_w / 3) || height < (term_h / 3) {
+        // Use layout-engine aware thresholds: a pane is "too small" when its
+        // width is less than what the strategy would allocate per worker, or
+        // its height is less than 1/4 of the terminal height.
+        let min_w = term_w / (layout::max_workers_visible(term_w) as u32 + 1);
+        let min_h = term_h / 4;
+        if width < min_w || height < min_h {
             let tab_name: String = title.chars().take(20).collect();
             let tab_name = tab_name.trim().to_string();
             let tab_name = if tab_name.is_empty() {
@@ -550,9 +558,9 @@ pub fn compact_panes() -> Result<(usize, usize)> {
         }
     }
 
-    // Re-apply tiled layout to main window if anything was moved
+    // Re-apply smart layout to main window if anything was moved
     if moved > 0 {
-        let _ = tmux_ok(&["select-layout", "-t", &format!("{SESSION}:0"), "tiled"]);
+        let _ = smart_layout();
     }
 
     Ok((moved, remaining))
@@ -573,6 +581,85 @@ pub fn resize(pane: &str, direction: &str, amount: u32) -> Result<()> {
 /// Apply a layout preset.
 pub fn layout(name: &str) -> Result<()> {
     tmux_ok(&["select-layout", "-t", SESSION, name])
+}
+
+// ---------------------------------------------------------------------------
+// Smart layout helpers
+// ---------------------------------------------------------------------------
+
+/// Build a [`layout::PaneLayout`] list from the panes currently visible in
+/// the main window (window 0), with no pane flagged as needing attention.
+fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
+    let output = match tmux(&[
+        "list-panes",
+        "-t",
+        &format!("{SESSION}:0"),
+        "-F",
+        "#{pane_id}\t#{pane_title}",
+    ]) {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            let id = parts.first().unwrap_or(&"").to_string();
+            let title = parts.get(1).unwrap_or(&"").to_string();
+            let is_orch = id == "%0";
+            layout::PaneLayout {
+                priority: if is_orch { 255 } else { 0 },
+                is_orchestrator: is_orch,
+                needs_attention: false,
+                id,
+                title,
+            }
+        })
+        .collect()
+}
+
+/// Apply the smart layout to the current main window without any special
+/// attention pane.  Called after `spawn`, `show`/`surface`, and `compact_panes`.
+pub fn smart_layout() -> Result<()> {
+    let (term_w, term_h) = get_terminal_size();
+    let panes = main_window_pane_layouts();
+    let engine = layout::LayoutEngine::new(term_w, term_h, panes);
+    engine.apply()
+}
+
+/// Apply the smart layout, treating `attention_pane` as needing extra space.
+/// If `attention_pane` is currently in a background tab it is surfaced first.
+///
+/// This is the primary entry point used by `watch.rs` when a pane is detected
+/// as `Waiting` (i.e. asking a question or waiting for permission).
+pub fn smart_layout_with_attention(attention_pane: Option<&str>) -> Result<()> {
+    // 1. Surface the pane if it is in a background window.
+    if let Some(pane) = attention_pane {
+        let main_panes = main_window_pane_layouts();
+        let is_in_main = main_panes.iter().any(|p| p.id == pane);
+        if !is_in_main {
+            eprintln!("[layout] surfacing attention pane {pane} from background to main window");
+            let _ = surface(pane);
+        }
+    }
+
+    // 2. Build pane list with the attention pane flagged.
+    let (term_w, term_h) = get_terminal_size();
+    let panes: Vec<layout::PaneLayout> = main_window_pane_layouts()
+        .into_iter()
+        .map(|mut p| {
+            if attention_pane.map(|ap| ap == p.id).unwrap_or(false) {
+                p.needs_attention = true;
+                p.priority = 200;
+            }
+            p
+        })
+        .collect();
+
+    let engine = layout::LayoutEngine::new(term_w, term_h, panes);
+    engine.apply()
 }
 
 /// Start the superharness session with an orchestrator opencode and attach.
