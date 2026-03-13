@@ -9,6 +9,7 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 ```bash
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path                    # spawn worker pane
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "desc" --name "short-feature-name" --dir /path --model fireworks/kimi-k2.5  # spawn with specific model
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "desc" --name "short-feature-name" --dir /path --harness claude          # spawn with specific harness
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path --mode plan        # spawn in plan mode (read-only)
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path --mode build       # spawn in build mode (default)
 /home/borodutch/code/superharness/target/debug/superharness list                                     # list all panes (JSON)
@@ -30,7 +31,11 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 /home/borodutch/code/superharness/target/debug/superharness relay --pane %ID --question '' --wait-for <id>     # workers: poll for relay answer (blocks)
 /home/borodutch/code/superharness/target/debug/superharness relay-answer --id <id> --answer "..."   # orchestrator: answer a relay request
 /home/borodutch/code/superharness/target/debug/superharness relay-list                              # list all relay requests
-/home/borodutch/code/superharness/target/debug/superharness relay-list --pending                    # list only pending relay requests (press F2)
+/home/borodutch/code/superharness/target/debug/superharness relay-list --pending                    # list only pending relay requests
+/home/borodutch/code/superharness/target/debug/superharness harness-list                            # list detected harnesses and current default
+/home/borodutch/code/superharness/target/debug/superharness harness-set <name>                      # set default harness (opencode/claude/codex)
+/home/borodutch/code/superharness/target/debug/superharness harness-switch <name>                   # switch harness (errors if workers running)
+/home/borodutch/code/superharness/target/debug/superharness harness-settings                        # interactive settings popup (press F2)
 /home/borodutch/code/superharness/target/debug/superharness sudo-relay --pane %ID --command "..."   # workers: relay a sudo command that needs a password
 /home/borodutch/code/superharness/target/debug/superharness sudo-relay --pane %ID --command "..." --execute  # relay + wait + execute
 /home/borodutch/code/superharness/target/debug/superharness sudo-exec --pane %ID --command "..."    # workers: run sudo (NOPASSWD or relay fallback)
@@ -80,6 +85,9 @@ Use `--mode` when spawning to control how much the worker is allowed to do:
 
 # Step 2 — implement once the plan looks good
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "Implement the refactor described here: <paste plan>" --name "auth-refactor-impl" --dir /tmp/worker-2 --mode build --model fireworks/kimi-k2.5
+
+# Spawn with a specific harness (overrides the configured default for this worker only)
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "codex-worker" --dir /tmp/worker-3 --harness codex --model o3
 ```
 
 ## Authenticated Providers
@@ -632,6 +640,8 @@ Output includes `loop_detected: true/false` and details on what action is repeat
 # Create worktree before spawning (only after git-check passes)
 git worktree add /tmp/worker-1 HEAD
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+# Optionally override the harness for this worker:
+# /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model o3 --harness codex
 
 # Clean up after worker finishes
 git worktree remove /tmp/worker-1
@@ -890,9 +900,9 @@ This alerts the orchestrator immediately so it can process your output without w
 
 | Event | How it reaches you |
 |---|---|
-| Worker finishes task | Worker runs `notify` → `[NOTIFY]` in %0 |
-| Worker killed | `kill` auto-sends `[NOTIFY]` → `[NOTIFY]` in %0 |
-| Worker spawned/stalled/waiting | Logged to events.json → `wait` returns early |
+| Worker finishes task | Worker runs `/home/borodutch/code/superharness/target/debug/superharness notify` → `[NOTIFY]` in %0 |
+| Worker killed | `/home/borodutch/code/superharness/target/debug/superharness kill` auto-sends `[NOTIFY]` → `[NOTIFY]` in %0 |
+| Worker spawned/stalled/waiting | Logged to events.json → `/home/borodutch/code/superharness/target/debug/superharness wait` returns early |
 | Heartbeat (fallback) | Every 30s unconditionally → `[HEARTBEAT]` in %0 |
 
 ## Detecting Finished Workers
@@ -1053,6 +1063,45 @@ Then use `--depends-on` only for tasks that truly require prior results:
 # Integration worker waits for both feature workers
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
 ```
+
+## Harness Management
+
+SuperHarness supports three AI coding harnesses: **opencode**, **claude** (Claude Code), and **codex** (OpenAI Codex). The active harness is stored in `~/.config/superharness/config.json`.
+
+### Viewing and changing the harness
+
+- **F2 key**: Opens an interactive settings popup showing the current harness and model. Use ↑/↓ to select a different harness, Enter to save, q to cancel.
+- `/home/borodutch/code/superharness/target/debug/superharness harness-list` — List installed harnesses and show which is the current default.
+- `/home/borodutch/code/superharness/target/debug/superharness harness-set <name>` — Change the default harness in config (takes effect on next spawn).
+- `/home/borodutch/code/superharness/target/debug/superharness harness-switch <name>` — Same as `harness-set` but errors if workers are currently running.
+
+### Per-worker harness override
+
+Use `--harness` when spawning to override the default for a single worker:
+
+```bash
+# Use codex for a specific worker while keeping opencode as the global default
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "implement feature X" --name "codex-worker" --dir /tmp/w1 --harness codex --model o3
+
+# Use claude for a specific worker
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "review and refactor" --name "claude-reviewer" --dir /tmp/w2 --harness claude
+```
+
+The `--harness` flag accepts `opencode`, `claude`, or `codex`. It only affects that one worker — the global default is unchanged.
+
+### AI-editable harness (orchestrator instructions)
+
+When the user says "use codex" or "switch to claude", update the config immediately:
+
+```bash
+# Change the global default (takes effect on next spawn)
+/home/borodutch/code/superharness/target/debug/superharness harness-set codex
+
+# Or write directly to config (equivalent)
+# Update "default_harness" field in ~/.config/superharness/config.json
+```
+
+After changing the default, confirm to the user: "Default harness updated to codex. All new workers will use codex."
 
 ## Spawn New Workers While Others Are Running
 
