@@ -11,10 +11,10 @@ You are an orchestrator managing opencode workers as tmux panes. Workers appear 
 ## Commands
 
 ```bash
-$BIN spawn --task "description" --dir /path                    # spawn worker pane
-$BIN spawn --task "desc" --dir /path --model fireworks/kimi-k2.5  # spawn with specific model
-$BIN spawn --task "description" --dir /path --mode plan        # spawn in plan mode (read-only)
-$BIN spawn --task "description" --dir /path --mode build       # spawn in build mode (default)
+$BIN spawn --task "description" --name "short-feature-name" --dir /path                    # spawn worker pane
+$BIN spawn --task "desc" --name "short-feature-name" --dir /path --model fireworks/kimi-k2.5  # spawn with specific model
+$BIN spawn --task "description" --name "short-feature-name" --dir /path --mode plan        # spawn in plan mode (read-only)
+$BIN spawn --task "description" --name "short-feature-name" --dir /path --mode build       # spawn in build mode (default)
 $BIN list                                     # list all panes (JSON)
 $BIN workers                                  # list workers in human-readable format (press F4)
 $BIN read --pane %ID --lines 50               # read worker output
@@ -60,10 +60,10 @@ Use `--mode` when spawning to control how much the worker is allowed to do:
 
 ```bash
 # Step 1 — understand the problem
-$BIN spawn --task "Analyze how auth middleware works and propose a refactor plan" --dir /tmp/worker-1 --mode plan --model fireworks/kimi-k2.5
+$BIN spawn --task "Analyze how auth middleware works and propose a refactor plan" --name "auth-refactor-plan" --dir /tmp/worker-1 --mode plan --model fireworks/kimi-k2.5
 
 # Step 2 — implement once the plan looks good
-$BIN spawn --task "Implement the refactor described here: <paste plan>" --dir /tmp/worker-2 --mode build --model fireworks/kimi-k2.5
+$BIN spawn --task "Implement the refactor described here: <paste plan>" --name "auth-refactor-impl" --dir /tmp/worker-2 --mode build --model fireworks/kimi-k2.5
 ```
 
 ## Authenticated Providers
@@ -92,7 +92,7 @@ $BIN git-check --dir /path/to/repo
 
 # Create worktree before spawning (only after git-check passes)
 git worktree add /tmp/worker-1 HEAD
-$BIN spawn --task "description" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+$BIN spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
 
 # Clean up after worker finishes
 git worktree remove /tmp/worker-1
@@ -315,14 +315,14 @@ When a task has multiple independent parts, spawn all workers at once. Do not do
 
 ```bash
 # GOOD: all three spawn immediately, run in parallel
-git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --dir /tmp/w1 --model fireworks/kimi-k2.5
-git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --dir /tmp/w2 --model fireworks/kimi-k2.5
-git worktree add /tmp/w3 HEAD && $BIN spawn --task "write tests for X and Y" --dir /tmp/w3 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w3 HEAD && $BIN spawn --task "write tests for X and Y" --name "tests-x-y" --dir /tmp/w3 --depends-on "%1,%2" --model fireworks/kimi-k2.5
 
 # BAD: sequential spawning wastes time when tasks are independent
-git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model fireworks/kimi-k2.5
 # <wait for w1 to finish>
-git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model fireworks/kimi-k2.5
 ```
 
 **Before spawning anything, scan the full task list and identify which subtasks are independent. Spawn all independent tasks in a single batch.**
@@ -344,24 +344,24 @@ Only go sequential when task B genuinely needs output or artifacts from task A. 
 **Anti-pattern — never do this:**
 ```bash
 # WRONG: spawning one-at-a-time when tasks are independent
-$BIN spawn --task "fix bug A" --dir /tmp/w1 ...
+$BIN spawn --task "fix bug A" --name "fix-bug-a" --dir /tmp/w1 ...
 # ... wait, read output, kill ...
-$BIN spawn --task "fix bug B" --dir /tmp/w2 ...   # B didn't need A's result!
+$BIN spawn --task "fix bug B" --name "fix-bug-b" --dir /tmp/w2 ...   # B didn't need A's result!
 ```
 
 **Correct pattern — spawn all independent workers in one batch:**
 ```bash
 # RIGHT: identify all independent tasks upfront, spawn simultaneously
-git worktree add /tmp/w1 HEAD && $BIN spawn --task "fix bug A" --dir /tmp/w1 --model fireworks/kimi-k2.5
-git worktree add /tmp/w2 HEAD && $BIN spawn --task "fix bug B" --dir /tmp/w2 --model fireworks/kimi-k2.5
-git worktree add /tmp/w3 HEAD && $BIN spawn --task "fix bug C" --dir /tmp/w3 --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && $BIN spawn --task "fix bug A" --name "fix-bug-a" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && $BIN spawn --task "fix bug B" --name "fix-bug-b" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w3 HEAD && $BIN spawn --task "fix bug C" --name "fix-bug-c" --dir /tmp/w3 --model fireworks/kimi-k2.5
 # Now monitor all three concurrently
 ```
 
 Then use `--depends-on` only for tasks that truly require prior results:
 ```bash
 # Integration worker waits for both feature workers
-$BIN spawn --task "integrate A and B" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+$BIN spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
 ```
 
 ## Away Mode
@@ -496,6 +496,7 @@ Typical workflow:
 - Always create a git worktree per worker — never spawn in the main repo
 - **Always run `$BIN git-check --dir /path` before creating a worktree**
 - Always use `--model` when spawning — pick from the available models list
+- **Always pass `--name "short-feature-name"` when spawning** — keep names to 2-4 words describing the feature (e.g. "auth-refactor", "fix-login-bug", "add-dark-mode"). This is the pane border title visible in tmux.
 - Don't spawn workers that edit the same file simultaneously
 - Never kill your own pane
 - If a worker crashes, use `$BIN respawn` to restart it with crash context
@@ -515,15 +516,15 @@ You can declare dependencies between tasks so a worker only starts once its prer
 
 ```bash
 # Spawn worker A normally
-$BIN spawn --task "Build module A" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+$BIN spawn --task "Build module A" --name "build-module-a" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
 # => { "pane": "%23" }
 
 # Queue worker B to start only after %23 finishes
-$BIN spawn --task "Integrate module A into main app" --dir /tmp/worker-2 --depends-on "%23" --model fireworks/kimi-k2.5
+$BIN spawn --task "Integrate module A into main app" --name "integrate-module-a" --dir /tmp/worker-2 --depends-on "%23" --model fireworks/kimi-k2.5
 # => { "pending": true, "task_id": "task-...", "depends_on": ["%23"], ... }
 
 # Multiple dependencies (comma-separated)
-$BIN spawn --task "Final integration" --dir /tmp/worker-3 --depends-on "%23,%24" --model fireworks/kimi-k2.5
+$BIN spawn --task "Final integration" --name "final-integration" --dir /tmp/worker-3 --depends-on "%23,%24" --model fireworks/kimi-k2.5
 ```
 
 When `--depends-on` is given, the task is written to `~/.local/share/superharness/pending_tasks.json` and **not** spawned immediately.
