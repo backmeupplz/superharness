@@ -527,6 +527,9 @@ pub fn auto_compact() -> Result<()> {
         }
     }
 
+    // Enforce minimum readable pane size after compaction.
+    let _ = layout::enforce_min_pane_size();
+
     Ok(())
 }
 
@@ -585,6 +588,34 @@ pub fn terminal_size_info() -> TerminalSizeInfo {
         workers_visible,
         recommended_max_workers,
     }
+}
+
+/// Query the current tmux window dimensions.
+/// Returns `Some((width, height))` on success, `None` if tmux is unavailable
+/// or the session does not exist.  Unlike [`get_terminal_size`] this never
+/// fabricates a fallback value.
+pub fn terminal_size() -> Option<(u32, u32)> {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            SESSION,
+            "-p",
+            "#{window_width} #{window_height}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let s = String::from_utf8_lossy(&output.stdout);
+    let s = s.trim();
+    let mut parts = s.split_whitespace();
+    let w: u32 = parts.next()?.parse().ok()?;
+    let h: u32 = parts.next()?.parse().ok()?;
+    Some((w, h))
 }
 
 /// Query the current tmux window dimensions dynamically.
@@ -685,6 +716,9 @@ pub fn compact_panes() -> Result<(usize, usize)> {
         let _ = smart_layout();
     }
 
+    // Enforce minimum readable pane size regardless of whether compaction moved anything.
+    let _ = layout::enforce_min_pane_size();
+
     Ok((moved, remaining))
 }
 
@@ -748,7 +782,10 @@ pub fn smart_layout() -> Result<()> {
     let (term_w, term_h) = get_terminal_size();
     let panes = main_window_pane_layouts();
     let engine = layout::LayoutEngine::new(term_w, term_h, panes);
-    engine.apply()
+    engine.apply()?;
+    // Enforce minimum readable pane size after every layout change.
+    let _ = layout::enforce_min_pane_size();
+    Ok(())
 }
 
 /// Apply the smart layout, treating `attention_pane` as needing extra space.
