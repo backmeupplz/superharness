@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+
+use crate::util::{hash_string, now_unix};
 
 const DEFAULT_WINDOW_SIZE: usize = 10;
 const REPEAT_THRESHOLD: u32 = 3;
@@ -72,19 +72,6 @@ fn save_state(state: &PersistState) -> Result<()> {
     std::fs::write(&path, content)
         .with_context(|| format!("failed to write loop state to {}", path.display()))?;
     Ok(())
-}
-
-fn hash_content(content: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Analyze actions in the sliding window for repetition or oscillation.
@@ -166,8 +153,8 @@ pub fn record_action(
     let record = ActionRecord {
         pane_id: pane_id.to_string(),
         action_type: action_type.to_string(),
-        content_hash: hash_content(content),
-        timestamp: current_timestamp(),
+        content_hash: hash_string(content),
+        timestamp: now_unix(),
     };
 
     pane_state.actions.push(record);
@@ -246,7 +233,7 @@ mod tests {
         ActionRecord {
             pane_id: pane.to_string(),
             action_type: action.to_string(),
-            content_hash: hash_content(content),
+            content_hash: hash_string(content),
             timestamp: ts,
         }
     }

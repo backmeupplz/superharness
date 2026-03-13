@@ -20,7 +20,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use crate::util::{generate_id, now_unix, shell_escape};
 
 // ---------------------------------------------------------------------------
 // Relay request schema
@@ -101,25 +103,6 @@ fn relay_file() -> Result<PathBuf> {
         .join("relay_requests.json"))
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn generate_id() -> String {
-    // Use low-precision timestamp + pseudo-random bytes from /dev/urandom
-    let ts = now_unix();
-    let rand_bytes: Vec<u8> = fs::read("/dev/urandom")
-        .unwrap_or_default()
-        .into_iter()
-        .take(4)
-        .collect();
-    let hex: String = rand_bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("relay-{ts:x}{hex}")
-}
-
 fn load_all() -> Result<Vec<RelayRequest>> {
     let path = relay_file()?;
     if !path.exists() {
@@ -158,7 +141,7 @@ pub fn add_relay_request(
     context: &str,
     sensitive: bool,
 ) -> Result<String> {
-    let id = generate_id();
+    let id = generate_id("relay");
     let mut requests = load_all()?;
     requests.push(RelayRequest {
         id: id.clone(),
@@ -179,7 +162,7 @@ pub fn add_relay_request(
 
 /// Create and persist a sudo relay request.  Returns the request ID.
 pub fn relay_sudo(pane_id: &str, command: &str) -> Result<String> {
-    let id = generate_id();
+    let id = generate_id("relay");
     let question = format!(
         "Worker pane {pane_id} needs to run: sudo {command}\nPlease enter your sudo password"
     );
@@ -320,12 +303,6 @@ pub fn run_sudo_with_password(cmd: &str, password: &str) -> Result<std::process:
         .status()
         .with_context(|| format!("failed to run sudo pipeline for: {cmd}"))?;
     Ok(status)
-}
-
-/// Minimal shell-escaping: wrap value in single quotes and escape any
-/// existing single-quote characters with '\''
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ---------------------------------------------------------------------------

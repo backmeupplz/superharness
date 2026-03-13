@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::project;
+use crate::util::{generate_id, now_unix, BOLD, RESET};
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -110,24 +110,6 @@ fn data_dir() -> Result<PathBuf> {
     project::get_project_state_dir()
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn gen_id() -> String {
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let ms = d.as_millis();
-    // Use subsecond nanoseconds as a cheap pseudo-random 4-hex-char suffix
-    let nanos = d.subsec_nanos();
-    let suffix = format!("{:04x}", nanos & 0xFFFF);
-    format!("{ms}{suffix}")
-}
-
 pub fn parse_priority(s: &str) -> Result<Priority> {
     match s.to_lowercase().as_str() {
         "high" | "h" => Ok(Priority::High),
@@ -194,7 +176,7 @@ impl TaskManager {
         let mut tasks = self.load()?;
         let now = now_unix();
         let task = Task {
-            id: gen_id(),
+            id: generate_id("task"),
             title: title.to_string(),
             description: description.map(|s| s.to_string()),
             status: TaskStatus::Pending,
@@ -291,7 +273,7 @@ impl TaskManager {
             1 => {
                 let idx = indices[0];
                 let subtask = Subtask {
-                    id: gen_id(),
+                    id: generate_id("subtask"),
                     title: title.to_string(),
                     done: false,
                     created_at: now_unix(),
@@ -373,9 +355,6 @@ impl TaskManager {
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
 
 /// Print a human-readable task list table.
 pub fn print_task_list(tasks: &[Task]) {

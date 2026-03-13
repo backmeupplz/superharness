@@ -1,11 +1,9 @@
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::monitor::{load_state, MonitorState};
 use crate::tmux;
+use crate::util::{hash_string, now_unix};
 
 /// Health classification for a single pane.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -51,19 +49,6 @@ pub struct PaneHealth {
     /// True when the pane needs human attention (stalled after exhausting
     /// recovery, or waiting on a permission prompt).
     pub needs_attention: bool,
-}
-
-fn hash_output(output: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    output.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Return true if the pane is at a shell / REPL idle prompt.
@@ -155,7 +140,7 @@ pub fn classify_pane(
 ) -> Result<PaneHealth> {
     // Read current output (100 lines is enough for classification).
     let output = tmux::read(pane_id, 100)?;
-    let current_hash = hash_output(&output);
+    let current_hash = hash_string(&output);
 
     let prev_hash = monitor_state.last_output_hash.get(pane_id).copied();
     let recovery_attempts = monitor_state

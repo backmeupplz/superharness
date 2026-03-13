@@ -2,6 +2,7 @@ mod checkpoint;
 mod events;
 mod harness;
 mod health;
+mod heartbeat;
 mod layout;
 mod loop_guard;
 mod memory;
@@ -12,10 +13,11 @@ mod relay;
 mod setup;
 mod tasks;
 mod tmux;
-mod heartbeat;
+mod util;
 
 use anyhow::Context as _;
 use clap::Parser;
+use util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 
 #[derive(Parser)]
 #[command(
@@ -555,9 +557,7 @@ fn main() -> anyhow::Result<()> {
             // If no default harness is configured, show an interactive picker
             // before the tmux session starts, so the user can choose.
             {
-                let config_dir = dirs::config_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                    .join("superharness");
+                let config_dir = util::superharness_config_dir();
                 if harness::get_default_harness(&config_dir).is_none() {
                     let candidates = harness::detect_all_candidates();
                     if !candidates.is_empty() {
@@ -952,16 +952,6 @@ fn main() -> anyhow::Result<()> {
         Some(Command::StatusHuman) => {
             use std::time::{SystemTime, UNIX_EPOCH};
 
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const RED: &str = "\x1b[31m";
-            const GREEN: &str = "\x1b[32m";
-            const YELLOW: &str = "\x1b[33m";
-            const BRIGHT_RED: &str = "\x1b[91m";
-
             // Read mode from project state file
             let state_dir = project::get_project_state_dir()?;
             let state_file = state_dir.join("state.json");
@@ -1091,13 +1081,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::Workers) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const CYAN: &str = "\x1b[36m";
-
             let panes = tmux::list().unwrap_or_default();
 
             // Abbreviate home directory in path
@@ -1841,9 +1824,7 @@ fn main() -> anyhow::Result<()> {
 
         // ── Harness management ───────────────────────────────────────────────
         Some(Command::HarnessList) => {
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             let installed = harness::detect_installed();
             let default_name = harness::get_default_harness(&config_dir);
@@ -1877,9 +1858,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::HarnessSet { name }) => {
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             // Validate: must be a known harness name
             let known = ["opencode", "claude", "codex"];
@@ -1937,9 +1916,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
 
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             harness::set_default_harness(&config_dir, &name)?;
             println!("Harness switched to: {name}");
@@ -1949,9 +1926,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::HarnessSettings) => {
             use std::io::{self, Write};
 
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                .join("superharness");
+            let config_dir = util::superharness_config_dir();
 
             let current_harness = harness::get_default_harness(&config_dir);
             let current_model = harness::get_default_model(&config_dir);
@@ -1994,15 +1969,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::EventFeed) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const GREEN: &str = "\x1b[32m";
-            const RED: &str = "\x1b[31m";
-            const YELLOW: &str = "\x1b[33m";
-            const CYAN: &str = "\x1b[36m";
-
             let state_dir = project::get_project_state_dir()?;
             let events_path = state_dir.join("events.json");
 
@@ -2065,15 +2031,6 @@ fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::TasksModal) => {
-            // ANSI helpers
-            const RESET: &str = "\x1b[0m";
-            const BOLD: &str = "\x1b[1m";
-            const DIM: &str = "\x1b[2m";
-            const UNDERLINE: &str = "\x1b[4m";
-            const GREEN: &str = "\x1b[32m";
-            const RED: &str = "\x1b[31m";
-            const YELLOW: &str = "\x1b[33m";
-
             #[derive(serde::Deserialize)]
             struct OrchestratorTask {
                 id: String,

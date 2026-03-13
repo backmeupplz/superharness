@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::project;
+use crate::util::{generate_id, now_unix};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTask {
@@ -52,13 +52,6 @@ fn save(store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// Add a new pending task. Returns the generated task ID.
 #[allow(clippy::too_many_arguments)]
 pub fn add_task(
@@ -71,7 +64,7 @@ pub fn add_task(
     depends_on: Vec<String>,
 ) -> Result<String> {
     let mut store = load()?;
-    let id = format!("task-{}", now_unix());
+    let id = generate_id("task");
     store.tasks.push(PendingTask {
         id: id.clone(),
         task: task.to_string(),
