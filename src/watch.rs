@@ -255,6 +255,36 @@ fn time_hhmm() -> String {
         })
 }
 
+/// Return `true` when the last few lines of %0's output suggest it is
+/// actively processing (spinner characters, build steps, agent tool calls).
+/// When %0 is busy, the heartbeat is skipped to avoid interrupting it.
+fn orchestrator_is_busy() -> bool {
+    let output = match tmux::read("%0", 5) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+
+    // Spinner characters used by opencode / claude / shell progress indicators
+    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    for line in output.lines() {
+        // Check for spinner characters
+        if spinner_chars.iter().any(|c| line.contains(*c)) {
+            return true;
+        }
+        // Check for active build/run steps
+        if line.contains("Compiling") || line.contains("Running") {
+            return true;
+        }
+        // Check for agent mid-operation marker
+        if line.contains("Tool use") {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Send an unconditional [HEARTBEAT] status message to %0.
 ///
 /// The message includes:
@@ -262,9 +292,19 @@ fn time_hhmm() -> String {
 /// - current local time (HH:MM)
 /// - whether any workers need attention or if everything is nominal
 ///
+/// Skips sending if %0 appears to be actively processing (spinner chars,
+/// build steps, or agent tool calls detected in the last 5 lines of output).
 /// Also fires a tmux flash notification so the message is visible in the
 /// status bar even when the orchestrator pane is not focused.
-pub fn heartbeat() -> Result<()> {
+///
+/// Returns `true` when the heartbeat was sent; `false` when it was skipped.
+pub fn heartbeat() -> Result<bool> {
+    // Skip if %0 looks busy to avoid interrupting an active response.
+    if orchestrator_is_busy() {
+        eprintln!("[watch] heartbeat skipped — %0 appears to be actively processing");
+        return Ok(false);
+    }
+
     let all_panes = tmux::list().unwrap_or_default();
     let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
     let worker_count = worker_panes.len();
@@ -301,7 +341,7 @@ pub fn heartbeat() -> Result<()> {
     tmux::send("%0", &msg)?;
     let _ = tmux::flash_notification(&msg);
 
-    Ok(())
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -705,12 +745,23 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
 
         // Unconditional timed heartbeat — fires every HEARTBEAT_INTERVAL_SECS regardless
         // of worker state so that the orchestrator pane (%0) never goes idle.
+        // Skipped automatically when %0 is actively processing.
         if cycle_ts.saturating_sub(last_heartbeat) >= HEARTBEAT_INTERVAL_SECS {
             match heartbeat() {
-                Ok(_) => eprintln!("[watch] sent [HEARTBEAT] to %0"),
-                Err(e) => eprintln!("[watch] heartbeat error: {e}"),
+                Ok(true) => {
+                    eprintln!("[watch] sent [HEARTBEAT] to %0");
+                    last_heartbeat = cycle_ts;
+                }
+                Ok(false) => {
+                    // Heartbeat was skipped because %0 is busy.
+                    // Don't update last_heartbeat so we retry next cycle.
+                    eprintln!("[watch] [HEARTBEAT] skipped — %0 is busy, will retry next cycle");
+                }
+                Err(e) => {
+                    eprintln!("[watch] heartbeat error: {e}");
+                    last_heartbeat = cycle_ts;
+                }
             }
-            last_heartbeat = cycle_ts;
         }
 
         std::thread::sleep(Duration::from_secs(interval_secs));
