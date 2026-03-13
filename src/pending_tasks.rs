@@ -52,28 +52,33 @@ fn save(store: &Store) -> Result<()> {
     Ok(())
 }
 
+/// Input parameters for [`add_task`].
+///
+/// Using a struct avoids the `clippy::too_many_arguments` lint and makes
+/// call sites more readable when only some fields are populated.
+pub struct PendingTaskInput {
+    pub task: String,
+    pub dir: String,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub name: Option<String>,
+    pub harness: Option<String>,
+    pub depends_on: Vec<String>,
+}
+
 /// Add a new pending task. Returns the generated task ID.
-#[allow(clippy::too_many_arguments)]
-pub fn add_task(
-    task: &str,
-    dir: &str,
-    model: Option<&str>,
-    mode: Option<&str>,
-    name: Option<&str>,
-    harness: Option<&str>,
-    depends_on: Vec<String>,
-) -> Result<String> {
+pub fn add_task(input: PendingTaskInput) -> Result<String> {
     let mut store = load()?;
     let id = generate_id("task");
     store.tasks.push(PendingTask {
         id: id.clone(),
-        task: task.to_string(),
-        dir: dir.to_string(),
-        model: model.map(|s| s.to_string()),
-        mode: mode.map(|s| s.to_string()),
-        name: name.map(|s| s.to_string()),
-        harness: harness.map(|s| s.to_string()),
-        depends_on,
+        task: input.task,
+        dir: input.dir,
+        model: input.model,
+        mode: input.mode,
+        name: input.name,
+        harness: input.harness,
+        depends_on: input.depends_on,
         created_at: now_unix(),
     });
     save(&store)?;

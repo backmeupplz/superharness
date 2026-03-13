@@ -1,5 +1,6 @@
 mod checkpoint;
 mod events;
+mod handlers;
 mod harness;
 mod health;
 mod heartbeat;
@@ -15,9 +16,7 @@ mod tasks;
 mod tmux;
 mod util;
 
-use anyhow::Context as _;
 use clap::Parser;
-use util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 
 #[derive(Parser)]
 #[command(
@@ -548,36 +547,9 @@ fn main() -> anyhow::Result<()> {
                     .and_then(|p| p.to_str().map(String::from))
                     .unwrap_or_else(|| "superharness".to_string())
             });
-            // Record active project directory
-            let abs_dir = std::fs::canonicalize(&cli.dir)
-                .unwrap_or_else(|_| std::path::PathBuf::from(&cli.dir));
-            project::set_active_project(&abs_dir)?;
-
-            // ── Fix 5: First-launch harness picker ──────────────────────────
-            // If no default harness is configured, show an interactive picker
-            // before the tmux session starts, so the user can choose.
-            {
-                let config_dir = util::superharness_config_dir();
-                if harness::get_default_harness(&config_dir).is_none() {
-                    let candidates = harness::detect_all_candidates();
-                    if !candidates.is_empty() {
-                        println!("Welcome to SuperHarness! Please select your default AI harness:");
-                        println!();
-                        match harness::run_interactive_picker(&candidates, None) {
-                            Ok(Some(chosen)) => {
-                                let _ = harness::set_default_harness(&config_dir, &chosen);
-                                println!("  Default harness set to: {chosen}");
-                            }
-                            _ => {}
-                        }
-                        println!();
-                    }
-                }
-            }
-
-            setup::write_config(&cli.dir, &bin)?;
-            tmux::init(&cli.dir, &bin)?;
+            handlers::handle_init(&cli.dir, &bin)?;
         }
+
         Some(Command::Spawn {
             task,
             dir,
@@ -588,825 +560,92 @@ fn main() -> anyhow::Result<()> {
             depends_on,
             no_hide,
         }) => {
-            if std::env::var("SUPERHARNESS_WORKER").is_ok() {
-                eprintln!("error: workers cannot spawn sub-workers (SUPERHARNESS_WORKER is set)");
-                std::process::exit(1);
-            }
-
-            if let Some(ref m) = mode {
-                match m.as_str() {
-                    "build" | "plan" => {}
-                    other => anyhow::bail!(
-                        "invalid mode {:?}: must be 'build' (default) or 'plan' (read-only planning)",
-                        other
-                    ),
-                }
-            }
-
-            // Warn if the target dir is a git repo with uncommitted changes or
-            // is in a state that can make worktrees tricky (detached HEAD, no commits).
-            // Worktrees are created from HEAD, so dirty files won't be included.
-            {
-                let check_dir =
-                    std::fs::canonicalize(&dir).unwrap_or_else(|_| std::path::PathBuf::from(&dir));
-                let check_dir_str = check_dir.to_string_lossy().to_string();
-
-                let is_git = std::process::Command::new("git")
-                    .args(["-C", &check_dir_str, "rev-parse", "--git-dir"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-
-                if is_git {
-                    // ── Detached HEAD check ──────────────────────────────────
-                    // `git symbolic-ref --quiet HEAD` succeeds on a branch,
-                    // fails when HEAD points directly at a commit (detached).
-                    let is_detached = std::process::Command::new("git")
-                        .args(["-C", &check_dir_str, "symbolic-ref", "--quiet", "HEAD"])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .map(|s| !s.success())
-                        .unwrap_or(false);
-
-                    if is_detached {
-                        eprintln!("WARNING: {check_dir_str} is in detached HEAD state.");
-                        eprintln!("  A worktree created from here will not be on any branch.");
-                        eprintln!("  Consider checking out a branch first:");
-                        eprintln!("    git -C {check_dir_str} checkout -b <branch-name>");
-                    }
-
-                    // ── Dirty-files check ────────────────────────────────────
-                    let status_out = std::process::Command::new("git")
-                        .args(["-C", &check_dir_str, "status", "--porcelain"])
-                        .output();
-
-                    if let Ok(out) = status_out {
-                        let status_text = String::from_utf8_lossy(&out.stdout);
-                        let dirty_lines: Vec<&str> = status_text
-                            .lines()
-                            .filter(|l| !l.trim().is_empty())
-                            .collect();
-                        let dirty_count = dirty_lines.len();
-                        if dirty_count > 0 {
-                            // Categorise into staged, unstaged, and untracked for clarity.
-                            let staged = dirty_lines
-                                .iter()
-                                .filter(|l| {
-                                    let b = l.as_bytes();
-                                    !b.is_empty() && b[0] != b' ' && b[0] != b'?'
-                                })
-                                .count();
-                            let unstaged = dirty_lines
-                                .iter()
-                                .filter(|l| {
-                                    let b = l.as_bytes();
-                                    b.len() > 1 && b[1] != b' ' && b[0] == b' '
-                                })
-                                .count();
-                            let untracked =
-                                dirty_lines.iter().filter(|l| l.starts_with("??")).count();
-
-                            eprintln!(
-                                "WARNING: {check_dir_str} has {dirty_count} file(s) with uncommitted changes \
-                                 ({staged} staged, {unstaged} unstaged, {untracked} untracked)."
-                            );
-                            eprintln!(
-                                "  If you are using a git worktree, dirty files will NOT be included."
-                            );
-                            eprintln!("  Commit or stash them first, or run for details:");
-                            eprintln!("    superharness git-check --dir {check_dir_str}");
-                        }
-                    }
-                }
-            }
-
-            // If --depends-on is provided, defer execution until dependencies finish.
-            if let Some(deps_str) = depends_on {
-                let deps: Vec<String> = deps_str
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                let id = pending_tasks::add_task(
-                    &task,
-                    &dir,
-                    model.as_deref(),
-                    mode.as_deref(),
-                    name.as_deref(),
-                    harness.as_deref(),
-                    deps.clone(),
-                )?;
-                let out = serde_json::json!({
-                    "pending": true,
-                    "task_id": id,
-                    "depends_on": deps,
-                    "note": "Task queued. Run 'run-pending' to spawn it once dependencies finish."
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                let pane = tmux::spawn(
-                    &task,
-                    &dir,
-                    name.as_deref(),
-                    model.as_deref(),
-                    harness.as_deref(),
-                    mode.as_deref(),
-                    no_hide,
-                )?;
-                let short_task: String = task.chars().take(80).collect();
-                let _ =
-                    events::log_event(events::EventKind::WorkerSpawned, Some(&pane), &short_task);
-                let out = serde_json::json!({ "pane": pane });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            }
+            handlers::handle_spawn(task, dir, name, model, harness, mode, depends_on, no_hide)?;
         }
 
         Some(Command::Tasks) => {
-            let tasks = pending_tasks::list_tasks()?;
-            // Enrich each task with dependency status using current tmux pane list
-            let active_panes: Vec<String> = tmux::list()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| p.id)
-                .collect();
-            let enriched: Vec<serde_json::Value> = tasks
-                .iter()
-                .map(|t| {
-                    let deps_status: Vec<serde_json::Value> = t
-                        .depends_on
-                        .iter()
-                        .map(|dep| {
-                            serde_json::json!({
-                                "pane": dep,
-                                "done": !active_panes.contains(dep)
-                            })
-                        })
-                        .collect();
-                    let ready = deps_status
-                        .iter()
-                        .all(|d| d["done"].as_bool().unwrap_or(false));
-                    serde_json::json!({
-                        "id": t.id,
-                        "task": t.task,
-                        "dir": t.dir,
-                        "model": t.model,
-                        "mode": t.mode,
-                        "name": t.name,
-                        "depends_on": deps_status,
-                        "ready": ready,
-                        "created_at": t.created_at
-                    })
-                })
-                .collect();
-            let out = serde_json::json!({ "pending_tasks": enriched });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_tasks()?;
         }
-
         Some(Command::RunPending) => {
-            let active_panes: Vec<String> = tmux::list()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| p.id)
-                .collect();
-            let ready = pending_tasks::ready_tasks(&active_panes)?;
-            let mut spawned = Vec::new();
-            for t in ready {
-                match tmux::spawn(
-                    &t.task,
-                    &t.dir,
-                    t.name.as_deref(),
-                    t.model.as_deref(),
-                    t.harness.as_deref(),
-                    t.mode.as_deref(),
-                    false, // show in main window (default)
-                ) {
-                    Ok(pane_id) => {
-                        pending_tasks::remove_task(&t.id)?;
-                        spawned.push(serde_json::json!({
-                            "task_id": t.id,
-                            "pane": pane_id,
-                            "task": t.task
-                        }));
-                    }
-                    Err(e) => {
-                        spawned.push(serde_json::json!({
-                            "task_id": t.id,
-                            "error": e.to_string(),
-                            "task": t.task
-                        }));
-                    }
-                }
-            }
-            let out = serde_json::json!({ "spawned": spawned });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_run_pending()?;
         }
         Some(Command::Read { pane, lines }) => {
-            let output = tmux::read(&pane, lines)?;
-            let out = serde_json::json!({ "pane": pane, "output": output });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_read(pane, lines)?;
         }
         Some(Command::Send { pane, text }) => {
-            tmux::send(&pane, &text)?;
-            let out = serde_json::json!({ "pane": pane, "sent": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_send(pane, text)?;
         }
         Some(Command::List) => {
-            let panes = tmux::list()?;
-            let out = serde_json::json!({ "panes": panes });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_list()?;
         }
         Some(Command::Kill { pane }) => {
-            tmux::kill(&pane)?;
-            let _ = events::log_event(
-                events::EventKind::WorkerKilled,
-                Some(&pane),
-                "worker killed",
-            );
-
-            // Trigger a heartbeat so the orchestrator wakes up immediately.
-            let _ = heartbeat::heartbeat();
-
-            let out = serde_json::json!({ "pane": pane, "killed": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_kill(pane)?;
         }
         Some(Command::Hide { pane, name }) => {
-            tmux::hide(&pane, name.as_deref())?;
-            let out = serde_json::json!({ "pane": pane, "hidden": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_hide(pane, name)?;
         }
         Some(Command::Show { pane, split }) => {
-            tmux::show(&pane, &split)?;
-            let out = serde_json::json!({ "pane": pane, "visible": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_show(pane, split)?;
         }
         Some(Command::Surface { pane }) => {
-            tmux::surface(&pane)?;
-            let out = serde_json::json!({ "pane": pane, "visible": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_surface(pane)?;
         }
         Some(Command::Compact) => {
-            let (moved, remaining) = tmux::compact_panes()?;
-            let note = if moved > 0 {
-                format!(
-                    "{moved} agent(s) moved to background tabs. {remaining} agent(s) remain visible."
-                )
-            } else {
-                "No agents needed moving — all agents meet size thresholds.".to_string()
-            };
-            let out = serde_json::json!({
-                "moved_to_background": moved,
-                "still_visible": remaining,
-                "note": note,
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_compact()?;
         }
         Some(Command::Resize {
             pane,
             direction,
             amount,
         }) => {
-            tmux::resize(&pane, &direction, amount)?;
-            let out = serde_json::json!({ "pane": pane, "resized": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_resize(pane, direction, amount)?;
         }
         Some(Command::Layout { name }) => {
-            tmux::layout(&name)?;
-            let out = serde_json::json!({ "layout": name });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_layout(name)?;
         }
-
         Some(Command::SmartLayout { hint }) => {
-            let action = match hint.as_deref() {
-                // "maximize <pane_id>" — give that pane extra space and surface it
-                Some(h) if h.starts_with("maximize ") => {
-                    let pane_id = h["maximize ".len()..].trim();
-                    tmux::smart_layout_with_attention(Some(pane_id))?;
-                    format!("maximized {pane_id}")
-                }
-                // "focus <pane_id>" — surface then rebalance
-                Some(h) if h.starts_with("focus ") => {
-                    let pane_id = h["focus ".len()..].trim();
-                    tmux::surface(pane_id)?;
-                    tmux::smart_layout()?;
-                    format!("focused {pane_id}")
-                }
-                // "rebalance" or no hint — standard smart layout
-                _ => {
-                    tmux::smart_layout()?;
-                    "rebalanced".to_string()
-                }
-            };
-            let out = serde_json::json!({ "layout": "smart", "action": action, "hint": hint });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_smart_layout(hint)?;
         }
-
         Some(Command::ToggleMode) => {
-            // Read project state to determine current mode
-            let state_dir = project::get_project_state_dir()?;
-            let state_file = state_dir.join("state.json");
-
-            let current_mode = if state_file.exists() {
-                let content = std::fs::read_to_string(&state_file).unwrap_or_default();
-                let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-                v["mode"].as_str().unwrap_or("present").to_string()
-            } else {
-                "present".to_string()
-            };
-
-            // Find the main orchestrator pane (%0 or first pane)
-            let panes = tmux::list().unwrap_or_default();
-            let target_pane = panes
-                .iter()
-                .find(|p| p.id == "%0")
-                .or_else(|| panes.first())
-                .map(|p| p.id.clone())
-                .unwrap_or_else(|| "%0".to_string());
-
-            let (message, new_mode) = if current_mode == "away" {
-                (
-                    "The user has returned. Please read .superharness/state.json and .superharness/decisions.json to understand what happened while they were away, give them a brief natural-language debrief, then update .superharness/state.json to set mode to 'present' and clear away_since.",
-                    "present",
-                )
-            } else {
-                (
-                    "The user wants to step away. Please ask them a few questions about what decisions you should queue vs auto-approve while they are gone, then update .superharness/state.json with {\"mode\": \"away\", \"away_since\": <unix_timestamp>, \"instructions\": <their preferences>} and adjust your behavior accordingly.",
-                    "away",
-                )
-            };
-
-            tmux::send(&target_pane, message)?;
-
-            let out = serde_json::json!({
-                "toggled": true,
-                "previous_mode": current_mode,
-                "requesting_mode": new_mode,
-                "target_pane": target_pane,
-                "note": "Message sent to orchestrator. The AI will handle the mode transition."
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_toggle_mode()?;
         }
-
         Some(Command::StatusHuman) => {
-            use std::time::{SystemTime, UNIX_EPOCH};
-
-            // Read mode from project state file
-            let state_dir = project::get_project_state_dir()?;
-            let state_file = state_dir.join("state.json");
-            let (mode_str, away_since, away_message) = if state_file.exists() {
-                let content = std::fs::read_to_string(&state_file).unwrap_or_default();
-                let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-                let mode = v["mode"].as_str().unwrap_or("present").to_string();
-                let since = v["away_since"].as_u64();
-                let msg = v["instructions"]
-                    .as_str()
-                    .or_else(|| v["away_message"].as_str())
-                    .map(|s| s.to_string());
-                (mode, since, msg)
-            } else {
-                ("present".to_string(), None, None)
-            };
-
-            // ── Hint bar ─────────────────────────────────────────────────────
-            println!("  {DIM}any key to close{RESET}");
-            println!("  {DIM}{}{RESET}", "─".repeat(70));
-
-            // ── MODE ──────────────────────────────────────────────────────────
-            println!();
-            if mode_str == "away" {
-                let away_since_str = away_since.map(|ts| {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let elapsed = now.saturating_sub(ts);
-                    let h = elapsed / 3600;
-                    let m = (elapsed % 3600) / 60;
-                    format!("{h}h {m}m ago (since unix:{ts})")
-                });
-                println!("  {BOLD}{YELLOW}Mode:{RESET}    {BOLD}{YELLOW}AWAY{RESET}");
-                if let Some(since) = away_since_str {
-                    println!("  {DIM}Away:{RESET}    {since}");
-                }
-                if let Some(ref msg) = away_message {
-                    println!("  {DIM}Message:{RESET} {msg}");
-                }
-            } else {
-                println!("  {BOLD}{GREEN}Mode:{RESET}    {BOLD}{GREEN}PRESENT{RESET}");
-            }
-
-            // ── PENDING DECISIONS ─────────────────────────────────────────────
-            let decisions_file = state_dir.join("decisions.json");
-            println!();
-            println!("  {BOLD}{UNDERLINE}Pending Decisions{RESET}");
-            if decisions_file.exists() {
-                let content = std::fs::read_to_string(&decisions_file).unwrap_or_default();
-                let decisions: Vec<serde_json::Value> =
-                    serde_json::from_str(&content).unwrap_or_default();
-                if decisions.is_empty() {
-                    println!("    {DIM}none{RESET}");
-                } else {
-                    println!("    {BOLD}{}{RESET} decision(s) queued", decisions.len());
-                    for (i, d) in decisions.iter().enumerate() {
-                        println!();
-                        let pane = d["pane"].as_str().unwrap_or("?");
-                        let question = d["question"].as_str().unwrap_or("?");
-                        let context = d["context"].as_str().unwrap_or("");
-                        println!("    {BOLD}[{}]{RESET} Agent {YELLOW}{}{RESET}", i + 1, pane);
-                        println!("        {BOLD}Q:{RESET} {}", question);
-                        if !context.is_empty() {
-                            println!("        {DIM}Context:{RESET} {}", context);
-                        }
-                    }
-                }
-            } else {
-                println!("    {DIM}none{RESET}");
-            }
-
-            // ── WORKER HEALTH ─────────────────────────────────────────────────
-            println!();
-            println!("  {BOLD}{UNDERLINE}Workers{RESET}");
-
-            let monitor_state = monitor::load_state();
-            let panes = tmux::list().unwrap_or_default();
-
-            if panes.is_empty() {
-                println!("    {DIM}(no workers running){RESET}");
-            } else {
-                for p in &panes {
-                    let health = health::classify_pane(&p.id, &monitor_state, 60).ok();
-                    let (status_colored, status_plain) = match &health {
-                        Some(h) => match h.status {
-                            health::HealthStatus::Working => {
-                                (format!("{DIM}{GREEN}working{RESET} "), "working ")
-                            }
-                            health::HealthStatus::Idle => {
-                                (format!("{DIM}idle{RESET}    "), "idle    ")
-                            }
-                            health::HealthStatus::Stalled => {
-                                (format!("{BOLD}{RED}STALLED{RESET} "), "STALLED ")
-                            }
-                            health::HealthStatus::Waiting => {
-                                (format!("{BOLD}{YELLOW}WAITING{RESET} "), "WAITING ")
-                            }
-                            health::HealthStatus::Done => {
-                                (format!("{DIM}done{RESET}    "), "done    ")
-                            }
-                        },
-                        None => (format!("{DIM}unknown{RESET} "), "unknown "),
-                    };
-                    let _ = status_plain; // suppress unused warning
-                    let attn = match &health {
-                        Some(h) if h.needs_attention => {
-                            format!("  {BOLD}{BRIGHT_RED}!! NEEDS ATTENTION{RESET}")
-                        }
-                        _ => String::new(),
-                    };
-                    let title = if p.title.is_empty() {
-                        &p.command
-                    } else {
-                        &p.title
-                    };
-                    let short_title: String = title.chars().take(48).collect();
-                    println!(
-                        "    {DIM}{}{RESET}  {status_colored}  {BOLD}{:<48}{RESET}{}",
-                        p.id, short_title, attn
-                    );
-                }
-            }
-
-            println!();
+            handlers::handle_status_human()?;
         }
-
         Some(Command::Workers) => {
-            let panes = tmux::list().unwrap_or_default();
-
-            // Abbreviate home directory in path
-            let home = std::env::var("HOME").unwrap_or_default();
-            let abbrev_path = |path: &str| -> String {
-                if !home.is_empty() && path.starts_with(&home) {
-                    format!("~{}", &path[home.len()..])
-                } else {
-                    path.to_string()
-                }
-            };
-
-            // Hint bar
-            println!("  {DIM}any key to close{RESET}");
-            println!("  {DIM}{}{RESET}", "─".repeat(70));
-
-            println!();
-            if panes.is_empty() {
-                println!("  {BOLD}Active Workers:{RESET} none");
-                println!();
-                println!("  {DIM}No workers currently running.{RESET}");
-                println!(
-                    "  {DIM}Spawn one with:{RESET} superharness spawn --task \"...\" --dir /path --model <model>"
-                );
-            } else {
-                // Column widths: PANE 6, CMD 10, STATUS 8, TITLE 40, PATH 30
-                const W_PANE: usize = 6;
-                const W_CMD: usize = 10;
-                const W_TITLE: usize = 40;
-                const W_PATH: usize = 30;
-                // total separator width
-                let sep_width = W_PANE + 2 + W_CMD + 2 + W_TITLE + 2 + W_PATH;
-
-                println!("  {BOLD}Active Workers:{RESET} {}", panes.len());
-                println!();
-                println!(
-                    "  {BOLD}{UNDERLINE}{:<W_PANE$}  {:<W_CMD$}  {:<W_TITLE$}  {:<W_PATH$}{RESET}",
-                    "AGENT", "CMD", "TITLE", "PATH"
-                );
-                println!("  {DIM}{}{RESET}", "─".repeat(sep_width));
-                for p in &panes {
-                    let title = if p.title.is_empty() {
-                        &p.command
-                    } else {
-                        &p.title
-                    };
-                    let short_title: String = title.chars().take(W_TITLE).collect();
-                    let path_abbrev = abbrev_path(&p.path);
-                    let short_path: String = path_abbrev.chars().take(W_PATH).collect();
-                    let short_cmd: String = p.command.chars().take(W_CMD).collect();
-                    println!(
-                        "  {DIM}{:<W_PANE$}{RESET}  {CYAN}{:<W_CMD$}{RESET}  {BOLD}{:<W_TITLE$}{RESET}  {DIM}{:<W_PATH$}{RESET}",
-                        p.id, short_cmd, short_title, short_path
-                    );
-                }
-            }
-            println!();
+            handlers::handle_workers()?;
         }
-
         Some(Command::TerminalSize) => {
-            let info = tmux::terminal_size_info();
-            let out = serde_json::json!({
-                "width": info.width,
-                "height": info.height,
-                "main_pane_rows": info.main_pane_rows,
-                "workers_visible": info.workers_visible,
-                "recommended_max_workers": info.recommended_max_workers,
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_terminal_size()?;
         }
-
         Some(Command::Healthcheck { pane, interval }) => {
-            health::run(pane.as_deref(), interval)?;
+            handlers::handle_healthcheck(pane, interval)?;
         }
-
-        Some(Command::LoopStatus { pane }) => match pane {
-            Some(pane_id) => {
-                let detection = loop_guard::get_loop_status(&pane_id)?;
-                let out = serde_json::json!({
-                    "pane": pane_id,
-                    "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
-                    "details": detection
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            }
-            None => {
-                let all_panes = loop_guard::get_all_panes()?;
-                let mut results = Vec::new();
-                for (pane_id, _count) in &all_panes {
-                    let detection = loop_guard::get_loop_status(pane_id)?;
-                    results.push(serde_json::json!({
-                        "pane": pane_id,
-                        "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
-                        "details": detection
-                    }));
-                }
-                let out = serde_json::json!({ "panes": results });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            }
-        },
-
+        Some(Command::LoopStatus { pane }) => {
+            handlers::handle_loop_status(pane)?;
+        }
         Some(Command::LoopClear { pane }) => {
-            loop_guard::clear_pane(&pane)?;
-            let out = serde_json::json!({ "pane": pane, "cleared": true });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_loop_clear(pane)?;
         }
-
         Some(Command::Checkpoint { pane, note }) => {
-            // Capture current pane output (last 200 lines)
-            let pane_output = tmux::read(&pane, 200)?;
-
-            // Use the pane title as the task title; fall back to pane ID
-            let pane_list = tmux::list()?;
-            let task_title = pane_list
-                .iter()
-                .find(|p| p.id == pane)
-                .map(|p| p.title.clone())
-                .unwrap_or_else(|| pane.clone());
-
-            let cp = checkpoint::save(&pane, &task_title, &pane_output, note.as_deref())?;
-            let out = serde_json::json!({
-                "checkpoint_id": cp.id,
-                "pane": cp.pane_id,
-                "timestamp": cp.timestamp,
-                "task_title": cp.task_title,
-                "note": cp.note,
-                "lines_captured": cp.last_output.lines().count(),
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_checkpoint(pane, note)?;
         }
-
         Some(Command::Checkpoints { pane }) => {
-            let list = checkpoint::list(pane.as_deref())?;
-            let out = serde_json::json!({ "checkpoints": list });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_checkpoints(pane)?;
         }
-
         Some(Command::Resume {
             checkpoint,
             dir,
             model,
         }) => {
-            let cp = checkpoint::load_by_id(&checkpoint)?;
-
-            // Build a resume prompt containing context from the checkpoint
-            let last_lines: String = cp
-                .last_output
-                .lines()
-                .rev()
-                .take(30)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let resume_prompt = format!(
-                "Resume this task. Previous context: {task_title}. \
-                Last output was:\n{last_lines}\n\nContinue where it left off.",
-                task_title = cp.task_title,
-                last_lines = last_lines,
-            );
-
-            let note_suffix = cp
-                .note
-                .as_deref()
-                .map(|n| format!(" (note: {n})"))
-                .unwrap_or_default();
-            let name = format!("resume of {}{}", cp.task_title, note_suffix);
-
-            let pane_id = tmux::spawn(
-                &resume_prompt,
-                &dir,
-                Some(&name),
-                model.as_deref(),
-                None, // use default harness for resumed worker
-                Some("build"),
-                false, // show in main window (default)
-            )?;
-            let out = serde_json::json!({
-                "pane": pane_id,
-                "resumed_from": checkpoint,
-                "task_title": cp.task_title,
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_resume(checkpoint, dir, model)?;
         }
-
         Some(Command::Ask { pane }) => {
-            let output = tmux::read(&pane, 20)?;
-            let lines: Vec<&str> = output.lines().collect();
-
-            // Patterns that suggest the worker is asking something
-            let question_patterns: &[&str] = &[
-                "?",
-                "y/n",
-                "Y/N",
-                "yes/no",
-                "Yes/No",
-                "[y/n]",
-                "[Y/N]",
-                "Do you want",
-                "Would you like",
-                "Should I",
-                "Can I",
-                "Please confirm",
-                "Enter ",
-                "Provide ",
-                "What ",
-                "Which ",
-                "How ",
-                "Allow",
-                "Approve",
-                "Permission",
-                "confirm",
-                "proceed",
-                "(y)",
-                "(n)",
-            ];
-
-            // Find lines that look like questions or prompts
-            let mut question_lines: Vec<(usize, &str)> = Vec::new();
-            for (i, line) in lines.iter().enumerate() {
-                let lower = line.to_lowercase();
-                let is_question = question_patterns
-                    .iter()
-                    .any(|p| line.contains(p) || lower.contains(&p.to_lowercase()));
-                if is_question && !line.trim().is_empty() {
-                    question_lines.push((i, line));
-                }
-            }
-
-            println!("=== Agent {} — last {} lines ===", pane, lines.len());
-            println!();
-            for line in &lines {
-                println!("  {line}");
-            }
-            println!();
-
-            if question_lines.is_empty() {
-                println!("[ No question or permission prompt detected ]");
-                println!();
-                println!("Worker appears to be working. Check back in 30-60s.");
-            } else {
-                println!("[ QUESTION / PROMPT DETECTED ]");
-                println!();
-                for (_, line) in &question_lines {
-                    println!("  >> {line}");
-                }
-                println!();
-                println!("To answer, run:");
-                println!("  superharness send --pane {pane} --text \"<your answer>\"");
-                println!();
-                println!("To approve (yes):  superharness send --pane {pane} --text \"y\"");
-                println!("To deny (no):      superharness send --pane {pane} --text \"n\"");
-            }
+            handlers::handle_ask(pane)?;
         }
-
         Some(Command::GitCheck { dir }) => {
-            let abs_dir =
-                std::fs::canonicalize(&dir).with_context(|| format!("invalid directory: {dir}"))?;
-            let dir_str = abs_dir.to_string_lossy().to_string();
-
-            // Check if it's a git repo at all
-            let is_git = std::process::Command::new("git")
-                .args(["-C", &dir_str, "rev-parse", "--git-dir"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-
-            if !is_git {
-                println!("Directory: {dir_str}");
-                println!("Status:    NOT A GIT REPO");
-                println!();
-                println!("No git check needed — this directory is not a git repository.");
-                println!("You can create worktrees only from git repos.");
-            } else {
-                // Run git status --porcelain to detect dirty files
-                let status_out = std::process::Command::new("git")
-                    .args(["-C", &dir_str, "status", "--porcelain"])
-                    .output()
-                    .with_context(|| "failed to run git status")?;
-
-                let status_text = String::from_utf8_lossy(&status_out.stdout);
-                let dirty_lines: Vec<&str> = status_text
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .collect();
-
-                println!("Directory: {dir_str}");
-
-                if dirty_lines.is_empty() {
-                    println!("Status:    CLEAN");
-                    println!();
-                    println!("Repo is clean. Safe to create a worktree from HEAD.");
-                    println!();
-                    println!("  git worktree add /tmp/worker-N HEAD");
-                } else {
-                    println!(
-                        "Status:    DIRTY ({} file(s) with uncommitted changes)",
-                        dirty_lines.len()
-                    );
-                    println!();
-                    println!("Uncommitted changes:");
-                    for line in &dirty_lines {
-                        println!("  {line}");
-                    }
-                    println!();
-                    println!("WARNING: Worktrees are created from HEAD. Dirty files will NOT");
-                    println!("be included in the worktree. You should either:");
-                    println!();
-                    println!("  Option A — Commit your changes first:");
-                    println!("    git add -A && git commit -m \"wip: save before worktree\"");
-                    println!();
-                    println!("  Option B — Stash your changes:");
-                    println!(
-                        "    git stash && git worktree add /tmp/worker-N HEAD && git stash pop"
-                    );
-                    println!();
-                    println!("  Option C — Proceed anyway (dirty files stay in main only):");
-                    println!("    git worktree add /tmp/worker-N HEAD");
-                }
-            }
+            handlers::handle_git_check(dir)?;
         }
-
         Some(Command::Respawn {
             pane,
             task,
@@ -1414,67 +653,15 @@ fn main() -> anyhow::Result<()> {
             model,
             mode,
         }) => {
-            // 1. Read last 100 lines for crash context
-            let crash_context = tmux::read(&pane, 100)?;
-
-            // 2. Kill the crashed pane
-            tmux::kill(&pane)?;
-
-            // 3. Build the retry task with crash context prepended
-            let retry_task = format!(
-                "Previous attempt crashed. Context from crash:\n{crash_context}\n\nPlease retry the task, avoiding whatever caused the crash.\n\nOriginal task: {task}"
-            );
-
-            // 4. Spawn a new worker
-            let new_pane = tmux::spawn(
-                &retry_task,
-                &dir,
-                None,
-                model.as_deref(),
-                None, // use default harness for respawned worker
-                mode.as_deref(),
-                false, // show in main window (default)
-            )?;
-
-            println!("Crashed agent {} killed.", pane);
-            println!("New worker spawned: {new_pane}");
-            println!();
-            println!("The new worker has been given the crash context and will retry the task.");
-            println!("Monitor with: superharness read --pane {new_pane} --lines 50");
+            handlers::handle_respawn(pane, task, dir, model, mode)?;
         }
-
         Some(Command::Memory {
             pane,
             key,
             value,
             list,
         }) => {
-            if list {
-                let mem = memory::get_all(&pane)?;
-                let out = serde_json::json!({
-                    "pane": mem.pane_id,
-                    "memory": mem.entries,
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                match (key, value) {
-                    (Some(k), Some(v)) => {
-                        memory::set(&pane, &k, &v)?;
-                        let out = serde_json::json!({
-                            "pane": pane,
-                            "stored": true,
-                            "key": k,
-                            "value": v,
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "provide --key and --value to store a fact, or --list to retrieve all"
-                        );
-                    }
-                }
-            }
+            handlers::handle_memory(pane, key, value, list)?;
         }
 
         // ── Task/subtask commands ────────────────────────────────────────────
@@ -1484,88 +671,37 @@ fn main() -> anyhow::Result<()> {
             priority,
             tags,
         }) => {
-            let tm = tasks::TaskManager::new()?;
-            let priority = priority.as_deref().map(tasks::parse_priority).transpose()?;
-            let tag_list: Vec<String> = tags
-                .as_deref()
-                .unwrap_or("")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let task = tm.add_task(&title, description.as_deref(), priority, tag_list)?;
-            let id_short: String = task.id.chars().take(8).collect();
-            println!("Task created: {id_short}  \"{}\"", task.title);
-            println!("Full ID: {}", task.id);
-            println!();
-            println!("Reference this task with any unique prefix of its ID (e.g. '{id_short}').");
+            handlers::handle_task_add(title, description, priority, tags)?;
         }
-
         Some(Command::TaskList { status, tag }) => {
-            let tm = tasks::TaskManager::new()?;
-            let status_filter = status
-                .as_deref()
-                .map(tasks::parse_status)
-                .transpose()?
-                .map(|s| s.to_string());
-            let task_list = tm.list_tasks(status_filter.as_deref(), tag.as_deref())?;
-            tasks::print_task_list(&task_list);
+            handlers::handle_task_list(status, tag)?;
         }
-
         Some(Command::TaskDone { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            let task = tm.set_status(&id, tasks::TaskStatus::Done)?;
-            let id_short: String = task.id.chars().take(8).collect();
-            println!("Task {id_short} marked as done: \"{}\"", task.title);
+            handlers::handle_task_done(id)?;
         }
-
         Some(Command::TaskStart { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            let task = tm.set_status(&id, tasks::TaskStatus::InProgress)?;
-            let id_short: String = task.id.chars().take(8).collect();
-            println!("Task {id_short} marked as in_progress: \"{}\"", task.title);
+            handlers::handle_task_start(id)?;
         }
-
         Some(Command::TaskBlock { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            let task = tm.set_status(&id, tasks::TaskStatus::Blocked)?;
-            let id_short: String = task.id.chars().take(8).collect();
-            println!("Task {id_short} marked as blocked: \"{}\"", task.title);
+            handlers::handle_task_block(id)?;
         }
-
         Some(Command::TaskCancel { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            let task = tm.set_status(&id, tasks::TaskStatus::Cancelled)?;
-            let id_short: String = task.id.chars().take(8).collect();
-            println!("Task {id_short} marked as cancelled: \"{}\"", task.title);
+            handlers::handle_task_cancel(id)?;
         }
-
         Some(Command::TaskRemove { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            tm.remove_task(&id)?;
-            println!("Task removed.");
+            handlers::handle_task_remove(id)?;
         }
-
         Some(Command::TaskShow { id }) => {
-            let tm = tasks::TaskManager::new()?;
-            let task = tm.get_task(&id)?;
-            tasks::print_task_detail(&task);
+            handlers::handle_task_show(id)?;
         }
-
         Some(Command::SubtaskAdd { task_id, title }) => {
-            let tm = tasks::TaskManager::new()?;
-            let subtask = tm.add_subtask(&task_id, &title)?;
-            let sub_id_short: String = subtask.id.chars().take(8).collect();
-            println!("Subtask created: {sub_id_short}  \"{}\"", subtask.title);
+            handlers::handle_subtask_add(task_id, title)?;
         }
-
         Some(Command::SubtaskDone {
             task_id,
             subtask_id,
         }) => {
-            let tm = tasks::TaskManager::new()?;
-            tm.complete_subtask(&task_id, &subtask_id)?;
-            println!("Subtask marked as done.");
+            handlers::handle_subtask_done(task_id, subtask_id)?;
         }
 
         // ── Relay commands ───────────────────────────────────────────────────
@@ -1577,688 +713,65 @@ fn main() -> anyhow::Result<()> {
             wait_for,
             timeout,
         }) => {
-            // If --wait-for is given, poll for the answer to an existing request.
-            if let Some(ref req_id) = wait_for {
-                match relay::wait_for_answer(req_id, timeout)? {
-                    Some(answer) => {
-                        let out = serde_json::json!({
-                            "id": req_id,
-                            "answered": true,
-                            "answer": if sensitive { "<redacted>" } else { &answer },
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                        // Print the raw answer on its own line so workers can
-                        // capture it with $(...) command substitution.
-                        eprintln!("{answer}");
-                    }
-                    None => {
-                        let out = serde_json::json!({
-                            "id": req_id,
-                            "answered": false,
-                            "note": "timeout expired — no answer received",
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                // Create a new relay request.
-                let id = relay::add_relay_request(&pane, &question, &context, sensitive)?;
-                let out = serde_json::json!({
-                    "id": id,
-                    "pane": pane,
-                    "question": question,
-                    "context": context,
-                    "sensitive": sensitive,
-                    "status": "pending",
-                    "note": format!(
-                        "Relay request created. Poll for answer with: superharness relay --pane {pane} --question '' --wait-for {id}"
-                    ),
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            }
+            handlers::handle_relay(pane, question, context, sensitive, wait_for, timeout)?;
         }
-
         Some(Command::RelayAnswer { id, answer }) => {
-            relay::answer_relay(&id, &answer)?;
-            let out = serde_json::json!({
-                "id": id,
-                "answered": true,
-                "note": "Answer stored. The worker will receive it on its next poll.",
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
+            handlers::handle_relay_answer(id, answer)?;
         }
-
         Some(Command::RelayList { pending }) => {
-            let requests = if pending {
-                relay::get_pending_relays()?
-            } else {
-                relay::list_all()?
-            };
-
-            let items: Vec<serde_json::Value> = requests
-                .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "id": r.id,
-                        "pane": r.pane_id,
-                        "kind": r.kind.to_string(),
-                        "question": r.question,
-                        "context": r.context,
-                        "sensitive": r.sensitive,
-                        "status": r.status.to_string(),
-                        // Never expose sensitive answers in list output.
-                        "answer": if r.sensitive { r.answer.as_ref().map(|_| "<redacted>") } else { r.answer.as_deref() },
-                        "created_at": r.created_at,
-                        "answered_at": r.answered_at,
-                    })
-                })
-                .collect();
-
-            if requests.is_empty() {
-                println!("No relay requests found.");
-            } else {
-                // Human-readable summary first.
-                let pending_count = requests
-                    .iter()
-                    .filter(|r| r.status == relay::RelayStatus::Pending)
-                    .count();
-                println!(
-                    "Relay requests: {} total, {} pending",
-                    requests.len(),
-                    pending_count
-                );
-                println!();
-
-                for r in &requests {
-                    let status_marker = match r.status {
-                        relay::RelayStatus::Pending => "[PENDING ]",
-                        relay::RelayStatus::Answered => "[answered]",
-                        relay::RelayStatus::Cancelled => "[canceld ]",
-                    };
-                    let sens = if r.sensitive { " [sensitive]" } else { "" };
-                    println!("{status_marker} {} (pane {}){}", r.id, r.pane_id, sens);
-                    println!("  Q: {}", r.question);
-                    if !r.context.is_empty() {
-                        println!("  Context: {}", r.context);
-                    }
-                    if r.status == relay::RelayStatus::Pending {
-                        println!(
-                            "  Answer with: superharness relay-answer --id {} --answer \"<value>\"",
-                            r.id
-                        );
-                    }
-                    println!();
-                }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({ "requests": items }))?
-                );
-            }
+            handlers::handle_relay_list(pending)?;
         }
-
         Some(Command::SudoRelay {
             pane,
             command,
             execute,
             timeout,
         }) => {
-            let relay_id = relay::relay_sudo(&pane, &command)?;
-            if execute {
-                println!("Relay request {relay_id} created. Waiting for human to provide sudo password...");
-                match relay::wait_for_answer(&relay_id, timeout)? {
-                    Some(password) => {
-                        let status = relay::run_sudo_with_password(&command, &password)?;
-                        let out = serde_json::json!({
-                            "relay_id": relay_id,
-                            "command": command,
-                            "exit_code": status.code(),
-                            "success": status.success(),
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                        if !status.success() {
-                            std::process::exit(status.code().unwrap_or(1));
-                        }
-                    }
-                    None => {
-                        let out = serde_json::json!({
-                            "relay_id": relay_id,
-                            "answered": false,
-                            "note": "timeout expired — sudo password not provided",
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                let out = serde_json::json!({
-                    "relay_id": relay_id,
-                    "pane": pane,
-                    "command": command,
-                    "status": "pending",
-                    "note": format!(
-                        "Sudo relay created. Human should run: superharness relay-answer --id {relay_id} --answer \"<password>\""
-                    ),
-                    "poll_command": format!(
-                        "superharness relay --pane {pane} --question '' --wait-for {relay_id}"
-                    ),
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            }
+            handlers::handle_sudo_relay(pane, command, execute, timeout)?;
         }
-
         Some(Command::SudoExec {
             pane,
             command,
             wait,
             timeout,
         }) => {
-            use relay::SudoExecResult;
-
-            match relay::sudo_exec(&pane, &command)? {
-                SudoExecResult::Success => {
-                    let out = serde_json::json!({
-                        "pane": pane,
-                        "command": command,
-                        "success": true,
-                        "method": "nopasswd",
-                    });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                }
-                SudoExecResult::RelayCreated(relay_id) => {
-                    if wait {
-                        println!(
-                            "sudo requires a password. Relay request {relay_id} created. Waiting for human..."
-                        );
-                        match relay::wait_for_answer(&relay_id, timeout)? {
-                            Some(password) => {
-                                let status = relay::run_sudo_with_password(&command, &password)?;
-                                let out = serde_json::json!({
-                                    "relay_id": relay_id,
-                                    "pane": pane,
-                                    "command": command,
-                                    "exit_code": status.code(),
-                                    "success": status.success(),
-                                    "method": "relay_password",
-                                });
-                                println!("{}", serde_json::to_string_pretty(&out)?);
-                                if !status.success() {
-                                    std::process::exit(status.code().unwrap_or(1));
-                                }
-                            }
-                            None => {
-                                let out = serde_json::json!({
-                                    "relay_id": relay_id,
-                                    "answered": false,
-                                    "note": "timeout expired — sudo password not provided",
-                                });
-                                println!("{}", serde_json::to_string_pretty(&out)?);
-                                std::process::exit(1);
-                            }
-                        }
-                    } else {
-                        let out = serde_json::json!({
-                            "relay_id": relay_id,
-                            "pane": pane,
-                            "command": command,
-                            "status": "awaiting_password",
-                            "note": format!(
-                                "sudo requires a password. Answer with: superharness relay-answer --id {relay_id} --answer \"<password>\""
-                            ),
-                        });
-                        println!("{}", serde_json::to_string_pretty(&out)?);
-                    }
-                }
-                SudoExecResult::Failed(msg) => {
-                    let out = serde_json::json!({
-                        "pane": pane,
-                        "command": command,
-                        "success": false,
-                        "error": msg,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                    std::process::exit(1);
-                }
-            }
+            handlers::handle_sudo_exec(pane, command, wait, timeout)?;
         }
 
         // ── Harness management ───────────────────────────────────────────────
         Some(Command::HarnessList) => {
-            let config_dir = util::superharness_config_dir();
-
-            let installed = harness::detect_installed();
-            let default_name = harness::get_default_harness(&config_dir);
-
-            if installed.is_empty() {
-                println!("No AI harnesses detected on PATH.");
-                println!();
-                println!("Install one of the following:");
-                println!("  opencode  (OpenCode)    — https://opencode.ai");
-                println!("  claude    (Claude Code)  — https://claude.ai/code");
-                println!("  codex     (OpenAI Codex) — https://github.com/openai/codex");
-            } else {
-                println!("Detected harnesses:");
-                println!();
-                for h in &installed {
-                    // Determine if this is the current default
-                    let is_default = default_name.as_deref() == Some(h.name.as_str())
-                        || (default_name.is_none()
-                            && installed.first().map(|f| f.name == h.name).unwrap_or(false));
-                    let marker = if is_default { " *  (default)" } else { "" };
-                    println!("  {:<10}  {}{}", h.binary, h.display_name, marker);
-                }
-                println!();
-                if let Some(ref d) = default_name {
-                    println!("Default (from config): {d}");
-                } else {
-                    println!("Default (auto-selected): {}", installed[0].binary);
-                    println!("Set an explicit default with: superharness harness-set <name>");
-                }
-            }
+            handlers::handle_harness_list()?;
         }
-
         Some(Command::HarnessSet { name }) => {
-            let config_dir = util::superharness_config_dir();
-
-            // Validate: must be a known harness name
-            let known = ["opencode", "claude", "codex"];
-            if !known.contains(&name.as_str()) {
-                anyhow::bail!(
-                    "Unknown harness {:?}. Valid options: opencode, claude, codex",
-                    name
-                );
-            }
-
-            // Warn if the chosen harness is not actually installed
-            let installed = harness::detect_installed();
-            if !installed.iter().any(|h| h.name == name || h.binary == name) {
-                eprintln!(
-                    "WARNING: '{name}' does not appear to be installed on PATH.\n\
-                     Install it from: {}",
-                    harness::install_url(&name)
-                );
-            }
-
-            harness::set_default_harness(&config_dir, &name)?;
-            println!("Default harness set to: {name}");
+            handlers::handle_harness_set(name)?;
         }
-
         Some(Command::HarnessSwitch { name }) => {
-            // Refuse to switch if any worker panes are running
-            let panes = tmux::list().unwrap_or_default();
-            // %0 is the orchestrator — exclude it; any other pane is a worker
-            let worker_panes: Vec<_> = panes.iter().filter(|p| p.id != "%0").collect();
-            if !worker_panes.is_empty() {
-                let ids: Vec<&str> = worker_panes.iter().map(|p| p.id.as_str()).collect();
-                anyhow::bail!(
-                    "Cannot switch harness while workers are running: {}.\n\
-                     Kill all workers first with 'superharness kill --pane <id>', then retry.",
-                    ids.join(", ")
-                );
-            }
-
-            // Validate name
-            let known = ["opencode", "claude", "codex"];
-            if !known.contains(&name.as_str()) {
-                anyhow::bail!(
-                    "Unknown harness {:?}. Valid options: opencode, claude, codex",
-                    name
-                );
-            }
-
-            // Warn if not installed
-            let installed = harness::detect_installed();
-            if !installed.iter().any(|h| h.name == name || h.binary == name) {
-                eprintln!(
-                    "WARNING: '{name}' does not appear to be installed on PATH.\n\
-                     Install it from: {}",
-                    harness::install_url(&name)
-                );
-            }
-
-            let config_dir = util::superharness_config_dir();
-
-            harness::set_default_harness(&config_dir, &name)?;
-            println!("Harness switched to: {name}");
-            println!("Workers spawned from now on will use '{name}'.");
+            handlers::handle_harness_switch(name)?;
         }
-
         Some(Command::HarnessSettings) => {
-            use std::io::{self, Write};
-
-            let config_dir = util::superharness_config_dir();
-
-            let current_harness = harness::get_default_harness(&config_dir);
-            let current_model = harness::get_default_model(&config_dir);
-
-            // ── Show current settings ────────────────────────────────────────
-            println!();
-            println!("  \x1b[1mSuperHarness Settings\x1b[0m");
-            println!("  {}", "─".repeat(50));
-            println!();
-            let harness_display = current_harness.as_deref().unwrap_or("(auto-detected)");
-            let model_display = current_model.as_deref().unwrap_or("(none set)");
-            println!("  Current harness : \x1b[1;32m{harness_display}\x1b[0m");
-            println!("  Current model   : \x1b[1;33m{model_display}\x1b[0m");
-            println!();
-            println!("  \x1b[2mChange harness (↑↓ move, Enter select, q cancel):\x1b[0m");
-            println!();
-            io::stdout().flush().ok();
-
-            // Collect ALL candidates (installed or not) so user can see the full list.
-            let candidates: Vec<harness::HarnessInfo> = harness::detect_all_candidates();
-
-            match harness::run_interactive_picker(&candidates, current_harness.as_deref()) {
-                Ok(Some(chosen)) => match harness::set_default_harness(&config_dir, &chosen) {
-                    Ok(()) => {
-                        println!(
-                                "  \x1b[1;32m\u{2713}\x1b[0m Default harness set to: \x1b[1m{chosen}\x1b[0m"
-                            );
-                    }
-                    Err(e) => {
-                        eprintln!("  error: could not save config: {e}");
-                    }
-                },
-                Ok(None) => {
-                    println!("  No changes made.");
-                }
-                Err(e) => {
-                    eprintln!("  picker error: {e}");
-                }
-            }
+            handlers::handle_harness_settings()?;
         }
 
+        // ── Display commands ─────────────────────────────────────────────────
         Some(Command::EventFeed) => {
-            let state_dir = project::get_project_state_dir()?;
-            let events_path = state_dir.join("events.json");
-
-            let all_events = events::load_events().unwrap_or_default();
-            // Show last 200 events in chronological order (oldest first)
-            let start = all_events.len().saturating_sub(200);
-            let events = &all_events[start..];
-
-            // Hint bar (first thing shown; q closes less, arrows scroll)
-            println!("  {DIM}q:close  ↑/↓ or PgUp/PgDn:scroll  /:search{RESET}");
-            println!("  {DIM}{}{RESET}", "─".repeat(70));
-
-            println!();
-            println!(
-                "  {BOLD}Event Log:{RESET} {}  {DIM}({} total, showing last {}){RESET}",
-                events_path.display(),
-                all_events.len(),
-                events.len()
-            );
-            println!();
-
-            if events.is_empty() {
-                println!("  {DIM}No events recorded yet.{RESET}");
-            } else {
-                for ev in events {
-                    let secs = ev.timestamp;
-                    let h = (secs % 86400) / 3600;
-                    let m = (secs % 3600) / 60;
-                    let s = secs % 60;
-                    let time_str = format!("{h:02}:{m:02}:{s:02}");
-
-                    let (color, kind_str) = match &ev.kind {
-                        events::EventKind::WorkerSpawned => (GREEN, format!("{}", ev.kind)),
-                        events::EventKind::WorkerKilled => (RED, format!("{}", ev.kind)),
-                        events::EventKind::WorkerCompleted => (CYAN, format!("{}", ev.kind)),
-                        events::EventKind::Pulse => (DIM, format!("{}", ev.kind)),
-                        _ => (YELLOW, format!("{}", ev.kind)),
-                    };
-
-                    let pane_str = ev
-                        .pane
-                        .as_deref()
-                        .map(|p| format!("  {DIM}{p}{RESET}"))
-                        .unwrap_or_default();
-
-                    let details = &ev.details;
-
-                    // Print first line inline; indent any continuation lines so they
-                    // don't appear flush against the left edge.
-                    println!(
-                        "  {DIM}[{time_str}]{RESET}  {color}{kind_str:<20}{RESET}{pane_str}  {}",
-                        details.lines().next().unwrap_or("")
-                    );
-                    for cont_line in details.lines().skip(1) {
-                        println!("    {DIM}{cont_line}{RESET}");
-                    }
-                }
-            }
-            println!();
+            handlers::handle_event_feed()?;
         }
-
         Some(Command::TasksModal) => {
-            #[derive(serde::Deserialize)]
-            struct OrchestratorTask {
-                id: String,
-                title: String,
-                #[serde(default)]
-                description: String,
-                status: String,
-                #[serde(default)]
-                priority: String,
-                #[serde(default)]
-                worker_pane: Option<String>,
-            }
-
-            let state_dir = project::get_project_state_dir()?;
-            let tasks_path = state_dir.join("tasks.json");
-
-            let tasks: Vec<OrchestratorTask> = if tasks_path.exists() {
-                let content = std::fs::read_to_string(&tasks_path).unwrap_or_default();
-                serde_json::from_str(&content).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-
-            // Count per status
-            let count_in_progress = tasks.iter().filter(|t| t.status == "in-progress").count();
-            let count_pending = tasks.iter().filter(|t| t.status == "pending").count();
-            let count_blocked = tasks.iter().filter(|t| t.status == "blocked").count();
-            let count_done = tasks.iter().filter(|t| t.status == "done").count();
-            let count_cancelled = tasks.iter().filter(|t| t.status == "cancelled").count();
-
-            // Hint bar (first thing shown; q closes less, arrows scroll)
-            println!("  {DIM}q:close  ↑/↓ or PgUp/PgDn:scroll  /:search{RESET}");
-            println!("  {DIM}{}{RESET}", "─".repeat(70));
-
-            println!();
-            println!(
-                "  {BOLD}Tasks:{RESET} {}  {DIM}| in-progress:{} pending:{} blocked:{} done:{} cancelled:{}{RESET}",
-                tasks.len(),
-                count_in_progress,
-                count_pending,
-                count_blocked,
-                count_done,
-                count_cancelled,
-            );
-            println!("  {DIM}{}{RESET}", "─".repeat(72));
-            println!();
-
-            if tasks.is_empty() {
-                println!("  {DIM}No tasks found in {}{RESET}", tasks_path.display());
-                println!();
-                // Done
-            } else {
-                // Order: in-progress, pending, blocked, done, cancelled
-                let status_order = ["in-progress", "pending", "blocked", "done", "cancelled"];
-
-                for status_key in &status_order {
-                    let group: Vec<&OrchestratorTask> =
-                        tasks.iter().filter(|t| t.status == *status_key).collect();
-                    if group.is_empty() {
-                        continue;
-                    }
-
-                    let (color, label) = match *status_key {
-                        "in-progress" => (GREEN, "IN-PROGRESS"),
-                        "pending" => (YELLOW, "PENDING"),
-                        "blocked" => (RED, "BLOCKED"),
-                        "done" => (DIM, "DONE"),
-                        "cancelled" => (DIM, "CANCELLED"),
-                        _ => ("\x1b[0m", *status_key),
-                    };
-
-                    println!("  {BOLD}{UNDERLINE}{color}{label}{RESET}");
-                    println!();
-
-                    for task in &group {
-                        let priority_badge = match task.priority.as_str() {
-                            "high" => format!("{RED}[HIGH]{RESET} "),
-                            "medium" => format!("{YELLOW}[MED]{RESET}  "),
-                            "low" => format!("{DIM}[LOW]{RESET}  "),
-                            _ => String::new(),
-                        };
-
-                        let desc_preview: String = task.description.chars().take(80).collect();
-                        let desc_suffix = if task.description.len() > 80 {
-                            "…"
-                        } else {
-                            ""
-                        };
-
-                        let pane_str = task
-                            .worker_pane
-                            .as_deref()
-                            .map(|p| format!("  {DIM}pane:{p}{RESET}"))
-                            .unwrap_or_default();
-
-                        println!(
-                            "  {color}[{label}]{RESET} {priority_badge}{BOLD}{}{RESET}{pane_str}",
-                            task.title
-                        );
-                        if !desc_preview.is_empty() {
-                            println!("    {DIM}{}{}{RESET}", desc_preview, desc_suffix);
-                        }
-                        println!("    {DIM}id: {}{RESET}", task.id);
-                        println!();
-                    }
-                }
-            }
+            handlers::handle_tasks_modal()?;
         }
-
         Some(Command::StatusCounts) => {
-            println!("{}", heartbeat::status_counts());
+            handlers::handle_status_counts()?;
         }
 
+        // ── Heartbeat commands ───────────────────────────────────────────────
         Some(Command::Heartbeat { snooze }) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
-            if let Some(secs) = snooze {
-                // Snooze mode: update snooze_until WITHOUT sending a heartbeat.
-                // Preserve the disabled flag — snooze is independent of toggle.
-                let state = heartbeat::read_heartbeat_state();
-                let snooze_until = now + secs;
-                heartbeat::write_heartbeat_state_full(
-                    state.last_beat_ts,
-                    state.interval_secs,
-                    state.last_sent,
-                    state.needs_attention,
-                    snooze_until,
-                    state.disabled,
-                );
-                eprintln!("[heartbeat] snoozed for {secs}s (until unix {snooze_until})");
-            } else {
-                // Immediate heartbeat: run idle checks and send if %0 is ready.
-                // Respects snooze/toggle — does NOT clear it on success.
-                match heartbeat::heartbeat() {
-                    Ok(true) => {
-                        eprintln!("[heartbeat] sent [HEARTBEAT] to %0");
-                    }
-                    Ok(false) => {
-                        eprintln!("[heartbeat] skipped — %0 is busy or snoozed");
-                    }
-                    Err(e) => {
-                        eprintln!("[heartbeat] error: {e}");
-                    }
-                }
-            }
+            handlers::handle_heartbeat(snooze)?;
         }
-
         Some(Command::HeartbeatToggle) => {
-            let state = heartbeat::read_heartbeat_state();
-
-            if state.disabled {
-                // Currently disabled — re-enable by clearing the disabled flag.
-                // Leave snooze_until unchanged so any active timed snooze is preserved.
-                heartbeat::write_heartbeat_state_full(
-                    state.last_beat_ts,
-                    state.interval_secs,
-                    state.last_sent,
-                    state.needs_attention,
-                    state.snooze_until,
-                    false, // clear disabled
-                );
-                eprintln!("[heartbeat] toggled on (resumed)");
-            } else {
-                // Currently enabled — disable by setting the disabled flag.
-                // Leave snooze_until unchanged so timed snoozes are not disturbed.
-                heartbeat::write_heartbeat_state_full(
-                    state.last_beat_ts,
-                    state.interval_secs,
-                    state.last_sent,
-                    state.needs_attention,
-                    state.snooze_until,
-                    true, // set disabled
-                );
-                eprintln!("[heartbeat] toggled off (disabled)");
-            }
+            handlers::handle_heartbeat_toggle()?;
         }
-
         Some(Command::HeartbeatStatus) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
-            let state = heartbeat::read_heartbeat_state();
-
-            if state.last_beat_ts == 0 && state.snooze_until == 0 && !state.disabled {
-                // No heartbeat state file yet.
-                print!("● --");
-                return Ok(());
-            }
-
-            // Permanent toggle-off takes priority over timed snooze in display.
-            if state.disabled {
-                print!("‖");
-                return Ok(());
-            }
-
-            // Timed snooze display.
-            if state.snooze_until > now {
-                let remaining = state.snooze_until - now;
-                print!("‖ {remaining}s");
-                return Ok(());
-            }
-
-            let secs_since_beat = now.saturating_sub(state.last_beat_ts);
-            let secs_to_next = state.next_beat_ts.saturating_sub(now);
-
-            let emoji = if secs_since_beat <= 3 {
-                // Just fired.
-                "◉"
-            } else if !state.last_sent {
-                // Last beat was skipped (busy).
-                "○"
-            } else if state.needs_attention {
-                // Flashing: alternate every 5 seconds.
-                if (now % 10) < 5 {
-                    "●"
-                } else {
-                    "◉"
-                }
-            } else {
-                "●"
-            };
-
-            print!("{emoji} {secs_to_next}s");
+            handlers::handle_heartbeat_status()?;
         }
     }
 
