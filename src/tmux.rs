@@ -3,7 +3,6 @@ use serde::Serialize;
 use std::process::Command;
 
 use crate::loop_guard;
-use crate::state::StateManager;
 
 const SESSION: &str = "superharness";
 
@@ -134,9 +133,10 @@ fn configure_session(bin_path: &str) -> Result<()> {
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
 
     // Right side: dynamic shell fragments read mode + pane count.
-    // Uses grep to extract mode from JSON without needing python3.
+    // Uses grep to extract mode from the project-local .superharness/state.json.
+    // Falls back to the global active_project.txt to locate the project dir.
     // The shell snippet produces "AWAY" or "PRESENT" from the state file.
-    let mode_snippet = r#"#(f=$HOME/.local/share/superharness/state.json; [ -f "$f" ] && grep -o '"mode":"[^"]*"' "$f" | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]' || echo PRESENT)"#;
+    let mode_snippet = r#"#(p=$(cat $HOME/.local/share/superharness/active_project.txt 2>/dev/null); f="$p/.superharness/state.json"; [ -f "$f" ] && grep -o '"mode":"[^"]*"' "$f" | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]' || echo PRESENT)"#;
 
     // Pane count: number of panes in the superharness session.
     let pane_count_snippet =
@@ -145,7 +145,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour71]AGENTS:{pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:away  F2:present #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-mode #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
@@ -170,32 +170,14 @@ fn configure_session(bin_path: &str) -> Result<()> {
 
     // ── F-key shortcuts (no prefix required) ────────────────────────────────
     // display-popup is a tmux command, not a shell command — use bind-key directly (NOT run-shell).
-    // F1 → superharness away
+
+    // F1 → toggle-mode: sends a mode-switch message directly to the main orchestrator pane (%0)
     tmux_ok(&[
         "bind-key",
         "-n",
         "F1",
-        "display-popup",
-        "-E",
-        "-w",
-        "60",
-        "-h",
-        "12",
-        &format!("{bin_path} away 2>&1; echo; echo 'Press any key to close...'; read -n1"),
-    ])?;
-
-    // F2 → superharness present
-    tmux_ok(&[
-        "bind-key",
-        "-n",
-        "F2",
-        "display-popup",
-        "-E",
-        "-w",
-        "80",
-        "-h",
-        "24",
-        &format!("{bin_path} present 2>&1; echo; echo 'Press any key to close...'; read -n1"),
+        "run-shell",
+        &format!("{bin_path} toggle-mode"),
     ])?;
 
     // F3 → status-human (mode + pending decisions + worker health, human-readable)
@@ -593,19 +575,6 @@ pub fn layout(name: &str) -> Result<()> {
     tmux_ok(&["select-layout", "-t", SESSION, name])
 }
 
-/// Check whether superharness is currently in away mode.
-#[allow(dead_code)]
-pub fn is_away() -> bool {
-    StateManager::new().map(|sm| sm.is_away()).unwrap_or(false)
-}
-
-/// Queue a decision for the human to resolve when they return (away mode).
-/// Returns the decision ID on success.
-pub fn queue_decision(pane: &str, question: &str, context: &str) -> Result<String> {
-    let sm = StateManager::new()?;
-    sm.add_pending_decision(pane, question, context)
-}
-
 /// Start the superharness session with an orchestrator opencode and attach.
 pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     let abs_dir =
@@ -671,6 +640,56 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
 
     // Replace default shell with splash+opencode
     tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-c", &splash])?;
+
+    // ── Startup state injection ──────────────────────────────────────────────
+    // After opencode has had time to start (3 seconds), check if there is an
+    // existing .superharness/state.json in the project directory and, if so,
+    // send a context message to the main pane so the AI can resume.
+    {
+        let state_dir = dir_str.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            let state_file = std::path::PathBuf::from(&state_dir)
+                .join(".superharness")
+                .join("state.json");
+            let tasks_file = std::path::PathBuf::from(&state_dir)
+                .join(".superharness")
+                .join("tasks.json");
+            let decisions_file = std::path::PathBuf::from(&state_dir)
+                .join(".superharness")
+                .join("decisions.json");
+
+            if !state_file.exists() {
+                return; // Fresh session — no context to inject
+            }
+
+            let state_content =
+                std::fs::read_to_string(&state_file).unwrap_or_else(|_| "{}".to_string());
+            let tasks_content = if tasks_file.exists() {
+                std::fs::read_to_string(&tasks_file).unwrap_or_else(|_| "none".to_string())
+            } else {
+                "none".to_string()
+            };
+            let decisions_content = if decisions_file.exists() {
+                std::fs::read_to_string(&decisions_file).unwrap_or_else(|_| "none".to_string())
+            } else {
+                "none".to_string()
+            };
+
+            let msg = format!(
+                "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. Tasks: {}. Decisions pending: {}. Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
+                state_content,
+                tasks_content,
+                decisions_content,
+            );
+
+            // Send to pane %0 (the orchestrator)
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", "%0", &msg, "Enter"])
+                .status();
+        });
+    }
 
     let status = Command::new("tmux")
         .args(["attach-session", "-t", SESSION])

@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::project;
+
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -105,13 +107,7 @@ pub struct Task {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn data_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("cannot determine home directory (HOME not set)")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness"))
+    project::get_project_state_dir()
 }
 
 fn now_unix() -> u64 {

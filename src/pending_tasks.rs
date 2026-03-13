@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::project;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTask {
     pub id: String,
@@ -22,18 +24,8 @@ struct Store {
     tasks: Vec<PendingTask>,
 }
 
-fn data_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .context("cannot determine home directory (HOME not set)")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness"))
-}
-
 fn store_path() -> Result<PathBuf> {
-    Ok(data_path()?.join("pending_tasks.json"))
+    Ok(project::get_project_state_dir()?.join("pending_tasks.json"))
 }
 
 fn load() -> Result<Store> {
@@ -49,10 +41,8 @@ fn load() -> Result<Store> {
 }
 
 fn save(store: &Store) -> Result<()> {
-    let dir = data_path()?;
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create directory: {}", dir.display()))?;
     let path = store_path()?;
+    // The directory is created by get_project_state_dir() called inside store_path()
     let content = serde_json::to_string_pretty(store).context("failed to serialize store")?;
     fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
