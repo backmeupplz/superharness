@@ -445,7 +445,9 @@ pub fn kill(pane: &str) -> Result<()> {
 /// Hide a pane to its own background tab.
 pub fn hide(pane: &str, name: Option<&str>) -> Result<()> {
     let window_name = name.unwrap_or("worker");
-    tmux_ok(&["break-pane", "-t", pane, "-d", "-n", window_name])
+    // Use -s (source pane) not -t (target window) — break-pane expects
+    // -s for the pane to break out and -t for the destination window.
+    tmux_ok(&["break-pane", "-s", pane, "-d", "-n", window_name])
 }
 
 /// Surface a background pane back into the main window.
@@ -521,7 +523,7 @@ pub fn auto_compact() -> Result<()> {
             } else {
                 tab_name
             };
-            let _ = tmux_ok(&["break-pane", "-t", &id, "-d", "-n", &tab_name]);
+            let _ = tmux_ok(&["break-pane", "-s", &id, "-d", "-n", &tab_name]);
         }
     }
 
@@ -616,7 +618,7 @@ pub fn compact_panes() -> Result<(usize, usize)> {
 
     let mut moved = 0usize;
     for (id, tab_name) in &to_move {
-        if tmux_ok(&["break-pane", "-t", id, "-d", "-n", tab_name]).is_ok() {
+        if tmux_ok(&["break-pane", "-s", id, "-d", "-n", tab_name]).is_ok() {
             moved += 1;
         }
     }
