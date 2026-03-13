@@ -143,7 +143,7 @@ $BIN relay --pane %ID --question "..." --context "..."  # workers: create a rela
 $BIN relay --pane %ID --question '' --wait-for <id>     # workers: poll for relay answer (blocks)
 $BIN relay-answer --id <id> --answer "..."   # orchestrator: answer a relay request
 $BIN relay-list                              # list all relay requests
-$BIN relay-list --pending                    # list only pending relay requests
+$BIN relay-list --pending                    # list only pending relay requests (press F2)
 $BIN sudo-relay --pane %ID --command "..."   # workers: relay a sudo command that needs a password
 $BIN sudo-relay --pane %ID --command "..." --execute  # relay + wait + execute
 $BIN sudo-exec --pane %ID --command "..."    # workers: run sudo (NOPASSWD or relay fallback)
@@ -161,6 +161,15 @@ $BIN surface --pane %ID   # bring a background pane back to main window
 $BIN hide --pane %ID --name "label"  # manually move pane to background tab
 $BIN show --pane %ID      # alias for surface
 ```
+
+## Main Window Management
+
+- **Main window always visible**: Never hide your own pane (`%0`). The user always sees the main window and expects you to be responsive there.
+- **Terminal size awareness**: Run `tmux display-message -p "#{window_width} #{window_height}"` to get the current terminal dimensions before spawning workers or changing layouts. Adapt your layout choices to the available space.
+- **Surface relevant workers**: When a worker needs attention (question detected, permission prompt, task finished), use `$BIN surface --pane %ID` to bring it into the main window so the user can see it.
+- **Hide idle workers**: Workers that are running but not immediately needing attention should be moved to background tabs with `$BIN hide --pane %ID --name label`. Use `$BIN compact` to clean up automatically.
+- **Readable pane sizes**: Never let panes shrink below ~20 rows or ~60 columns — they become unreadable. Run `$BIN compact` to move excess panes to background before the layout gets crowded.
+- **Limit visible panes**: Keep only 2-3 worker panes visible alongside the main window at any time. More than that is unmanageable and makes it hard to read any one worker's output.
 
 ## Agent Modes
 
@@ -634,6 +643,24 @@ You must actively manage workers. Do not spawn and forget.
 14. **Report** progress and results back to the user
 15. **Handle failures** — use `respawn` for crashed workers, or diagnose and retry manually
 
+## Task Intake Workflow
+
+When the user gives you a list of tasks (numbered, bulleted, or described), follow this workflow every time — regardless of list size:
+
+1. **Consume and analyze**: Read all tasks carefully. Identify dependencies between them. Group independent tasks that can run in parallel.
+
+2. **Suggest additions**: Before starting, briefly suggest 1-3 related tasks the user might want (improvements, tests, documentation). Ask if they want those included. Keep it brief — one sentence per suggestion.
+
+3. **Write all tasks to `.superharness/tasks.json`**: Record every task (including any approved suggestions) with `status: "pending"`. Give each a short unique ID like `task-<descriptor>`. Do this **before** spawning any workers.
+
+4. **Decompose and spawn parallel workers**: For each independent task, create a git worktree and spawn a worker. Spawn **ALL** independent workers simultaneously in one batch — never sequentially unless there is a hard dependency between them.
+
+5. **Monitor actively**: Poll workers every 30-60s. Update task `status` in `tasks.json` as workers progress (`pending` → `in-progress` → `done`). Relay any worker questions to the user immediately.
+
+6. **Mark done and clean up**: As workers complete, mark their tasks `done` in `tasks.json`, kill the pane, and remove the worktree.
+
+This workflow applies to **any** list of tasks from the user, regardless of size.
+
 ## Default to Spawning Workers
 
 **For every non-trivial task, your first instinct should be to spawn a worker — not do it yourself.**
@@ -753,6 +780,13 @@ $BIN spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --dep
 - **Use `$BIN ask --pane %ID` to check if workers are asking questions — relay all questions to the human**
 - **Use `$BIN relay-list --pending` to check for structured relay requests from workers — answer them promptly**
 - Keep `.superharness/tasks.json` up to date — it is your source of truth for what is in flight
+- **Workers cannot spawn sub-workers** — see below
+
+## No Sub-workers
+
+> **Workers cannot spawn workers.** SuperHarness enforces a single-level hierarchy: only the orchestrator (`%0`) may call `$BIN spawn`. Workers that attempt to spawn will receive an error.
+
+If a task is too large for one worker, **break it into multiple scoped tasks and spawn them from the orchestrator** — never instruct a worker to spawn further workers. The orchestrator is always the single point of control for the worker pool.
 
 ## Task Dependencies
 
