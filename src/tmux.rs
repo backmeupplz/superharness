@@ -146,20 +146,18 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // The shell snippet produces "AWAY" or "PRESENT" from the state file.
     let mode_snippet = r##"#(p=$(cat $HOME/.local/share/superharness/active_project.txt 2>/dev/null); f="$p/.superharness/state.json"; if [ -f "$f" ]; then m=$(jq -r '.mode' "$f" 2>/dev/null | tr '[:lower:]' '[:upper:]'); [ -z "$m" ] && m=$(grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" | grep -o '"[^"]*"$' | tr -d '"' | tr '[:lower:]' '[:upper:]'); [ "$m" = "AWAY" ] && echo "#[fg=colour214,bold]AWAY#[default]" || echo "#[fg=colour71,bold]PRESENT#[default]"; else echo "#[fg=colour71,bold]PRESENT#[default]"; fi)"##;
 
-    // Active/total worker count: calls status-counts which reads monitor state without
-    // reading pane output (lightweight for a 5-second refresh interval).
-    // Falls back to "?/?" if the binary is unavailable.
-    let pane_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '?/?')");
-
     // Heartbeat indicator: shows emoji + seconds to next beat.
-    // Uses 💙 (not 🩶 which is Unicode 14 and corrupts in some terminals).
-    let heartbeat_snippet = format!("#({bin_path} heartbeat-status 2>/dev/null || echo '❤️  --')");
+    // Uses ❤ (U+2764 without variation selector) which is single-width in terminals.
+    let heartbeat_snippet = format!("#({bin_path} heartbeat-status 2>/dev/null || echo '❤ --')");
+
+    // Worker count for F4 button label: total worker pane count.
+    let worker_count_snippet =
+        format!("#({bin_path} status-counts 2>/dev/null | cut -d/ -f2 || echo '0')");
 
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
          #[fg=colour240]│ #[fg=colour196]{heartbeat_snippet} \
-         #[fg=colour240]│ #[fg=colour71]AGENTS: {pane_count_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
+         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers ({worker_count_snippet}) #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;

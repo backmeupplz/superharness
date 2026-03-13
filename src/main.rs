@@ -583,6 +583,79 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| std::path::PathBuf::from(&cli.dir));
             project::set_active_project(&abs_dir)?;
 
+            // ── Fix 5: First-launch harness picker ──────────────────────────
+            // If no default harness is configured, show an interactive picker
+            // before the tmux session starts, so the user can choose.
+            {
+                let config_dir = dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                    .join("superharness");
+                if harness::get_default_harness(&config_dir).is_none() {
+                    let candidates = harness::detect_all_candidates();
+                    if !candidates.is_empty() {
+                        println!("Welcome to SuperHarness! Please select your default AI harness:");
+                        println!();
+                        match harness::run_interactive_picker(&candidates, None) {
+                            Ok(Some(chosen)) => {
+                                let _ = harness::set_default_harness(&config_dir, &chosen);
+                                println!("  Default harness set to: {chosen}");
+                            }
+                            _ => {}
+                        }
+                        println!();
+                    }
+                }
+            }
+
+            // ── Fix 1: Auto-start watch daemon ───────────────────────────────
+            // Spawn `superharness watch --interval 30` as a background daemon
+            // so the heartbeat state file is kept up-to-date while the session
+            // runs. A PID lock file prevents duplicate watch loops.
+            {
+                let data_dir = dirs::data_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+                    .join("superharness");
+                let _ = std::fs::create_dir_all(&data_dir);
+                let pid_file = data_dir.join("watch.pid");
+
+                let already_running = if let Ok(content) = std::fs::read_to_string(&pid_file) {
+                    let pid: u32 = content.trim().parse().unwrap_or(0);
+                    if pid > 0 {
+                        // Check if the process is still alive via kill -0
+                        std::process::Command::new("kill")
+                            .args(["-0", &pid.to_string()])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !already_running {
+                    match std::process::Command::new(&bin)
+                        .args(["watch", "--interval", "30"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        Ok(child) => {
+                            let _ = std::fs::write(&pid_file, child.id().to_string());
+                            // Drop child to detach; it continues after superharness exits.
+                            drop(child);
+                        }
+                        Err(e) => {
+                            eprintln!("warning: could not start watch daemon: {e}");
+                        }
+                    }
+                }
+            }
+
             setup::write_config(&cli.dir, &bin)?;
             tmux::init(&cli.dir, &bin)?;
         }
@@ -837,9 +910,7 @@ fn main() -> anyhow::Result<()> {
             // Auto-notify the orchestrator so it wakes up immediately.
             let all_panes = tmux::list().unwrap_or_default();
             let n_active = all_panes.iter().filter(|p| p.id != "%0").count();
-            let notify_msg = format!(
-                "[NOTIFY] Worker {pane} killed: {n_active} remaining"
-            );
+            let notify_msg = format!("[NOTIFY] Worker {pane} killed: {n_active} remaining");
             let _ = tmux::send("%0", &notify_msg);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2033,28 +2104,6 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("  picker error: {e}");
                 }
             }
-
-            println!();
-            print!("  Press any key to close...");
-            io::stdout().flush().ok();
-            // Brief raw-mode read so the popup stays open until keypress.
-            {
-                use crossterm::{
-                    event::{self},
-                    terminal,
-                };
-                let _ = terminal::enable_raw_mode();
-                loop {
-                    if let Ok(true) = event::poll(std::time::Duration::from_secs(60)) {
-                        let _ = event::read();
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-                let _ = terminal::disable_raw_mode();
-            }
-            println!();
         }
 
         Some(Command::EventFeed) => {
@@ -2262,9 +2311,8 @@ fn main() -> anyhow::Result<()> {
                 .as_deref()
                 .map(|m| format!(". {m}"))
                 .unwrap_or_default();
-            let msg = format!(
-                "[NOTIFY] Worker done: {n_active} active, {n_total} total{msg_suffix}"
-            );
+            let msg =
+                format!("[NOTIFY] Worker done: {n_active} active, {n_total} total{msg_suffix}");
 
             tmux::send("%0", &msg)?;
 
@@ -2335,7 +2383,7 @@ fn main() -> anyhow::Result<()> {
 
             if state.last_beat_ts == 0 {
                 // No heartbeat state file yet.
-                print!("❤️  --");
+                print!("❤ --");
                 return Ok(());
             }
 
@@ -2351,12 +2399,12 @@ fn main() -> anyhow::Result<()> {
             } else if state.needs_attention {
                 // Flashing: alternate every 5 seconds.
                 if (now % 10) < 5 {
-                    "❤️"
+                    "❤"
                 } else {
                     "💓"
                 }
             } else {
-                "❤️"
+                "❤"
             };
 
             print!("{emoji} {secs_to_next}s");
