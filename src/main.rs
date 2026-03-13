@@ -63,6 +63,11 @@ enum Command {
         /// When set, the task is written to pending_tasks.json and NOT spawned immediately.
         #[arg(long)]
         depends_on: Option<String>,
+
+        /// Keep the new pane visible in the main window instead of hiding it to a background tab.
+        /// By default every spawned worker is immediately moved to its own background tab.
+        #[arg(long)]
+        no_hide: bool,
     },
 
     /// List all pending (dependency-gated) tasks
@@ -536,6 +541,7 @@ fn main() -> anyhow::Result<()> {
             model,
             mode,
             depends_on,
+            no_hide,
         }) => {
             if let Some(ref m) = mode {
                 match m.as_str() {
@@ -615,6 +621,7 @@ fn main() -> anyhow::Result<()> {
                     name.as_deref(),
                     model.as_deref(),
                     mode.as_deref(),
+                    no_hide,
                 )?;
                 let short_task: String = task.chars().take(80).collect();
                 let _ =
@@ -680,6 +687,7 @@ fn main() -> anyhow::Result<()> {
                     t.name.as_deref(),
                     t.model.as_deref(),
                     t.mode.as_deref(),
+                    false, // auto-hide by default
                 ) {
                     Ok(pane_id) => {
                         pending_tasks::remove_task(&t.id)?;
@@ -1169,6 +1177,7 @@ fn main() -> anyhow::Result<()> {
                 Some(&name),
                 model.as_deref(),
                 Some("build"),
+                false, // auto-hide by default
             )?;
             let out = serde_json::json!({
                 "pane": pane_id,
@@ -1336,7 +1345,14 @@ fn main() -> anyhow::Result<()> {
             );
 
             // 4. Spawn a new worker
-            let new_pane = tmux::spawn(&retry_task, &dir, None, model.as_deref(), mode.as_deref())?;
+            let new_pane = tmux::spawn(
+                &retry_task,
+                &dir,
+                None,
+                model.as_deref(),
+                mode.as_deref(),
+                false,
+            )?;
 
             println!("Crashed agent {} killed.", pane);
             println!("New worker spawned: {new_pane}");
