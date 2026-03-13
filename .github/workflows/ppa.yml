@@ -74,6 +74,7 @@ jobs:
            -- Nikita Kolmogorov <ubuntu@borodutch.com>  $(date -R)
           CHLOG
 
+            dpkg-source -b . 2>&1 || (echo "=== DIFF CONTENTS ===" && cat /tmp/superharness_*.diff.* 2>/dev/null | head -60 && exit 1)
             debuild -S -sa -d -k"$GPG_KEY"
 
             dput ppa:borodutch/superharness "../superharness_${VERSION}-1${DISTRO}1_source.changes"
