@@ -1,6 +1,7 @@
 mod checkpoint;
 mod events;
 mod health;
+mod layout;
 mod loop_guard;
 mod memory;
 mod monitor;
@@ -152,6 +153,18 @@ enum Command {
         /// Layout name: tiled, main-vertical, main-horizontal, even-vertical, even-horizontal
         #[arg(short, long, default_value = "tiled")]
         name: String,
+    },
+
+    /// Apply the smart adaptive layout to the main window
+    ///
+    /// Optional hint controls the behaviour:
+    ///   "maximize <pane_id>" — give that pane extra space and surface it
+    ///   "focus <pane_id>"    — surface that pane then rebalance
+    ///   "rebalance"          — standard smart rebalance (default)
+    SmartLayout {
+        /// Optional hint string (see above)
+        #[arg(short = 'H', long)]
+        hint: Option<String>,
     },
 
     /// Toggle between away and present mode by messaging the orchestrator
@@ -651,6 +664,31 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Layout { name }) => {
             tmux::layout(&name)?;
             let out = serde_json::json!({ "layout": name });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Some(Command::SmartLayout { hint }) => {
+            let action = match hint.as_deref() {
+                // "maximize <pane_id>" — give that pane extra space and surface it
+                Some(h) if h.starts_with("maximize ") => {
+                    let pane_id = h["maximize ".len()..].trim();
+                    tmux::smart_layout_with_attention(Some(pane_id))?;
+                    format!("maximized {pane_id}")
+                }
+                // "focus <pane_id>" — surface then rebalance
+                Some(h) if h.starts_with("focus ") => {
+                    let pane_id = h["focus ".len()..].trim();
+                    tmux::surface(pane_id)?;
+                    tmux::smart_layout()?;
+                    format!("focused {pane_id}")
+                }
+                // "rebalance" or no hint — standard smart layout
+                _ => {
+                    tmux::smart_layout()?;
+                    "rebalanced".to_string()
+                }
+            };
+            let out = serde_json::json!({ "layout": "smart", "action": action, "hint": hint });
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
 
