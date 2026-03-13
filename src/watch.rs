@@ -285,35 +285,142 @@ fn orchestrator_is_busy() -> bool {
 /// Return `true` when the user appears to have pending (unsent) input in the
 /// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
 ///
-/// Implemented by querying the tmux cursor X position for %0.  A cursor
-/// position of 0, 1, or 2 covers the common `> ` / `$ ` prompt prefixes
-/// where no user text has been entered yet.  Anything beyond that means the
-/// user is actively typing.
+/// Uses pane *content* rather than cursor_x so that multiline messages are
+/// detected correctly.  When the user presses Enter mid-message the cursor
+/// moves to column 0 on a new line, so a cursor_x check would incorrectly
+/// report no pending input.
+///
+/// Strategy:
+/// 1. Get the cursor position (cursor_x, cursor_y) from tmux.
+/// 2. Capture the exact line the cursor is on and check it for user text.
+/// 3. Also capture the last 5 lines of the pane and check ALL of them —
+///    this catches multiline input where the cursor line itself is blank but
+///    earlier lines have content.
+///
+/// "User text" means non-whitespace content that remains after stripping ANSI
+/// escape sequences and leading prompt characters (>, ❯, $, #, %, │, |).
 ///
 /// Returns `false` on any error (safe default — if we can't tell, assume no
 /// pending input rather than permanently suppressing the heartbeat).
 fn orchestrator_has_pending_input() -> bool {
-    let output = match std::process::Command::new("tmux")
-        .args(["display-message", "-t", "%0", "-p", "#{cursor_x}"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
+    // ── helpers ──────────────────────────────────────────────────────────────
 
-    if !output.status.success() {
-        return false;
+    /// Strip ANSI escape sequences from a string.
+    fn strip_ansi(s: &str) -> String {
+        // Matches CSI sequences like ESC[…m, ESC[…G, etc.
+        let mut out = String::with_capacity(s.len());
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                // Skip ESC [
+                i += 2;
+                // Skip parameter and intermediate bytes (0x20–0x3F range) and
+                // final byte (0x40–0x7E).
+                while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x3f {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] >= 0x40 && bytes[i] <= 0x7e {
+                    i += 1;
+                }
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        out
     }
 
-    let cursor_x_str = match std::str::from_utf8(&output.stdout) {
+    /// Return `true` if the line has user-typed content beyond prompt chars.
+    fn line_has_content(raw: &str) -> bool {
+        let stripped = strip_ansi(raw);
+        // Strip leading prompt-style characters and whitespace.
+        let trimmed = stripped.trim_start_matches(|c: char| {
+            matches!(c, '>' | '$' | '#' | '%' | '│' | '|') || c.is_whitespace()
+        });
+        // Also strip the Unicode heavy right-angle quotation mark used by
+        // some shells (❯, U+276F).
+        let trimmed = trimmed
+            .trim_start_matches('❯')
+            .trim_start_matches(char::is_whitespace);
+        !trimmed.is_empty()
+    }
+
+    // ── step 1: get cursor position ──────────────────────────────────────────
+
+    let pos_output = match std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            "%0",
+            "-p",
+            "#{cursor_x} #{cursor_y} #{pane_height}",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+
+    let pos_str = match std::str::from_utf8(&pos_output.stdout) {
         Ok(s) => s.trim().to_string(),
         Err(_) => return false,
     };
 
-    match cursor_x_str.parse::<u64>() {
-        Ok(x) => x > 2,
-        Err(_) => false,
+    // Parse "cursor_x cursor_y pane_height"
+    let parts: Vec<&str> = pos_str.split_whitespace().collect();
+    if parts.len() < 2 {
+        return false;
     }
+    let cursor_y: i64 = match parts[1].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // ── step 2: check the exact cursor line ──────────────────────────────────
+
+    let cursor_line_output = std::process::Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-t",
+            "%0",
+            "-p",
+            "-S",
+            &cursor_y.to_string(),
+            "-E",
+            &cursor_y.to_string(),
+        ])
+        .output();
+
+    if let Ok(o) = cursor_line_output {
+        if o.status.success() {
+            if let Ok(text) = std::str::from_utf8(&o.stdout) {
+                if line_has_content(text) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // ── step 3: check the last 5 lines (catches multiline input) ────────────
+
+    let last5_output = std::process::Command::new("tmux")
+        .args(["capture-pane", "-t", "%0", "-p", "-S", "-5"])
+        .output();
+
+    if let Ok(o) = last5_output {
+        if o.status.success() {
+            if let Ok(text) = std::str::from_utf8(&o.stdout) {
+                for line in text.lines() {
+                    if line_has_content(line) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Send an unconditional [HEARTBEAT] status message to %0.
@@ -826,6 +933,12 @@ pub fn run(interval_secs: u64, pane_filter: Option<&str>) -> Result<()> {
         let mut actions: Vec<PaneAction> = Vec::new();
 
         for pane_id in &pane_ids {
+            // Never health-check or send recovery messages to the orchestrator
+            // pane itself — %0 is us, not a worker.
+            if pane_id == "%0" {
+                continue;
+            }
+
             let health = match classify_pane(pane_id, &monitor_state, interval_secs) {
                 Ok(h) => h,
                 Err(e) => {
