@@ -1,3 +1,4 @@
+mod autonomous;
 mod checkpoint;
 mod events;
 mod health;
@@ -221,6 +222,13 @@ enum Command {
         /// Specific agent ID to watch (watches all agents if omitted)
         #[arg(short, long)]
         pane: Option<String>,
+    },
+
+    /// Run the autonomous execution engine: reads the project plan, spawns workers, monitors them
+    Autonomous {
+        /// Seconds between each check cycle (default 30)
+        #[arg(short, long, default_value_t = 30)]
+        interval: u64,
     },
 
     /// Send a [PULSE] digest of all worker agents to the orchestrator agent (%0)
@@ -777,6 +785,31 @@ fn main() -> anyhow::Result<()> {
             )?;
             let _ = events::log_event(events::EventKind::ModeChanged, None, "entered away mode");
             let pending = sm.get_pending_decisions()?;
+
+            // Check if a project plan exists and build plan summary
+            let plan_info = match autonomous::load_plan() {
+                Ok(Some(plan)) => {
+                    let summary = autonomous::summarize_plan(&plan);
+                    serde_json::json!({
+                        "found": true,
+                        "description": plan.description,
+                        "total_stages": summary.total_stages,
+                        "total_tasks": summary.total_tasks,
+                        "done_tasks": summary.done_tasks,
+                        "in_progress_tasks": summary.in_progress_tasks,
+                        "pending_tasks": summary.pending_tasks,
+                        "current_stage": summary.current_stage_name,
+                    })
+                }
+                _ => serde_json::json!({ "found": false }),
+            };
+
+            let autonomous_note = if plan_info["found"].as_bool().unwrap_or(false) {
+                "Project plan found. Run 'superharness autonomous' in a separate pane to start autonomous execution."
+            } else {
+                "No project plan found. Create one with: superharness plan \"description\""
+            };
+
             let out = serde_json::json!({
                 "mode": "away",
                 "message": message,
@@ -788,6 +821,9 @@ fn main() -> anyhow::Result<()> {
                     "flag_architecture_decisions": pre_auth.flag_architecture_decisions,
                     "flag_destructive_operations": pre_auth.flag_destructive_operations,
                 },
+                "project_plan": plan_info,
+                "autonomous_mode": plan_info["found"].as_bool().unwrap_or(false),
+                "autonomous_note": autonomous_note,
                 "note": "Workers will use these pre-auth settings. Run 'status' when you return."
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -831,11 +867,32 @@ fn main() -> anyhow::Result<()> {
                 (Vec::new(), None)
             };
 
+            // Build plan progress if a project plan exists
+            let plan_progress = match autonomous::load_plan() {
+                Ok(Some(plan)) => {
+                    let summary = autonomous::summarize_plan(&plan);
+                    serde_json::json!({
+                        "found": true,
+                        "description": plan.description,
+                        "total_tasks": summary.total_tasks,
+                        "done_tasks": summary.done_tasks,
+                        "in_progress_tasks": summary.in_progress_tasks,
+                        "pending_tasks": summary.pending_tasks,
+                        "failed_tasks": summary.failed_tasks,
+                        "current_stage": summary.current_stage_name,
+                        "current_stage_index": summary.current_stage_index,
+                        "total_stages": summary.total_stages,
+                    })
+                }
+                _ => serde_json::json!({ "found": false }),
+            };
+
             let out = serde_json::json!({
                 "mode": "present",
                 "away_duration_secs": away_duration_secs,
                 "debrief": debrief,
                 "pending_decisions": pending,
+                "plan_progress": plan_progress,
                 "note": if pending.is_empty() {
                     "No pending decisions. All clear!"
                 } else {
@@ -1128,6 +1185,10 @@ fn main() -> anyhow::Result<()> {
 
         Some(Command::Watch { interval, pane }) => {
             watch::run(interval, pane.as_deref())?;
+        }
+
+        Some(Command::Autonomous { interval }) => {
+            autonomous::run(interval)?;
         }
 
         Some(Command::Pulse) => {
