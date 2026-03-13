@@ -2,3 +2,6 @@
 *.db
 .superharness/
 AGENTS.md
+
+# stray files from shell parsing accidents
+"**CRITICAL:"
