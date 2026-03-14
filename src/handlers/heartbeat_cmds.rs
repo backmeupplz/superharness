@@ -94,44 +94,40 @@ pub fn handle_heartbeat_status() -> Result<()> {
 
     if state.last_beat_ts == 0 && state.snooze_until == 0 && !state.disabled {
         // No heartbeat state file yet.
-        print!("♥ --");
+        print!("#[fg=colour245](^_^) --#[default]");
         return Ok(());
     }
 
     // Permanent toggle-off takes priority over timed snooze in display.
     if state.disabled {
-        print!("♡ ‖");
+        print!("#[fg=colour240](x_x)#[default]");
         return Ok(());
     }
 
     // Timed snooze display.
     if state.snooze_until > now {
         let remaining = state.snooze_until - now;
-        print!("‖ {remaining}s");
+        print!("#[fg=colour110](-_-)zzz {remaining}s#[default]");
         return Ok(());
     }
 
     let secs_since_beat = now.saturating_sub(state.last_beat_ts);
     let secs_to_next = state.next_beat_ts.saturating_sub(now);
 
-    let emoji = if secs_since_beat <= 3 {
-        // Just fired — big heart (beat effect).
-        "❤"
+    let face = if secs_since_beat <= 3 {
+        // Just fired — excited, bright green.
+        format!("#[fg=colour156](^o^) {secs_to_next}s#[default]")
     } else if !state.last_sent {
-        // Last beat was skipped (busy) — hollow heart.
-        "♡"
+        // Skipped/busy — sleepy, muted yellow.
+        format!("#[fg=colour180](-_-) {secs_to_next}s#[default]")
     } else if state.needs_attention {
-        // Flashing: alternate small/big heart every 5 seconds for a beating effect.
-        if (now % 10) < 5 {
-            "♥"
-        } else {
-            "❤"
-        }
+        // Needs attention — alarmed, orange.
+        format!("#[fg=colour214](o_O)! {secs_to_next}s#[default]")
     } else {
-        // Normal — small heart.
-        "♥"
+        // Normal — happy, calm green.
+        format!("#[fg=colour114](^_^) {secs_to_next}s#[default]")
     };
 
-    print!("{emoji} {secs_to_next}s");
+    print!("{face}");
     Ok(())
 }
