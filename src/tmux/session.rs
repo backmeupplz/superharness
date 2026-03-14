@@ -139,7 +139,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
 
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
-         #[fg=colour240]│ #[fg=colour196]{heartbeat_snippet} \
+         #[fg=colour240]│ #[fg=colour168]{heartbeat_snippet} \
          #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers ({worker_count_snippet}) #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
     );
 
