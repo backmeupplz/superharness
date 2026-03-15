@@ -385,6 +385,7 @@ pub fn write_heartbeat_state(state: &HeartbeatState) {
 
 /// Convenience writer: `next_beat_ts` is computed as `last_beat_ts + interval_secs`.
 /// For fine-grained control over `next_beat_ts` use `write_heartbeat_state()` directly.
+#[allow(dead_code)]
 pub fn write_heartbeat_state_full(
     last_beat_ts: u64,
     interval_secs: u64,
