@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+use crate::harness;
 use crate::util;
 
 /// User-level model/provider preferences. Lives at ~/.config/superharness/config.json.
@@ -112,28 +113,35 @@ fn build_preferences_section(cfg: &UserConfig) -> String {
 
 const AGENTS_MD: &str = include_str!("../assets/agents_template.md");
 
-fn get_available_models() -> String {
-    let output = std::process::Command::new("opencode")
-        .arg("models")
-        .output();
+/// Map a harness name to its human-readable display name.
+fn harness_display_name(harness: &str) -> &'static str {
+    match harness {
+        "claude" => "Claude Code",
+        "codex" => "OpenAI Codex",
+        _ => "OpenCode",
+    }
+}
+
+fn get_available_models(harness: &str) -> String {
+    let output = std::process::Command::new(harness).arg("models").output();
 
     match output {
         Ok(o) if o.status.success() => {
             let models = String::from_utf8_lossy(&o.stdout);
             let lines: Vec<&str> = models.lines().filter(|l| !l.is_empty()).collect();
             if lines.is_empty() {
-                return String::from(
-                    "(could not detect models — run `opencode models` to see available)",
+                return format!(
+                    "(could not detect models — run `{harness} models` to see available)"
                 );
             }
             lines.join("\n")
         }
-        _ => String::from("(could not detect models — run `opencode models` to see available)"),
+        _ => format!("(could not detect models — run `{harness} models` to see available)"),
     }
 }
 
-fn get_authenticated_providers() -> String {
-    let output = std::process::Command::new("opencode")
+fn get_authenticated_providers(harness: &str) -> String {
+    let output = std::process::Command::new(harness)
         .args(["auth", "list"])
         .output();
 
@@ -155,21 +163,40 @@ fn get_authenticated_providers() -> String {
                 .join("\n");
             stripped
         }
-        _ => String::from("(could not detect — run `opencode auth list`)"),
+        _ => format!("(could not detect — run `{harness} auth list`)"),
     }
 }
 
 pub fn write_config(dir: &str, bin: &str) -> Result<()> {
     let base = Path::new(dir);
-    let models = get_available_models();
-    let providers = get_authenticated_providers();
+    let config_dir = util::superharness_config_dir();
+
+    // Resolve the active harness (falls back to first installed if no preference set).
+    let harness_name =
+        harness::resolve_harness(&config_dir).unwrap_or_else(|_| "opencode".to_string());
+    let harness_display = harness_display_name(&harness_name);
+
     let user_cfg = load_user_config();
+
+    // Resolve the default model: user config → harness config → sensible fallback.
+    let default_model = user_cfg
+        .default_model
+        .clone()
+        .or_else(|| harness::get_default_model(&config_dir))
+        .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
+
+    let models = get_available_models(&harness_name);
+    let providers = get_authenticated_providers(&harness_name);
     let preferences = build_preferences_section(&user_cfg);
+    // Note: replace $HARNESS_DISPLAY before $HARNESS so the longer token is matched first.
     let content = AGENTS_MD
         .replace("$BIN", bin)
         .replace("$MODELS", &models)
         .replace("$PROVIDERS", &providers)
-        .replace("$PREFERENCES", &preferences);
+        .replace("$PREFERENCES", &preferences)
+        .replace("$HARNESS_DISPLAY", harness_display)
+        .replace("$HARNESS", &harness_name)
+        .replace("$DEFAULT_MODEL", &default_model);
 
     let agents_path = base.join("AGENTS.md");
     if agents_path.exists() {
