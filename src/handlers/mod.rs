@@ -39,6 +39,6 @@ pub use status::{
 };
 pub use task_cmds::{
     handle_subtask_add, handle_subtask_done, handle_task_add, handle_task_block,
-    handle_task_cancel, handle_task_done, handle_task_list, handle_task_remove, handle_task_show,
-    handle_task_start,
+    handle_task_cancel, handle_task_cleanup, handle_task_done, handle_task_list,
+    handle_task_remove, handle_task_show, handle_task_start,
 };

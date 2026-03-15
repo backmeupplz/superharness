@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{harness, project, setup, tmux, util};
+use crate::{harness, project, setup, tasks, tmux, util};
 
 /// Handle the default (no subcommand) case: first-launch harness picker,
 /// write config, and initialise the tmux session.
@@ -8,6 +8,9 @@ pub fn handle_init(dir: &str, bin: &str) -> Result<()> {
     // Record active project directory
     let abs_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| std::path::PathBuf::from(dir));
     project::set_active_project(&abs_dir)?;
+
+    // Silently prune done/cancelled tasks so the orchestrator never sees stale entries.
+    tasks::cleanup_completed_tasks();
 
     // First-launch harness picker — if no default harness is configured,
     // show an interactive picker before the tmux session starts.

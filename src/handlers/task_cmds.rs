@@ -108,3 +108,11 @@ pub fn handle_subtask_done(task_id: String, subtask_id: String) -> Result<()> {
     println!("Subtask marked as done.");
     Ok(())
 }
+
+/// Handle `Command::TaskCleanup`.
+pub fn handle_task_cleanup() -> Result<()> {
+    let tm = tasks::TaskManager::new()?;
+    let (removed, remaining) = tm.cleanup_completed()?;
+    println!("Removed {removed} completed/cancelled tasks. {remaining} tasks remaining.");
+    Ok(())
+}

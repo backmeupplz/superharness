@@ -374,6 +374,9 @@ enum Command {
         id: String,
     },
 
+    /// Remove all done/cancelled tasks from the task list
+    TaskCleanup,
+
     /// Add a subtask to a task
     SubtaskAdd {
         /// Parent task ID prefix
@@ -693,6 +696,9 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::TaskShow { id }) => {
             handlers::handle_task_show(id)?;
+        }
+        Some(Command::TaskCleanup) => {
+            handlers::handle_task_cleanup()?;
         }
         Some(Command::SubtaskAdd { task_id, title }) => {
             handlers::handle_subtask_add(task_id, title)?;

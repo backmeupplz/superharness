@@ -352,6 +352,33 @@ impl TaskManager {
             ),
         }
     }
+
+    /// Remove all tasks with status `Done` or `Cancelled`.
+    /// Returns `(removed, remaining)` counts.
+    pub fn cleanup_completed(&self) -> Result<(usize, usize)> {
+        let tasks = self.load()?;
+        let before = tasks.len();
+        let kept: Vec<Task> = tasks
+            .into_iter()
+            .filter(|t| t.status != TaskStatus::Done && t.status != TaskStatus::Cancelled)
+            .collect();
+        let remaining = kept.len();
+        let removed = before - remaining;
+        self.save(&kept)?;
+        Ok((removed, remaining))
+    }
+}
+
+// ── Module-level convenience wrappers ─────────────────────────────────────────
+
+/// Silently remove done/cancelled tasks from the project tasks file.
+/// Used during session init so the orchestrator never sees stale completed tasks.
+/// Returns `(removed, remaining)` — errors are silently ignored.
+pub fn cleanup_completed_tasks() -> (usize, usize) {
+    match TaskManager::new().and_then(|tm| tm.cleanup_completed()) {
+        Ok(counts) => counts,
+        Err(_) => (0, 0),
+    }
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────
