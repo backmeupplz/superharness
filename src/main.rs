@@ -8,6 +8,7 @@ mod layout;
 mod loop_guard;
 mod memory;
 mod monitor;
+mod output_cleaner;
 mod pending_tasks;
 mod project;
 mod relay;
@@ -92,6 +93,10 @@ enum Command {
         /// Number of lines to capture
         #[arg(short, long, default_value_t = 50)]
         lines: u32,
+
+        /// Strip TUI decorations, ANSI codes, and compact output for cleaner context
+        #[arg(long)]
+        clean: bool,
     },
 
     /// Send input/keystrokes to a worker agent
@@ -572,8 +577,8 @@ fn main() -> anyhow::Result<()> {
         Some(Command::RunPending) => {
             handlers::handle_run_pending()?;
         }
-        Some(Command::Read { pane, lines }) => {
-            handlers::handle_read(pane, lines)?;
+        Some(Command::Read { pane, lines, clean }) => {
+            handlers::handle_read(pane, lines, clean)?;
         }
         Some(Command::Send { pane, text }) => {
             handlers::handle_send(pane, text)?;

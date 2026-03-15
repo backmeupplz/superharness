@@ -1,4 +1,4 @@
-use crate::{events, heartbeat, tmux};
+use crate::{events, heartbeat, output_cleaner, tmux};
 use anyhow::Result;
 
 /// Handle `Command::List`.
@@ -10,8 +10,13 @@ pub fn handle_list() -> Result<()> {
 }
 
 /// Handle `Command::Read`.
-pub fn handle_read(pane: String, lines: u32) -> Result<()> {
-    let output = tmux::read(&pane, lines)?;
+pub fn handle_read(pane: String, lines: u32, clean: bool) -> Result<()> {
+    let raw = tmux::read(&pane, lines)?;
+    let output = if clean {
+        output_cleaner::clean_output(&raw)
+    } else {
+        raw
+    };
     let out = serde_json::json!({ "pane": pane, "output": output });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
