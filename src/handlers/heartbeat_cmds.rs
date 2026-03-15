@@ -10,76 +10,93 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Handle `Command::HeartbeatDaemonTick`.
+///
+/// Called every 1s by the hidden daemon loop:
+///   `while true; do superharness heartbeat-daemon-tick 2>/dev/null; sleep 1; done`
+///
+/// Silent — no stdout output. All logic lives in `heartbeat::daemon_tick()`.
+pub fn handle_heartbeat_daemon_tick() -> Result<()> {
+    heartbeat::daemon_tick()
+}
+
 /// Handle `Command::Heartbeat`.
+///
+/// Two modes:
+///
+/// **No args** (`superharness heartbeat`, called by workers):
+///   Send [HEARTBEAT] to %0 immediately, bypassing all countdown/busy checks.
+///   Reset `next_beat_ts` to `now + interval` so the daemon's countdown restarts.
+///
+/// **`--snooze N`** (`superharness heartbeat --snooze N`, called by orchestrator):
+///   Add N seconds to `next_beat_ts` (additive snooze). No heartbeat is sent.
+///   The next beat after the snoozed one returns to the normal interval.
 pub fn handle_heartbeat(snooze: Option<u64>) -> Result<()> {
     let now = now_secs();
 
     if let Some(secs) = snooze {
-        // Snooze mode: update snooze_until WITHOUT sending a heartbeat.
-        // Preserve the disabled flag — snooze is independent of toggle.
-        let state = heartbeat::read_heartbeat_state();
-        let snooze_until = now + secs;
-        heartbeat::write_heartbeat_state_full(
-            state.last_beat_ts,
-            state.interval_secs,
-            state.last_sent,
-            state.needs_attention,
-            snooze_until,
-            state.disabled,
+        // Snooze: shift the next beat forward by N seconds (additive).
+        let mut state = heartbeat::read_heartbeat_state();
+        state.next_beat_ts = state.next_beat_ts.saturating_add(secs);
+        heartbeat::write_heartbeat_state(&state);
+        eprintln!(
+            "[heartbeat] snoozed {secs}s — next beat at unix {}",
+            state.next_beat_ts
         );
-        eprintln!("[heartbeat] snoozed for {secs}s (until unix {snooze_until})");
     } else {
-        // Immediate heartbeat: run idle checks and send if %0 is ready.
-        // Respects snooze/toggle — does NOT clear it on success.
-        match heartbeat::heartbeat() {
-            Ok(true) => {
+        // Worker-triggered immediate beat: bypass all checks and send now.
+        let needs_attention = match heartbeat::heartbeat() {
+            Ok(na) => {
                 eprintln!("[heartbeat] sent [HEARTBEAT] to %0");
-            }
-            Ok(false) => {
-                eprintln!("[heartbeat] skipped — %0 is busy or snoozed");
+                na
             }
             Err(e) => {
                 eprintln!("[heartbeat] error: {e}");
+                false
             }
-        }
+        };
+
+        // Reset the daemon countdown so it doesn't fire again immediately.
+        let mut state = heartbeat::read_heartbeat_state();
+        let interval = if state.interval_secs == 0 {
+            heartbeat::get_interval()
+        } else {
+            state.interval_secs
+        };
+        state.last_beat_ts = now;
+        state.next_beat_ts = now + interval;
+        state.last_sent = true;
+        state.needs_attention = needs_attention;
+        heartbeat::write_heartbeat_state(&state);
     }
 
     Ok(())
 }
 
 /// Handle `Command::HeartbeatToggle`.
+///
+/// Flips the `disabled` flag.
+/// When toggling **on**: also resets `next_beat_ts = now + interval` so the
+/// countdown starts fresh instead of immediately re-firing a stale beat.
 pub fn handle_heartbeat_toggle() -> Result<()> {
-    let state = heartbeat::read_heartbeat_state();
+    let now = now_secs();
+    let mut state = heartbeat::read_heartbeat_state();
 
     if state.disabled {
-        // Currently disabled — re-enable by clearing the disabled flag.
-        // Reset timestamps so the countdown starts fresh from now instead of
-        // showing '0s' forever (next_beat_ts would still be in the past otherwise).
-        let now = now_secs();
+        // Currently disabled — re-enable and start a fresh countdown.
         let interval = if state.interval_secs == 0 {
-            30
+            heartbeat::get_interval()
         } else {
             state.interval_secs
         };
-        heartbeat::write_heartbeat_state_full(
-            now, // last_beat_ts = now → next_beat_ts = now + interval
-            interval,
-            state.last_sent,
-            state.needs_attention,
-            state.snooze_until,
-            false, // clear disabled
-        );
+        state.disabled = false;
+        state.next_beat_ts = now + interval;
+        heartbeat::write_heartbeat_state(&state);
         eprintln!("[heartbeat] toggled on (resumed)");
     } else {
-        // Currently enabled — disable by setting the disabled flag.
-        heartbeat::write_heartbeat_state_full(
-            state.last_beat_ts,
-            state.interval_secs,
-            state.last_sent,
-            state.needs_attention,
-            state.snooze_until,
-            true, // set disabled
-        );
+        // Currently enabled — disable permanently until toggled back.
+        state.disabled = true;
+        heartbeat::write_heartbeat_state(&state);
         eprintln!("[heartbeat] toggled off (disabled)");
     }
 
@@ -87,27 +104,22 @@ pub fn handle_heartbeat_toggle() -> Result<()> {
 }
 
 /// Handle `Command::HeartbeatStatus` — print heartbeat status for tmux status bar.
+///
+/// Pure display: reads state file, prints kaomoji + countdown. Never fires anything.
 pub fn handle_heartbeat_status() -> Result<()> {
     let now = now_secs();
 
     let state = heartbeat::read_heartbeat_state();
 
-    if state.last_beat_ts == 0 && state.snooze_until == 0 && !state.disabled {
-        // No heartbeat state file yet.
+    // No state file yet — show neutral face with placeholder countdown.
+    if state.last_beat_ts == 0 && !state.disabled {
         print!("#[fg=colour245](^_^) --#[default]");
         return Ok(());
     }
 
-    // Permanent toggle-off takes priority over timed snooze in display.
+    // Permanently disabled.
     if state.disabled {
         print!("#[fg=colour240](x_x)#[default]");
-        return Ok(());
-    }
-
-    // Timed snooze display.
-    if state.snooze_until > now {
-        let remaining = state.snooze_until - now;
-        print!("#[fg=colour110](-_-)zzz {remaining}s#[default]");
         return Ok(());
     }
 
@@ -118,10 +130,10 @@ pub fn handle_heartbeat_status() -> Result<()> {
         // Just fired — excited, bright green.
         format!("#[fg=colour156](^o^) {secs_to_next}s#[default]")
     } else if !state.last_sent {
-        // Skipped/busy — sleepy, muted yellow.
+        // Last scheduled beat was skipped (busy) — sleepy, muted yellow.
         format!("#[fg=colour180](-_-) {secs_to_next}s#[default]")
     } else if state.needs_attention {
-        // Needs attention — alarmed, orange.
+        // Workers need attention — alarmed, orange.
         format!("#[fg=colour214](o_O)! {secs_to_next}s#[default]")
     } else {
         // Normal — happy, calm green.

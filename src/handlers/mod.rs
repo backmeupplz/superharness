@@ -22,7 +22,10 @@ pub use git_cmds::handle_git_check;
 pub use harness_cmds::{
     handle_harness_list, handle_harness_set, handle_harness_settings, handle_harness_switch,
 };
-pub use heartbeat_cmds::{handle_heartbeat, handle_heartbeat_status, handle_heartbeat_toggle};
+pub use heartbeat_cmds::{
+    handle_heartbeat, handle_heartbeat_daemon_tick, handle_heartbeat_status,
+    handle_heartbeat_toggle,
+};
 pub use init::handle_init;
 pub use pane_cmds::{
     handle_compact, handle_hide, handle_kill, handle_layout, handle_list, handle_read,

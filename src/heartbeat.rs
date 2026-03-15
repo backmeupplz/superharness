@@ -1,7 +1,8 @@
 //! Heartbeat and worker status utilities for SuperHarness.
 //!
 //! This module provides:
-//! - `heartbeat()` — sends [HEARTBEAT] messages to the orchestrator pane (%0)
+//! - `heartbeat()` — sends [HEARTBEAT] messages to the orchestrator pane (%0) unconditionally
+//! - `daemon_tick()` — called every 1s by the background daemon; checks countdown and fires
 //! - Heartbeat state persistence (read/write to disk)
 //! - `status_counts()` — lightweight active/total worker count for the status bar
 
@@ -13,9 +14,24 @@ use crate::health::{classify_pane, HealthStatus};
 use crate::monitor::load_state;
 use crate::project;
 use crate::tmux;
+use crate::util;
 
 // ---------------------------------------------------------------------------
-// Heartbeat — unconditional periodic message to keep %0 active
+// Daemon pane identity
+// ---------------------------------------------------------------------------
+
+/// Window name (and pane title) used for the heartbeat daemon pane.
+/// Used to filter the daemon out of worker counts and listings.
+pub const DAEMON_WINDOW: &str = "heartbeat-daemon";
+
+/// Return `true` if this pane is the heartbeat daemon.
+/// The daemon must be excluded from all worker counts and listings.
+pub fn is_daemon_pane(p: &tmux::PaneInfo) -> bool {
+    p.window == DAEMON_WINDOW || p.title == DAEMON_WINDOW
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
 // ---------------------------------------------------------------------------
 
 /// Return the local wall-clock time as "HH:MM".
@@ -42,7 +58,6 @@ fn time_hhmm() -> String {
 
 /// Return `true` when the last few lines of %0's output suggest it is
 /// actively processing (spinner characters visible in multiple recent lines).
-/// When %0 is busy, the heartbeat is skipped to avoid interrupting it.
 ///
 /// Requires at least 3 spinner chars across the last 5 lines to trigger —
 /// a single spinner char is not enough (avoids over-skipping on static output).
@@ -55,8 +70,6 @@ fn orchestrator_is_busy() -> bool {
     // Spinner characters used by opencode / claude / shell progress indicators
     let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-    // Count total spinner chars across all recent lines.
-    // Require at least 3 to reduce false-positives from stale output.
     let spinner_count: usize = output
         .lines()
         .map(|line| spinner_chars.iter().filter(|&&c| line.contains(c)).count())
@@ -68,38 +81,23 @@ fn orchestrator_is_busy() -> bool {
 /// Return `true` when the user appears to have pending (unsent) input in the
 /// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
 ///
-/// Uses pane *content* rather than cursor_x so that multiline messages are
-/// detected correctly.  When the user presses Enter mid-message the cursor
-/// moves to column 0 on a new line, so a cursor_x check would incorrectly
-/// report no pending input.
-///
 /// Strategy:
 /// 1. Get the cursor position (cursor_x, cursor_y) from tmux.
 /// 2. Capture the exact line the cursor is on and check it for user text.
-/// 3. Also capture the last 5 lines of the pane and check ALL of them —
-///    this catches multiline input where the cursor line itself is blank but
-///    earlier lines have content.
+/// 3. Also capture the last 5 lines of the pane and check ALL of them.
 ///
-/// "User text" means non-whitespace content that remains after stripping ANSI
-/// escape sequences and leading prompt characters (>, ❯, $, #, %, │, |).
-///
-/// Returns `false` on any error (safe default — if we can't tell, assume no
-/// pending input rather than permanently suppressing the heartbeat).
+/// Returns `false` on any error (safe default).
 fn orchestrator_has_pending_input() -> bool {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /// Strip ANSI escape sequences from a string.
     fn strip_ansi(s: &str) -> String {
-        // Matches CSI sequences like ESC[…m, ESC[…G, etc.
         let mut out = String::with_capacity(s.len());
         let bytes = s.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                // Skip ESC [
                 i += 2;
-                // Skip parameter and intermediate bytes (0x20–0x3F range) and
-                // final byte (0x40–0x7E).
                 while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x3f {
                     i += 1;
                 }
@@ -117,12 +115,9 @@ fn orchestrator_has_pending_input() -> bool {
     /// Return `true` if the line has user-typed content beyond prompt chars.
     fn line_has_content(raw: &str) -> bool {
         let stripped = strip_ansi(raw);
-        // Strip leading prompt-style characters and whitespace.
         let trimmed = stripped.trim_start_matches(|c: char| {
             matches!(c, '>' | '$' | '#' | '%' | '│' | '|') || c.is_whitespace()
         });
-        // Also strip the Unicode heavy right-angle quotation mark used by
-        // some shells (❯, U+276F).
         let trimmed = trimmed
             .trim_start_matches('❯')
             .trim_start_matches(char::is_whitespace);
@@ -150,7 +145,6 @@ fn orchestrator_has_pending_input() -> bool {
         Err(_) => return false,
     };
 
-    // Parse "cursor_x cursor_y pane_height"
     let parts: Vec<&str> = pos_str.split_whitespace().collect();
     if parts.len() < 2 {
         return false;
@@ -206,66 +200,54 @@ fn orchestrator_has_pending_input() -> bool {
     false
 }
 
-/// Send an unconditional [HEARTBEAT] status message to %0.
+// ---------------------------------------------------------------------------
+// Configurable interval
+// ---------------------------------------------------------------------------
+
+/// Read `heartbeat_interval` from `~/.config/superharness/config.json`.
+/// Returns 30 if the field is missing, the file is unreadable, or parsing fails.
+pub fn get_interval() -> u64 {
+    let config_path = util::superharness_config_dir().join("config.json");
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(n) = v["heartbeat_interval"].as_u64() {
+                    return n;
+                }
+            }
+        }
+    }
+    30
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat — unconditional send to %0
+// ---------------------------------------------------------------------------
+
+/// Send a [HEARTBEAT] status message to %0 unconditionally.
 ///
-/// The message includes:
-/// - number of active worker panes
-/// - current local time (HH:MM)
-/// - whether any workers need attention or if everything is nominal
+/// No busy/disabled/countdown checks — those are the daemon's responsibility.
+/// Called by:
+///   - `daemon_tick()` after all gating checks pass
+///   - `handle_heartbeat(None)` when a worker explicitly fires a beat
+///   - `handle_kill()` after killing a worker
 ///
-/// Skips sending if %0 appears to be actively processing (spinner chars,
-/// build steps, or agent tool calls detected in the last 5 lines of output).
-/// Also fires a tmux flash notification so the message is visible in the
-/// status bar even when the orchestrator pane is not focused.
-///
-/// Returns `true` when the heartbeat was sent; `false` when it was skipped.
+/// Returns `needs_attention` — `true` when at least one worker is stalled or
+/// waiting for approval.
 pub fn heartbeat() -> Result<bool> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    // Check disabled flag and timed snooze: skip without sending if either is active.
-    {
-        let state = read_heartbeat_state();
-        if state.disabled {
-            eprintln!("[watch] heartbeat skipped — toggled off (disabled)");
-            return Ok(false);
-        }
-        if state.snooze_until > now {
-            let remaining = state.snooze_until - now;
-            eprintln!(
-                "[watch] heartbeat skipped — snoozed for {remaining}s more (until unix {})",
-                state.snooze_until
-            );
-            return Ok(false);
-        }
-    }
-
-    // Skip if %0 looks busy to avoid interrupting an active response.
-    if orchestrator_is_busy() {
-        eprintln!("[watch] heartbeat skipped — %0 appears to be actively processing");
-        return Ok(false);
-    }
-
-    // Skip if the user has unsent input in the %0 prompt — we must never
-    // clobber what the user is typing.
-    if orchestrator_has_pending_input() {
-        eprintln!("[watch] heartbeat skipped — %0 has unsent input in prompt");
-        return Ok(false);
-    }
-
     let all_panes = tmux::list().unwrap_or_default();
-    let worker_panes: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+    let worker_panes: Vec<_> = all_panes
+        .iter()
+        .filter(|p| p.id != "%0" && !is_daemon_pane(p))
+        .collect();
     let worker_count = worker_panes.len();
     let time = time_hhmm();
 
-    let status_part = if worker_count == 0 {
-        "No workers running".to_string()
+    let (status_part, needs_attention) = if worker_count == 0 {
+        ("No workers running".to_string(), false)
     } else {
-        // Count workers that are stalled or waiting for approval.
         let monitor_state = load_state();
-        let needs_attention = worker_panes
+        let attention_count = worker_panes
             .iter()
             .filter(|p| {
                 matches!(
@@ -279,11 +261,12 @@ pub fn heartbeat() -> Result<bool> {
             })
             .count();
 
-        if needs_attention == 0 {
+        let msg = if attention_count == 0 {
             "All systems nominal".to_string()
         } else {
-            format!("{needs_attention} worker(s) need attention")
-        }
+            format!("{attention_count} worker(s) need attention")
+        };
+        (msg, attention_count > 0)
     };
 
     let msg = format!("[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}");
@@ -291,71 +274,141 @@ pub fn heartbeat() -> Result<bool> {
     tmux::send("%0", &msg)?;
     let _ = tmux::flash_notification(&msg);
 
-    Ok(true)
+    Ok(needs_attention)
+}
+
+// ---------------------------------------------------------------------------
+// Daemon tick — called every 1s by the heartbeat daemon loop
+// ---------------------------------------------------------------------------
+
+/// Process one daemon tick. Called every 1s by the background daemon loop.
+///
+/// Silent — no stdout output. Logic:
+/// 1. Read state. If disabled → return.
+/// 2. Stale-state guard: if `next_beat_ts` is >5 min in the past, reset it.
+/// 3. If `now < next_beat_ts` → return (countdown still running).
+/// 4. If %0 has pending input or is busy → skip beat, reschedule to now+interval.
+/// 5. Otherwise → fire heartbeat, update state.
+///
+/// When a beat is skipped (busy/pending input), `next_beat_ts` is set to
+/// `now + interval` — the daemon does NOT retry every second.
+pub fn daemon_tick() -> Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut state = read_heartbeat_state();
+
+    // Ensure interval is populated (defensive: handle fresh/uninitialized state)
+    if state.interval_secs == 0 {
+        state.interval_secs = get_interval();
+    }
+    let interval = state.interval_secs;
+
+    // 1. Disabled — do nothing
+    if state.disabled {
+        return Ok(());
+    }
+
+    // 2. Stale-state guard: next_beat_ts more than 5 minutes in the past
+    //    Avoids firing a backlog of beats from a previous session.
+    if state.next_beat_ts > 0 && now > state.next_beat_ts.saturating_add(300) {
+        state.next_beat_ts = now + interval;
+        write_heartbeat_state(&state);
+        return Ok(());
+    }
+
+    // 3. Countdown still running — nothing to do
+    if state.next_beat_ts > now {
+        return Ok(());
+    }
+
+    // 4. %0 has pending input or is busy → skip this beat entirely,
+    //    schedule the next one at the normal interval (don't retry every 1s)
+    if orchestrator_has_pending_input() || orchestrator_is_busy() {
+        state.next_beat_ts = now + interval;
+        write_heartbeat_state(&state);
+        return Ok(());
+    }
+
+    // 5. All clear — fire the heartbeat
+    let needs_attention = heartbeat().unwrap_or(false);
+
+    state.last_beat_ts = now;
+    state.next_beat_ts = now + interval;
+    state.last_sent = true;
+    state.needs_attention = needs_attention;
+    write_heartbeat_state(&state);
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Heartbeat state persistence
 // ---------------------------------------------------------------------------
 
-/// On-disk record written after every heartbeat attempt.
+/// On-disk record updated after every heartbeat event.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HeartbeatState {
-    /// Unix timestamp of the last heartbeat attempt (sent or skipped).
+    /// Unix timestamp of the last fired heartbeat (0 = never fired).
     pub last_beat_ts: u64,
     /// Configured heartbeat interval in seconds.
     pub interval_secs: u64,
-    /// Whether the last beat was actually sent to %0 (`false` = skipped).
+    /// Whether the last scheduled beat was actually sent to %0 (false = skipped).
     pub last_sent: bool,
-    /// Predicted unix timestamp of the next beat attempt.
+    /// Predicted unix timestamp of the next beat.
     pub next_beat_ts: u64,
     /// True when at least one worker is stalled/waiting and needs attention.
     pub needs_attention: bool,
-    /// Unix timestamp until which heartbeats are snoozed (0 = not snoozed).
-    /// Set by `superharness heartbeat --snooze N`.
-    /// Only used for timed snoozes — do NOT use as a toggle proxy.
-    #[serde(default)]
-    pub snooze_until: u64,
     /// When true, heartbeats are permanently disabled until explicitly toggled
-    /// back on.  This field survives restarts and has no expiry math.
-    /// Set/cleared by `superharness heartbeat` (the toggle subcommand).
+    /// back on.  Survives restarts.  Set/cleared by `superharness heartbeat-toggle`.
     #[serde(default)]
     pub disabled: bool,
 }
 
 /// Return the path to the heartbeat state file.
-/// Stored alongside events.json in the project-local .superharness/ directory.
+/// Stored in the project-local `.superharness/` directory.
 pub fn heartbeat_state_path() -> std::path::PathBuf {
     project::get_project_state_dir()
         .map(|d| d.join("heartbeat_state.json"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-heartbeat-state.json"))
 }
 
-/// Write heartbeat state with explicit snooze_until and disabled values.
+/// Write the heartbeat state struct to disk as-is.
+pub fn write_heartbeat_state(state: &HeartbeatState) {
+    let path = heartbeat_state_path();
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Convenience writer: `next_beat_ts` is computed as `last_beat_ts + interval_secs`.
+/// For fine-grained control over `next_beat_ts` use `write_heartbeat_state()` directly.
+#[allow(dead_code)]
 pub fn write_heartbeat_state_full(
     last_beat_ts: u64,
     interval_secs: u64,
     sent: bool,
     needs_attention: bool,
-    snooze_until: u64,
     disabled: bool,
 ) {
-    let state = HeartbeatState {
-        last_beat_ts,
-        interval_secs,
-        last_sent: sent,
-        next_beat_ts: last_beat_ts + interval_secs,
-        needs_attention,
-        snooze_until,
-        disabled,
+    let interval = if interval_secs == 0 {
+        get_interval()
+    } else {
+        interval_secs
     };
-    let path = heartbeat_state_path();
-    if let Ok(json) = serde_json::to_string_pretty(&state) {
-        let _ = std::fs::write(&path, json);
-    }
+    write_heartbeat_state(&HeartbeatState {
+        last_beat_ts,
+        interval_secs: interval,
+        last_sent: sent,
+        next_beat_ts: last_beat_ts + interval,
+        needs_attention,
+        disabled,
+    });
 }
 
-/// Read the heartbeat state from disk (returns default if file is missing).
+/// Read the heartbeat state from disk (returns default if file is missing or corrupt).
 pub fn read_heartbeat_state() -> HeartbeatState {
     let path = heartbeat_state_path();
     if !path.exists() {
@@ -373,16 +426,15 @@ pub fn read_heartbeat_state() -> HeartbeatState {
 
 /// Return a `"X/Y"` string for the tmux status bar:
 /// - X = workers with recently-changed output (active per monitor state)
-/// - Y = total workers (excluding the orchestrator pane %0)
+/// - Y = total workers (excluding the orchestrator pane %0 and the daemon pane)
 ///
-/// "Active" is defined as: `stall_count == 0` in the persisted monitor state,
-/// OR the pane has never been seen by the monitor (new pane — assumed active).
-///
-/// This avoids reading pane output so it stays lightweight for the 5-second
-/// status-bar refresh cycle.
+/// Filters out the heartbeat-daemon pane so it never appears as a worker.
 pub fn status_counts() -> String {
     let all_panes = tmux::list().unwrap_or_default();
-    let workers: Vec<_> = all_panes.iter().filter(|p| p.id != "%0").collect();
+    let workers: Vec<_> = all_panes
+        .iter()
+        .filter(|p| p.id != "%0" && !is_daemon_pane(p))
+        .collect();
     let total = workers.len();
 
     if total == 0 {
@@ -392,11 +444,7 @@ pub fn status_counts() -> String {
     let monitor_state = load_state();
     let active = workers
         .iter()
-        .filter(|p| {
-            // Active if stall_count is 0 (output changed on last monitor check)
-            // or if the pane has never been seen by the monitor (new — assume active).
-            monitor_state.stall_counts.get(&p.id).copied().unwrap_or(0) == 0
-        })
+        .filter(|p| monitor_state.stall_counts.get(&p.id).copied().unwrap_or(0) == 0)
         .count();
 
     format!("{active}/{total}")
