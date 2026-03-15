@@ -4,6 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 use crate::{health, heartbeat, monitor, project, tmux};
 
+/// Filter predicate: exclude %0 (orchestrator) and the heartbeat-daemon pane
+/// so only real worker panes are shown / counted.
+fn is_worker_pane(p: &tmux::PaneInfo) -> bool {
+    p.id != "%0" && !heartbeat::is_daemon_pane(p)
+}
+
 /// Handle `Command::StatusHuman` — human-readable mode + worker health display.
 pub fn handle_status_human() -> Result<()> {
     // Read mode from project state file
@@ -83,7 +89,11 @@ pub fn handle_status_human() -> Result<()> {
     println!("  {BOLD}{UNDERLINE}Workers{RESET}");
 
     let monitor_state = monitor::load_state();
-    let panes = tmux::list().unwrap_or_default();
+    let panes: Vec<_> = tmux::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| is_worker_pane(p))
+        .collect();
 
     if panes.is_empty() {
         println!("    {DIM}(no workers running){RESET}");
@@ -125,7 +135,11 @@ pub fn handle_status_human() -> Result<()> {
 
 /// Handle `Command::Workers` — human-readable worker list display.
 pub fn handle_workers() -> Result<()> {
-    let panes = tmux::list().unwrap_or_default();
+    let panes: Vec<_> = tmux::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| is_worker_pane(p))
+        .collect();
 
     // Abbreviate home directory in path
     let home = std::env::var("HOME").unwrap_or_default();
