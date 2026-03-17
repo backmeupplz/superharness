@@ -395,11 +395,37 @@ pub fn heartbeat_state_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-heartbeat-state.json"))
 }
 
-/// Write the heartbeat state struct to disk as-is.
+/// Write the heartbeat state struct to disk atomically.
+///
+/// Writes to a `.tmp` sibling first, then renames — on Unix, `rename(2)` is
+/// atomic, so concurrent readers always see a complete file.  This also
+/// mitigates the TOCTOU race between `daemon_tick`'s read-modify-write cycle
+/// and external writers such as `heartbeat-toggle`.
+///
+/// Errors are logged to stderr rather than silently dropped.  Silent failures
+/// previously caused `next_beat_ts` to stay at 0 on disk, making the daemon
+/// fire every second instead of the configured interval.
 pub fn write_heartbeat_state(state: &HeartbeatState) {
     let path = heartbeat_state_path();
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        let _ = std::fs::write(&path, json);
+    let tmp_path = path.with_extension("json.tmp");
+
+    let json = match serde_json::to_string_pretty(state) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("[heartbeat] serialise error: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        eprintln!("[heartbeat] write error ({}): {e}", tmp_path.display());
+        return;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        eprintln!("[heartbeat] rename error: {e}");
+        // Best-effort cleanup of the orphaned tmp file.
+        let _ = std::fs::remove_file(&tmp_path);
     }
 }
 
