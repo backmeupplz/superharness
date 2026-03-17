@@ -456,6 +456,7 @@ pub fn status_counts() -> String {
 ///
 /// A heartbeat is suppressed when `last_beat_ts` was fewer than 5 seconds
 /// before `now` (rapid-fire guard).
+#[cfg(test)]
 pub fn dedup_guard_allows(state: &HeartbeatState, now: u64) -> bool {
     now.saturating_sub(state.last_beat_ts) >= 5
 }
@@ -464,6 +465,7 @@ pub fn dedup_guard_allows(state: &HeartbeatState, now: u64) -> bool {
 /// more than 300 seconds (5 minutes) in the past relative to `now`.
 ///
 /// Mirrors the condition in `daemon_tick()` that resets a stale countdown.
+#[cfg(test)]
 pub fn stale_state_guard_fires(state: &HeartbeatState, now: u64) -> bool {
     state.next_beat_ts > 0 && now > state.next_beat_ts.saturating_add(300)
 }
@@ -477,6 +479,7 @@ pub fn stale_state_guard_fires(state: &HeartbeatState, now: u64) -> bool {
 ///
 /// This is the same logic as `handle_heartbeat_status` in `heartbeat_cmds.rs`,
 /// extracted as a pure function so it can be unit-tested without I/O.
+#[cfg(test)]
 pub fn status_kaomoji(state: &HeartbeatState, now: u64) -> String {
     // No state yet (never fired) and not disabled.
     if state.last_beat_ts == 0 && !state.disabled {
