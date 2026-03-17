@@ -92,9 +92,9 @@ enum Command {
         #[arg(short, long, default_value_t = 50)]
         lines: u32,
 
-        /// Strip TUI decorations, ANSI codes, and compact output for cleaner context
+        /// Return raw, unprocessed output (by default TUI decorations and ANSI codes are stripped)
         #[arg(long)]
-        clean: bool,
+        raw: bool,
     },
 
     /// Send input/keystrokes to a worker agent
@@ -479,8 +479,8 @@ fn main() -> anyhow::Result<()> {
         Some(Command::RunPending) => {
             handlers::handle_run_pending()?;
         }
-        Some(Command::Read { pane, lines, clean }) => {
-            handlers::handle_read(pane, lines, clean)?;
+        Some(Command::Read { pane, lines, raw }) => {
+            handlers::handle_read(pane, lines, raw)?;
         }
         Some(Command::Send { pane, text }) => {
             handlers::handle_send(pane, text)?;

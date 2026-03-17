@@ -10,12 +10,12 @@ pub fn handle_list() -> Result<()> {
 }
 
 /// Handle `Command::Read`.
-pub fn handle_read(pane: String, lines: u32, clean: bool) -> Result<()> {
-    let raw = tmux::read(&pane, lines)?;
-    let output = if clean {
-        output_cleaner::clean_output(&raw)
+pub fn handle_read(pane: String, lines: u32, raw: bool) -> Result<()> {
+    let captured = tmux::read(&pane, lines)?;
+    let output = if raw {
+        captured
     } else {
-        raw
+        output_cleaner::clean_output(&captured)
     };
     let out = serde_json::json!({ "pane": pane, "output": output });
     println!("{}", serde_json::to_string_pretty(&out)?);

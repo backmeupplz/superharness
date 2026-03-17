@@ -424,28 +424,14 @@ pub fn read_heartbeat_state() -> HeartbeatState {
 // Status counts — lightweight active/total worker summary for the status bar
 // ---------------------------------------------------------------------------
 
-/// Return a `"X/Y"` string for the tmux status bar:
-/// - X = workers with recently-changed output (active per monitor state)
-/// - Y = total workers (excluding the orchestrator pane %0 and the daemon pane)
-///
-/// Filters out the heartbeat-daemon pane so it never appears as a worker.
+/// Return the total worker count as a plain number string for the tmux status bar
+/// (e.g. "3"). Filters out the orchestrator pane %0 and the heartbeat-daemon pane.
 pub fn status_counts() -> String {
     let all_panes = tmux::list().unwrap_or_default();
-    let workers: Vec<_> = all_panes
+    let total = all_panes
         .iter()
         .filter(|p| p.id != "%0" && !is_daemon_pane(p))
-        .collect();
-    let total = workers.len();
-
-    if total == 0 {
-        return "0/0".to_string();
-    }
-
-    let monitor_state = load_state();
-    let active = workers
-        .iter()
-        .filter(|p| monitor_state.stall_counts.get(&p.id).copied().unwrap_or(0) == 0)
         .count();
 
-    format!("{active}/{total}")
+    total.to_string()
 }

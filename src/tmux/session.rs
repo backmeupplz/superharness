@@ -138,8 +138,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     );
 
     // Worker count for F4 button label: total worker pane count.
-    let worker_count_snippet =
-        format!("#({bin_path} status-counts 2>/dev/null | cut -d/ -f2 || echo '0')");
+    let worker_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '0')");
 
     let status_right = format!(
         "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
