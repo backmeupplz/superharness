@@ -269,6 +269,7 @@ impl TaskManager {
 
     /// Set worker_pane on a task (by ID prefix) and optionally change its status.
     /// Pass `status = None` to leave the status unchanged.
+    #[allow(dead_code)]
     pub fn set_worker_pane(
         &self,
         id_prefix: &str,
@@ -317,6 +318,7 @@ impl TaskManager {
 
     /// Mark a task done and clear its worker_pane, identified by pane ID.
     /// Best-effort: returns Ok(()) even if no matching task exists.
+    #[allow(dead_code)]
     pub fn complete_by_worker_pane(&self, pane_id: &str) -> Result<()> {
         let mut tasks = self.load()?;
         let mut found = false;

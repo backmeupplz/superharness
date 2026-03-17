@@ -1,4 +1,4 @@
-use crate::{events, heartbeat, output_cleaner, tasks, tmux};
+use crate::{events, heartbeat, output_cleaner, tmux};
 use anyhow::Result;
 
 /// Handle `Command::List`.
@@ -38,10 +38,6 @@ pub fn handle_kill(pane: String) -> Result<()> {
         Some(&pane),
         "worker killed",
     );
-    // Best-effort: mark any task linked to this pane as done.
-    if let Ok(tm) = tasks::TaskManager::new() {
-        let _ = tm.complete_by_worker_pane(&pane);
-    }
     // Trigger a heartbeat so the orchestrator wakes up immediately.
     let _ = heartbeat::heartbeat();
     let out = serde_json::json!({ "pane": pane, "killed": true });

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{events, pending_tasks, tasks, tmux};
+use crate::{events, pending_tasks, tmux};
 
 /// Perform the git worktree status warning check for a directory.
 /// Shared between `handle_spawn` and `handle_git_check`.
@@ -90,7 +90,6 @@ pub fn handle_spawn(
     mode: Option<String>,
     depends_on: Option<String>,
     no_hide: bool,
-    task_id: Option<String>,
 ) -> Result<()> {
     if std::env::var("SUPERHARNESS_WORKER").is_ok() {
         eprintln!("error: workers cannot spawn sub-workers (SUPERHARNESS_WORKER is set)");
@@ -151,17 +150,6 @@ pub fn handle_spawn(
         )?;
         let short_task: String = task.chars().take(80).collect();
         let _ = events::log_event(events::EventKind::WorkerSpawned, Some(&pane), &short_task);
-
-        // If --task-id was provided, mark the task as in-progress and store the pane ID.
-        if let Some(ref tid) = task_id {
-            if let Ok(tm) = tasks::TaskManager::new() {
-                let _ = tm.set_worker_pane(
-                    tid,
-                    Some(pane.clone()),
-                    Some(tasks::TaskStatus::InProgress),
-                );
-            }
-        }
 
         let out = serde_json::json!({ "pane": pane });
         println!("{}", serde_json::to_string_pretty(&out)?);
