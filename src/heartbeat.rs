@@ -83,8 +83,12 @@ fn orchestrator_is_busy() -> bool {
 ///
 /// Strategy:
 /// 1. Get the cursor position (cursor_x, cursor_y) from tmux.
-/// 2. Capture the exact line the cursor is on and check it for user text.
-/// 3. Also capture the last 5 lines of the pane and check ALL of them.
+/// 2. Require cursor_x > 3 — rules out empty prompts where the cursor sits
+///    right after the prompt glyph with nothing typed yet.
+/// 3. Capture the exact line the cursor is on and check it for user text.
+///
+/// The previous "check all last-5 lines" step has been removed: any historical
+/// output line satisfies that check, causing near-constant false positives.
 ///
 /// Returns `false` on any error (safe default).
 fn orchestrator_has_pending_input() -> bool {
@@ -149,12 +153,23 @@ fn orchestrator_has_pending_input() -> bool {
     if parts.len() < 2 {
         return false;
     }
+    let cursor_x: u64 = match parts[0].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
     let cursor_y: i64 = match parts[1].parse() {
         Ok(v) => v,
         Err(_) => return false,
     };
 
-    // ── step 2: check the exact cursor line ──────────────────────────────────
+    // ── step 2: cursor_x guard ───────────────────────────────────────────────
+    // A cursor at column ≤ 3 is sitting right on or just after the prompt glyph
+    // (e.g. "❯ " = 2 chars).  Nothing has been typed yet — skip the pane capture.
+    if cursor_x <= 3 {
+        return false;
+    }
+
+    // ── step 3: check the exact cursor line ──────────────────────────────────
 
     let cursor_line_output = std::process::Command::new("tmux")
         .args([
@@ -174,24 +189,6 @@ fn orchestrator_has_pending_input() -> bool {
             if let Ok(text) = std::str::from_utf8(&o.stdout) {
                 if line_has_content(text) {
                     return true;
-                }
-            }
-        }
-    }
-
-    // ── step 3: check the last 5 lines (catches multiline input) ────────────
-
-    let last5_output = std::process::Command::new("tmux")
-        .args(["capture-pane", "-t", "%0", "-p", "-S", "-5"])
-        .output();
-
-    if let Ok(o) = last5_output {
-        if o.status.success() {
-            if let Ok(text) = std::str::from_utf8(&o.stdout) {
-                for line in text.lines() {
-                    if line_has_content(line) {
-                        return true;
-                    }
                 }
             }
         }
