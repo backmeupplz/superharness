@@ -156,14 +156,19 @@ Valid `priority` values: `high`, `medium`, `low`
 
 ## Task Management
 
-Keep `.superharness/tasks.json` updated as you work. **You write this file directly** — there are no CLI commands for it.
+**You are responsible for managing `.superharness/tasks.json` — write it directly with your file tools. There are no CLI commands for tasks.**
 
-- **When starting a new goal**: create one or more task entries in `tasks.json` (generate a short unique id like `task-<random>`).
-- **When spawning a worker with `--task-id`**: the spawn is automatically linked to the task and its status is set to `in-progress` with the pane recorded — you do not need to update the file manually.
-- **When killing a worker**: the task linked to that pane is automatically marked `done` — you do not need to update the file manually.
-- **When a task is blocked**: set `status` to `blocked` and add a note in `description` — this must be done manually.
+This is your primary coordination tool. Keep it accurate at all times:
 
-At startup, look for tasks with `status: "in-progress"`. Their workers likely crashed. Check with `$BIN list` — if the pane is gone, either respawn the worker or mark the task `pending` and ask the human.
+- **When receiving work**: Break the goal into tasks and write them all to `tasks.json` with `status: "pending"` BEFORE spawning any workers.
+- **When spawning a worker**: Update the task to `status: "in-progress"` and set `worker_pane` to the pane ID.
+- **When a worker finishes**: Update the task to `status: "done"` and clear `worker_pane`. Do this immediately after merging and killing — do not batch.
+- **When a task is blocked**: Set `status: "blocked"` and note why in `description`.
+- **When you want to clean up**: Remove done/cancelled tasks from the file when you no longer need them for context.
+
+At startup, check for tasks with `status: "in-progress"`. Their workers likely crashed. Run `$BIN list` — if the pane is gone, either respawn the worker or set the task back to `pending` and ask the human.
+
+The F5 key shows a popup of your current tasks (read from this file). Keep it accurate so you and the human can see progress at a glance.
 
 ## Away Mode
 
@@ -300,8 +305,9 @@ When you receive a `[HEARTBEAT]` message, check worker panes immediately. When `
 
 1. Read the final output to capture results
 2. **Merge the branch immediately** — do NOT batch merges: `git merge <worker-branch>` (from the main repo)
-3. Kill the pane: `$BIN kill --pane %ID` — this auto-cleans the worktree under `/tmp/sh-*/` **and** marks the linked task `done` in `tasks.json`
-4. Run `$BIN run-pending` to unblock any tasks waiting on this worker
+3. Kill the pane: `$BIN kill --pane %ID` (this auto-cleans the worktree under `/tmp/sh-*/`)
+4. **Update the task** in `.superharness/tasks.json` — set `status: "done"`, clear `worker_pane`
+5. Run `$BIN run-pending` to unblock any tasks waiting on this worker
 
 **Do not batch.** If workers %3, %7, and %9 are running and %3 finishes first, process %3 immediately while %7 and %9 keep running.
 
@@ -309,10 +315,10 @@ When you receive a `[HEARTBEAT]` message, check worker panes immediately. When `
 
 You must actively manage workers. Do not spawn and forget.
 
-1. **Decompose** tasks and write them to `.superharness/tasks.json` before spawning anything
-2. **Spawn workers** with clear, scoped tasks — one worker per independent task unit, all in parallel
+1. **Decompose** tasks and write them to `.superharness/tasks.json` with `status: "pending"` before spawning anything
+2. **Spawn workers** with clear, scoped tasks — one worker per independent task unit, all in parallel. Update each task to `in-progress` with the pane ID.
 3. **React to events** — on `[HEARTBEAT]`, run `$BIN read` or `$BIN ask` to check workers; relay any questions to the human
-4. **Process finished workers immediately** — merge branch, kill pane (auto-cleans worktree and marks task done), run `$BIN run-pending`
+4. **Process finished workers immediately** — merge branch, kill pane, update task to `done` in tasks.json, run `$BIN run-pending`
 5. **Handle failures** — use `$BIN respawn` for crashed workers, or diagnose and send a nudge manually
 
 ## Task Intake Workflow
@@ -325,11 +331,11 @@ When the user gives you a list of tasks, follow this workflow every time:
 
 3. **Write all tasks to `.superharness/tasks.json`** with `status: "pending"` before spawning any workers.
 
-4. **Spawn parallel workers**: For each independent task, spawn one worker with `--dir` pointing to the main repo and `--task-id <id>` to auto-link it. Spawn **ALL** independent workers simultaneously — never sequentially unless there is a hard dependency.
+4. **Spawn parallel workers**: For each independent task, spawn one worker with `--dir` pointing to the main repo. Update each task in `tasks.json` to `in-progress` with the pane ID. Spawn **ALL** independent workers simultaneously — never sequentially unless there is a hard dependency.
 
-5. **Monitor actively**: On `[HEARTBEAT]`, check workers with `$BIN read` or `$BIN ask`. Task status is managed automatically on spawn/kill. Relay worker questions to the user immediately.
+5. **Monitor actively**: On `[HEARTBEAT]`, check workers with `$BIN read` or `$BIN ask`. Relay worker questions to the user immediately.
 
-6. **Mark done and clean up**: Kill the finished worker's pane — worktree and task status are both auto-cleaned.
+6. **Process finished workers**: Merge branch, kill pane, update task to `done` in `tasks.json`. Do this per-worker as they finish — do not batch.
 
 ## Spawning Workers — Parallel by Default
 
