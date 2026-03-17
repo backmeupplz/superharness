@@ -34,26 +34,17 @@ pub fn is_daemon_pane(p: &tmux::PaneInfo) -> bool {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Return the local wall-clock time as "HH:MM".
-/// Falls back to UTC derived from the Unix timestamp if the `date` command fails.
+/// Return the current UTC wall-clock time as "HH:MMZ" derived from the Unix
+/// epoch — no subprocess fork required.
 fn time_hhmm() -> String {
-    std::process::Command::new("date")
-        .arg("+%H:%M")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let secs_in_day = ts % 86400;
-            let h = secs_in_day / 3600;
-            let m = (secs_in_day % 3600) / 60;
-            format!("{h:02}:{m:02}UTC")
-        })
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs_in_day = ts % 86400;
+    let h = secs_in_day / 3600;
+    let m = (secs_in_day % 3600) / 60;
+    format!("{h:02}:{m:02}Z")
 }
 
 /// Return `true` when the last few lines of %0's output suggest it is
@@ -83,8 +74,12 @@ fn orchestrator_is_busy() -> bool {
 ///
 /// Strategy:
 /// 1. Get the cursor position (cursor_x, cursor_y) from tmux.
-/// 2. Capture the exact line the cursor is on and check it for user text.
-/// 3. Also capture the last 5 lines of the pane and check ALL of them.
+/// 2. Require cursor_x > 3 — rules out empty prompts where the cursor sits
+///    right after the prompt glyph with nothing typed yet.
+/// 3. Capture the exact line the cursor is on and check it for user text.
+///
+/// The previous "check all last-5 lines" step has been removed: any historical
+/// output line satisfies that check, causing near-constant false positives.
 ///
 /// Returns `false` on any error (safe default).
 fn orchestrator_has_pending_input() -> bool {
@@ -149,12 +144,23 @@ fn orchestrator_has_pending_input() -> bool {
     if parts.len() < 2 {
         return false;
     }
+    let cursor_x: u64 = match parts[0].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
     let cursor_y: i64 = match parts[1].parse() {
         Ok(v) => v,
         Err(_) => return false,
     };
 
-    // ── step 2: check the exact cursor line ──────────────────────────────────
+    // ── step 2: cursor_x guard ───────────────────────────────────────────────
+    // A cursor at column ≤ 3 is sitting right on or just after the prompt glyph
+    // (e.g. "❯ " = 2 chars).  Nothing has been typed yet — skip the pane capture.
+    if cursor_x <= 3 {
+        return false;
+    }
+
+    // ── step 3: check the exact cursor line ──────────────────────────────────
 
     let cursor_line_output = std::process::Command::new("tmux")
         .args([
@@ -174,24 +180,6 @@ fn orchestrator_has_pending_input() -> bool {
             if let Ok(text) = std::str::from_utf8(&o.stdout) {
                 if line_has_content(text) {
                     return true;
-                }
-            }
-        }
-    }
-
-    // ── step 3: check the last 5 lines (catches multiline input) ────────────
-
-    let last5_output = std::process::Command::new("tmux")
-        .args(["capture-pane", "-t", "%0", "-p", "-S", "-5"])
-        .output();
-
-    if let Ok(o) = last5_output {
-        if o.status.success() {
-            if let Ok(text) = std::str::from_utf8(&o.stdout) {
-                for line in text.lines() {
-                    if line_has_content(line) {
-                        return true;
-                    }
                 }
             }
         }
@@ -398,37 +386,38 @@ pub fn heartbeat_state_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-heartbeat-state.json"))
 }
 
-/// Write the heartbeat state struct to disk as-is.
+/// Write the heartbeat state struct to disk atomically.
+///
+/// Writes to a `.tmp` sibling first, then renames — on Unix, `rename(2)` is
+/// atomic, so concurrent readers always see a complete file.  This also
+/// mitigates the TOCTOU race between `daemon_tick`'s read-modify-write cycle
+/// and external writers such as `heartbeat-toggle`.
+///
+/// Errors are logged to stderr rather than silently dropped.  Silent failures
+/// previously caused `next_beat_ts` to stay at 0 on disk, making the daemon
+/// fire every second instead of the configured interval.
 pub fn write_heartbeat_state(state: &HeartbeatState) {
     let path = heartbeat_state_path();
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        let _ = std::fs::write(&path, json);
-    }
-}
+    let tmp_path = path.with_extension("json.tmp");
 
-/// Convenience writer: `next_beat_ts` is computed as `last_beat_ts + interval_secs`.
-/// For fine-grained control over `next_beat_ts` use `write_heartbeat_state()` directly.
-#[allow(dead_code)]
-pub fn write_heartbeat_state_full(
-    last_beat_ts: u64,
-    interval_secs: u64,
-    sent: bool,
-    needs_attention: bool,
-    disabled: bool,
-) {
-    let interval = if interval_secs == 0 {
-        get_interval()
-    } else {
-        interval_secs
+    let json = match serde_json::to_string_pretty(state) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("[heartbeat] serialise error: {e}");
+            return;
+        }
     };
-    write_heartbeat_state(&HeartbeatState {
-        last_beat_ts,
-        interval_secs: interval,
-        last_sent: sent,
-        next_beat_ts: last_beat_ts + interval,
-        needs_attention,
-        disabled,
-    });
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        eprintln!("[heartbeat] write error ({}): {e}", tmp_path.display());
+        return;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        eprintln!("[heartbeat] rename error: {e}");
+        // Best-effort cleanup of the orphaned tmp file.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
 }
 
 /// Read the heartbeat state from disk (returns default if file is missing or corrupt).
