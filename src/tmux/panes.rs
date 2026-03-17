@@ -54,10 +54,19 @@ pub fn spawn(
 
     let effective_mode = mode.unwrap_or("build");
 
-    // In plan mode, prefix the task to instruct the agent not to make changes.
+    // Prefix every worker task with identity and constraints.
+    let worker_prefix = "You are a worker agent spawned by superharness. \
+        You CANNOT spawn sub-workers — do not attempt to run `superharness spawn`. \
+        Focus only on the task given to you. \
+        Commit your work frequently with `git add -A && git commit -m 'wip: <desc>'` — \
+        the session can crash at any time and uncommitted work is lost.\n\n";
+
+    // In plan mode, additionally instruct the agent not to make changes.
     let effective_task = match effective_mode {
-        "plan" => format!("[PLAN MODE - do not make changes, only analyze and plan]: {task}"),
-        _ => task.to_string(),
+        "plan" => format!(
+            "{worker_prefix}[PLAN MODE - do not make changes, only analyze and plan]: {task}"
+        ),
+        _ => format!("{worker_prefix}{task}"),
     };
 
     // Resolve which AI harness to invoke (opencode / claude / codex / …).
