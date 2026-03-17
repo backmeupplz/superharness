@@ -34,26 +34,17 @@ pub fn is_daemon_pane(p: &tmux::PaneInfo) -> bool {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Return the local wall-clock time as "HH:MM".
-/// Falls back to UTC derived from the Unix timestamp if the `date` command fails.
+/// Return the current UTC wall-clock time as "HH:MMZ" derived from the Unix
+/// epoch — no subprocess fork required.
 fn time_hhmm() -> String {
-    std::process::Command::new("date")
-        .arg("+%H:%M")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let secs_in_day = ts % 86400;
-            let h = secs_in_day / 3600;
-            let m = (secs_in_day % 3600) / 60;
-            format!("{h:02}:{m:02}UTC")
-        })
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs_in_day = ts % 86400;
+    let h = secs_in_day / 3600;
+    let m = (secs_in_day % 3600) / 60;
+    format!("{h:02}:{m:02}Z")
 }
 
 /// Return `true` when the last few lines of %0's output suggest it is
