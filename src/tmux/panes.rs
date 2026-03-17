@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::harness;
-use crate::loop_guard;
 use crate::util;
 
 use super::{tmux, tmux_ok, SESSION};
@@ -145,10 +144,6 @@ pub fn read(pane: &str, lines: u32) -> Result<String> {
 /// Send text to a pane.
 pub fn send(pane: &str, text: &str) -> Result<()> {
     tmux_ok(&["send-keys", "-t", pane, text, "Enter"])?;
-    // Record this send action for loop detection; don't fail if loop guard errors
-    if let Err(e) = loop_guard::record_action(pane, "send", text) {
-        eprintln!("loop_guard: failed to record action: {e}");
-    }
     Ok(())
 }
 

@@ -5,13 +5,11 @@ mod harness;
 mod health;
 mod heartbeat;
 mod layout;
-mod loop_guard;
 mod memory;
 mod monitor;
 mod output_cleaner;
 mod pending_tasks;
 mod project;
-mod relay;
 mod setup;
 mod tasks;
 mod tmux;
@@ -210,20 +208,6 @@ enum Command {
         interval: u64,
     },
 
-    /// Show loop detection status for agent(s)
-    LoopStatus {
-        /// Agent ID to check (omit to check all agents)
-        #[arg(short, long)]
-        pane: Option<String>,
-    },
-
-    /// Clear loop history for an agent (after human breaks the loop)
-    LoopClear {
-        /// Agent ID to clear
-        #[arg(short, long)]
-        pane: String,
-    },
-
     /// Save a checkpoint snapshot of an agent's output and metadata
     Checkpoint {
         /// Agent ID to snapshot
@@ -400,93 +384,6 @@ enum Command {
         subtask_id: String,
     },
 
-    // ── Relay: worker-to-user credential/question relay ──────────────────────
-    /// Workers call this to request input from the human (credentials, keys, etc.)
-    Relay {
-        /// Pane ID of the worker making the request (e.g. %5)
-        #[arg(short, long)]
-        pane: String,
-
-        /// The question to ask the human
-        #[arg(short, long)]
-        question: String,
-
-        /// Additional context explaining why this is needed
-        #[arg(short, long, default_value = "")]
-        context: String,
-
-        /// Mark the answer as sensitive (passwords, keys — not echoed in logs)
-        #[arg(long)]
-        sensitive: bool,
-
-        /// If set, block until this request ID is answered (or timeout expires).
-        /// Workers use this to poll for an answer: --wait-for <id>
-        #[arg(long)]
-        wait_for: Option<String>,
-
-        /// Timeout in seconds when using --wait-for (default 300 = 5 min)
-        #[arg(long, default_value_t = 300)]
-        timeout: u64,
-    },
-
-    /// Orchestrator calls this to answer a pending relay request
-    RelayAnswer {
-        /// Relay request ID (from relay-list output)
-        #[arg(short, long)]
-        id: String,
-
-        /// The answer to provide
-        #[arg(short, long)]
-        answer: String,
-    },
-
-    /// List all relay requests (pending and answered)
-    RelayList {
-        /// Show only pending requests
-        #[arg(long)]
-        pending: bool,
-    },
-
-    /// Workers call this to relay a sudo command that needs a password
-    SudoRelay {
-        /// Pane ID of the worker
-        #[arg(short, long)]
-        pane: String,
-
-        /// The command to run with sudo (without the 'sudo' prefix)
-        #[arg(short, long)]
-        command: String,
-
-        /// If set, block until the relay is answered and execute the command.
-        /// If not set, only creates the relay request and prints its ID.
-        #[arg(long)]
-        execute: bool,
-
-        /// Timeout in seconds when using --execute (default 300)
-        #[arg(long, default_value_t = 300)]
-        timeout: u64,
-    },
-
-    /// Run a command with sudo directly (NOPASSWD path).
-    /// Falls back to relay mechanism if sudo requires a password.
-    SudoExec {
-        /// Pane ID of the calling worker
-        #[arg(short, long)]
-        pane: String,
-
-        /// The command to run with sudo (without the 'sudo' prefix)
-        #[arg(short, long)]
-        command: String,
-
-        /// Block and wait for relay answer if a password is required (default true)
-        #[arg(long, default_value_t = true)]
-        wait: bool,
-
-        /// Timeout in seconds when waiting for a relay answer (default 300)
-        #[arg(long, default_value_t = 300)]
-        timeout: u64,
-    },
-
     // ── Harness management ───────────────────────────────────────────────────
     /// List detected AI harnesses and show which one is the current default
     HarnessList,
@@ -634,12 +531,6 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Healthcheck { pane, interval }) => {
             handlers::handle_healthcheck(pane, interval)?;
         }
-        Some(Command::LoopStatus { pane }) => {
-            handlers::handle_loop_status(pane)?;
-        }
-        Some(Command::LoopClear { pane }) => {
-            handlers::handle_loop_clear(pane)?;
-        }
         Some(Command::Checkpoint { pane, note }) => {
             handlers::handle_checkpoint(pane, note)?;
         }
@@ -718,40 +609,6 @@ fn main() -> anyhow::Result<()> {
             subtask_id,
         }) => {
             handlers::handle_subtask_done(task_id, subtask_id)?;
-        }
-
-        // ── Relay commands ───────────────────────────────────────────────────
-        Some(Command::Relay {
-            pane,
-            question,
-            context,
-            sensitive,
-            wait_for,
-            timeout,
-        }) => {
-            handlers::handle_relay(pane, question, context, sensitive, wait_for, timeout)?;
-        }
-        Some(Command::RelayAnswer { id, answer }) => {
-            handlers::handle_relay_answer(id, answer)?;
-        }
-        Some(Command::RelayList { pending }) => {
-            handlers::handle_relay_list(pending)?;
-        }
-        Some(Command::SudoRelay {
-            pane,
-            command,
-            execute,
-            timeout,
-        }) => {
-            handlers::handle_sudo_relay(pane, command, execute, timeout)?;
-        }
-        Some(Command::SudoExec {
-            pane,
-            command,
-            wait,
-            timeout,
-        }) => {
-            handlers::handle_sudo_exec(pane, command, wait, timeout)?;
         }
 
         // ── Harness management ───────────────────────────────────────────────

@@ -1,4 +1,4 @@
-use crate::{health, loop_guard, tmux};
+use crate::{health, tmux};
 use anyhow::Result;
 
 /// Handle `Command::Ask`.
@@ -108,44 +108,6 @@ pub fn handle_respawn(
     println!();
     println!("The new worker has been given the crash context and will retry the task.");
     println!("Monitor with: superharness read --pane {new_pane} --lines 50");
-    Ok(())
-}
-
-/// Handle `Command::LoopStatus`.
-pub fn handle_loop_status(pane: Option<String>) -> Result<()> {
-    match pane {
-        Some(pane_id) => {
-            let detection = loop_guard::get_loop_status(&pane_id)?;
-            let out = serde_json::json!({
-                "pane": pane_id,
-                "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
-                "details": detection
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-        None => {
-            let all_panes = loop_guard::get_all_panes()?;
-            let mut results = Vec::new();
-            for (pane_id, _count) in &all_panes {
-                let detection = loop_guard::get_loop_status(pane_id)?;
-                results.push(serde_json::json!({
-                    "pane": pane_id,
-                    "loop_detected": detection.as_ref().map(|d| d.detected).unwrap_or(false),
-                    "details": detection
-                }));
-            }
-            let out = serde_json::json!({ "panes": results });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        }
-    }
-    Ok(())
-}
-
-/// Handle `Command::LoopClear`.
-pub fn handle_loop_clear(pane: String) -> Result<()> {
-    loop_guard::clear_pane(&pane)?;
-    let out = serde_json::json!({ "pane": pane, "cleared": true });
-    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
