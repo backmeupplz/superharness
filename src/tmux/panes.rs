@@ -61,23 +61,16 @@ pub fn spawn(
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_else(|| "superharness".to_string());
 
-    // Prefix every worker task with identity, constraints, and the binary path.
-    let worker_prefix = format!(
-        "You are a worker agent spawned by superharness. \
-        You CANNOT spawn sub-workers — do not attempt to run `superharness spawn`. \
-        Focus only on the task given to you. \
-        Commit your work frequently with `git add -A && git commit -m 'wip: <desc>'` — \
-        the session can crash at any time and uncommitted work is lost.\n\n\
-        The superharness binary is at: {sh_bin}\n\
-        When your task is complete, run: {sh_bin} heartbeat\n\n"
-    );
+    // Minimal prefix: binary path (workers can't discover it otherwise) and plan-mode flag.
+    // All behavioral instructions (commit often, no sub-workers, etc.) are composed
+    // by the superharness AI in the task prompt — not hardcoded here.
+    let bin_line = format!("The superharness binary is at: {sh_bin}\n\n");
 
-    // In plan mode, additionally instruct the agent not to make changes.
     let effective_task = match effective_mode {
-        "plan" => format!(
-            "{worker_prefix}[PLAN MODE - do not make changes, only analyze and plan]: {task}"
-        ),
-        _ => format!("{worker_prefix}{task}"),
+        "plan" => {
+            format!("{bin_line}[PLAN MODE - do not make changes, only analyze and plan]: {task}")
+        }
+        _ => format!("{bin_line}{task}"),
     };
 
     // Resolve which AI harness to invoke (opencode / claude / codex / …).

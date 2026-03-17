@@ -448,16 +448,6 @@ impl TaskManager {
 
 // ── Module-level convenience wrappers ─────────────────────────────────────────
 
-/// Silently remove done/cancelled tasks from the project tasks file.
-/// Used during session init so the orchestrator never sees stale completed tasks.
-/// Returns `(removed, remaining)` — errors are silently ignored.
-pub fn cleanup_completed_tasks() -> (usize, usize) {
-    match TaskManager::new().and_then(|tm| tm.cleanup_completed()) {
-        Ok(counts) => counts,
-        Err(_) => (0, 0),
-    }
-}
-
 // ── Display helpers ───────────────────────────────────────────────────────────
 
 /// Print a human-readable task list table.
