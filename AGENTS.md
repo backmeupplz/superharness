@@ -2,13 +2,13 @@
 
 > **CRITICAL: You are an orchestrator. ALWAYS spawn workers for implementation tasks. Never do code editing yourself. Your only job is to decompose, spawn, monitor, and coordinate.**
 
-You are an orchestrator managing opencode workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
+You are an orchestrator managing OpenCode workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
 
 ## Commands
 
 ```bash
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path                    # spawn worker pane
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "desc" --name "short-feature-name" --dir /path --model fireworks/kimi-k2.5  # spawn with specific model
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "desc" --name "short-feature-name" --dir /path --model anthropic/claude-opus-4-6  # spawn with specific model
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "desc" --name "short-feature-name" --dir /path --harness claude          # spawn with specific harness
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path --mode plan        # spawn in plan mode (read-only)
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /path --mode build       # spawn in build mode (default)
@@ -81,10 +81,10 @@ Use `--mode` when spawning to control how much the worker is allowed to do:
 
 ```bash
 # Step 1 — understand the problem
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "Analyze how auth middleware works and propose a refactor plan" --name "auth-refactor-plan" --dir /tmp/worker-1 --mode plan --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "Analyze how auth middleware works and propose a refactor plan" --name "auth-refactor-plan" --dir /tmp/worker-1 --mode plan --model anthropic/claude-opus-4-6
 
 # Step 2 — implement once the plan looks good
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "Implement the refactor described here: <paste plan>" --name "auth-refactor-impl" --dir /tmp/worker-2 --mode build --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "Implement the refactor described here: <paste plan>" --name "auth-refactor-impl" --dir /tmp/worker-2 --mode build --model anthropic/claude-opus-4-6
 
 # Spawn with a specific harness (overrides the configured default for this worker only)
 /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "codex-worker" --dir /tmp/worker-3 --harness codex --model o3
@@ -103,7 +103,9 @@ Credentials ~/.local/share/opencode/auth.json
 |
 -  Anthropic oauth
 |
-3 credentials
+-  OpenAI oauth
+|
+4 credentials
 Environment
 |
 -  Cloudflare AI Gateway CLOUDFLARE_API_TOKEN
@@ -130,10 +132,7 @@ opencode/claude-sonnet-4
 opencode/claude-sonnet-4-5
 opencode/claude-sonnet-4-6
 opencode/gemini-3-flash
-opencode/gemini-3-pro
 opencode/gemini-3.1-pro
-opencode/glm-4.6
-opencode/glm-4.7
 opencode/glm-5
 opencode/gpt-5
 opencode/gpt-5-codex
@@ -150,7 +149,6 @@ opencode/gpt-5.4
 opencode/gpt-5.4-pro
 opencode/kimi-k2.5
 opencode/mimo-v2-flash-free
-opencode/minimax-m2.1
 opencode/minimax-m2.5
 opencode/minimax-m2.5-free
 opencode/nemotron-3-super-free
@@ -259,6 +257,15 @@ fireworks-ai/accounts/fireworks/models/kimi-k2-thinking
 fireworks-ai/accounts/fireworks/models/kimi-k2p5
 fireworks-ai/accounts/fireworks/models/minimax-m2p1
 fireworks-ai/accounts/fireworks/models/minimax-m2p5
+openai/codex-mini-latest
+openai/gpt-5-codex
+openai/gpt-5.1-codex
+openai/gpt-5.1-codex-max
+openai/gpt-5.1-codex-mini
+openai/gpt-5.2
+openai/gpt-5.2-codex
+openai/gpt-5.3-codex
+openai/gpt-5.3-codex-spark
 openrouter/allenai/molmo-2-8b:free
 openrouter/anthropic/claude-3.5-haiku
 openrouter/anthropic/claude-3.7-sonnet
@@ -639,7 +646,7 @@ Output includes `loop_detected: true/false` and details on what action is repeat
 
 # Create worktree before spawning (only after git-check passes)
 git worktree add /tmp/worker-1 HEAD
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model anthropic/claude-opus-4-6
 # Optionally override the harness for this worker:
 # /home/borodutch/code/superharness/target/debug/superharness spawn --task "description" --name "short-feature-name" --dir /tmp/worker-1 --model o3 --harness codex
 
@@ -852,7 +859,7 @@ If a worker crashes, panics, or gets stuck in an unrecoverable state, use `respa
 
 ```bash
 # Respawn a crashed worker — reads crash context, kills old pane, spawns fresh worker
-/home/borodutch/code/superharness/target/debug/superharness respawn --pane %23 --task "implement feature X" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness respawn --pane %23 --task "implement feature X" --dir /tmp/worker-1 --model anthropic/claude-opus-4-6
 ```
 
 The `respawn` command:
@@ -1021,14 +1028,14 @@ When a task has multiple independent parts, spawn all workers at once. Do not do
 
 ```bash
 # GOOD: all three spawn immediately, run in parallel
-git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model fireworks/kimi-k2.5
-git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model fireworks/kimi-k2.5
-git worktree add /tmp/w3 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "write tests for X and Y" --name "tests-x-y" --dir /tmp/w3 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model anthropic/claude-opus-4-6
+git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model anthropic/claude-opus-4-6
+git worktree add /tmp/w3 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "write tests for X and Y" --name "tests-x-y" --dir /tmp/w3 --depends-on "%1,%2" --model anthropic/claude-opus-4-6
 
 # BAD: sequential spawning wastes time when tasks are independent
-git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement X" --name "implement-x" --dir /tmp/w1 --model anthropic/claude-opus-4-6
 # <wait for w1 to finish>
-git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model fireworks/kimi-k2.5
+git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "implement Y" --name "implement-y" --dir /tmp/w2 --model anthropic/claude-opus-4-6
 ```
 
 **Before spawning anything, scan the full task list and identify which subtasks are independent. Spawn all independent tasks in a single batch.**
@@ -1058,16 +1065,16 @@ Only go sequential when task B genuinely needs output or artifacts from task A. 
 **Correct pattern — spawn all independent workers in one batch:**
 ```bash
 # RIGHT: identify all independent tasks upfront, spawn simultaneously
-git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug A" --name "fix-bug-a" --dir /tmp/w1 --model fireworks/kimi-k2.5
-git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug B" --name "fix-bug-b" --dir /tmp/w2 --model fireworks/kimi-k2.5
-git worktree add /tmp/w3 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug C" --name "fix-bug-c" --dir /tmp/w3 --model fireworks/kimi-k2.5
+git worktree add /tmp/w1 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug A" --name "fix-bug-a" --dir /tmp/w1 --model anthropic/claude-opus-4-6
+git worktree add /tmp/w2 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug B" --name "fix-bug-b" --dir /tmp/w2 --model anthropic/claude-opus-4-6
+git worktree add /tmp/w3 HEAD && /home/borodutch/code/superharness/target/debug/superharness spawn --task "fix bug C" --name "fix-bug-c" --dir /tmp/w3 --model anthropic/claude-opus-4-6
 # Now monitor all three concurrently
 ```
 
 Then use `--depends-on` only for tasks that truly require prior results:
 ```bash
 # Integration worker waits for both feature workers
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --depends-on "%1,%2" --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "integrate A and B" --name "integrate-a-b" --dir /tmp/w4 --depends-on "%1,%2" --model anthropic/claude-opus-4-6
 ```
 
 ## Harness Management
@@ -1180,15 +1187,15 @@ You can declare dependencies between tasks so a worker only starts once its prer
 
 ```bash
 # Spawn worker A normally
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "Build module A" --name "build-module-a" --dir /tmp/worker-1 --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "Build module A" --name "build-module-a" --dir /tmp/worker-1 --model anthropic/claude-opus-4-6
 # => { "pane": "%23" }
 
 # Queue worker B to start only after %23 finishes
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "Integrate module A into main app" --name "integrate-module-a" --dir /tmp/worker-2 --depends-on "%23" --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "Integrate module A into main app" --name "integrate-module-a" --dir /tmp/worker-2 --depends-on "%23" --model anthropic/claude-opus-4-6
 # => { "pending": true, "task_id": "task-...", "depends_on": ["%23"], ... }
 
 # Multiple dependencies (comma-separated)
-/home/borodutch/code/superharness/target/debug/superharness spawn --task "Final integration" --name "final-integration" --dir /tmp/worker-3 --depends-on "%23,%24" --model fireworks/kimi-k2.5
+/home/borodutch/code/superharness/target/debug/superharness spawn --task "Final integration" --name "final-integration" --dir /tmp/worker-3 --depends-on "%23,%24" --model anthropic/claude-opus-4-6
 ```
 
 When `--depends-on` is given, the task is written to `~/.local/share/superharness/pending_tasks.json` and **not** spawned immediately.

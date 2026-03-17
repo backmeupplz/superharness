@@ -96,20 +96,6 @@ pub fn superharness_config_dir() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Data directory
-// ---------------------------------------------------------------------------
-
-/// Return the superharness data directory (`~/.local/share/superharness/`).
-/// Falls back to `/tmp/superharness` if HOME cannot be determined.
-pub fn superharness_data_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("superharness")
-}
 
 // ---------------------------------------------------------------------------
 // ANSI color / style constants
