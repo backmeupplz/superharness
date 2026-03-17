@@ -11,7 +11,6 @@ mod output_cleaner;
 mod pending_tasks;
 mod project;
 mod setup;
-mod tasks;
 mod tmux;
 mod util;
 
@@ -297,93 +296,6 @@ enum Command {
         mode: Option<String>,
     },
 
-    // ── Task/subtask storage ─────────────────────────────────────────────────
-    /// Add a new task to the task list
-    TaskAdd {
-        /// Task title
-        title: String,
-
-        /// Optional description
-        #[arg(short, long)]
-        description: Option<String>,
-
-        /// Priority: high, medium, or low
-        #[arg(short, long)]
-        priority: Option<String>,
-
-        /// Comma-separated tags
-        #[arg(short, long)]
-        tags: Option<String>,
-    },
-
-    /// List tasks (with optional filters)
-    TaskList {
-        /// Filter by status: pending, in_progress, done, blocked, cancelled
-        #[arg(short, long)]
-        status: Option<String>,
-
-        /// Filter by tag
-        #[arg(short, long)]
-        tag: Option<String>,
-    },
-
-    /// Mark a task as done
-    TaskDone {
-        /// Task ID prefix (at least 8 chars)
-        id: String,
-    },
-
-    /// Mark a task as in_progress
-    TaskStart {
-        /// Task ID prefix
-        id: String,
-    },
-
-    /// Mark a task as blocked
-    TaskBlock {
-        /// Task ID prefix
-        id: String,
-    },
-
-    /// Mark a task as cancelled
-    TaskCancel {
-        /// Task ID prefix
-        id: String,
-    },
-
-    /// Remove a task permanently
-    TaskRemove {
-        /// Task ID prefix
-        id: String,
-    },
-
-    /// Show full details of a task
-    TaskShow {
-        /// Task ID prefix
-        id: String,
-    },
-
-    /// Remove all done/cancelled tasks from the task list
-    TaskCleanup,
-
-    /// Add a subtask to a task
-    SubtaskAdd {
-        /// Parent task ID prefix
-        task_id: String,
-
-        /// Subtask title
-        title: String,
-    },
-
-    /// Mark a subtask as done
-    SubtaskDone {
-        /// Parent task ID prefix
-        task_id: String,
-
-        /// Subtask ID prefix
-        subtask_id: String,
-    },
-
     // ── Harness management ───────────────────────────────────────────────────
     /// List detected AI harnesses and show which one is the current default
     HarnessList,
@@ -566,49 +478,6 @@ fn main() -> anyhow::Result<()> {
             list,
         }) => {
             handlers::handle_memory(pane, key, value, list)?;
-        }
-
-        // ── Task/subtask commands ────────────────────────────────────────────
-        Some(Command::TaskAdd {
-            title,
-            description,
-            priority,
-            tags,
-        }) => {
-            handlers::handle_task_add(title, description, priority, tags)?;
-        }
-        Some(Command::TaskList { status, tag }) => {
-            handlers::handle_task_list(status, tag)?;
-        }
-        Some(Command::TaskDone { id }) => {
-            handlers::handle_task_done(id)?;
-        }
-        Some(Command::TaskStart { id }) => {
-            handlers::handle_task_start(id)?;
-        }
-        Some(Command::TaskBlock { id }) => {
-            handlers::handle_task_block(id)?;
-        }
-        Some(Command::TaskCancel { id }) => {
-            handlers::handle_task_cancel(id)?;
-        }
-        Some(Command::TaskRemove { id }) => {
-            handlers::handle_task_remove(id)?;
-        }
-        Some(Command::TaskShow { id }) => {
-            handlers::handle_task_show(id)?;
-        }
-        Some(Command::TaskCleanup) => {
-            handlers::handle_task_cleanup()?;
-        }
-        Some(Command::SubtaskAdd { task_id, title }) => {
-            handlers::handle_subtask_add(task_id, title)?;
-        }
-        Some(Command::SubtaskDone {
-            task_id,
-            subtask_id,
-        }) => {
-            handlers::handle_subtask_done(task_id, subtask_id)?;
         }
 
         // ── Harness management ───────────────────────────────────────────────

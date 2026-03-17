@@ -9,7 +9,6 @@ pub mod pane_cmds;
 pub mod pending_cmds;
 pub mod spawn;
 pub mod status;
-pub mod task_cmds;
 
 // Re-export all handler functions for convenient access from main.rs.
 pub use checkpoint_cmds::{handle_checkpoint, handle_checkpoints, handle_memory, handle_resume};
@@ -33,9 +32,4 @@ pub use spawn::handle_spawn;
 pub use status::{
     handle_status_counts, handle_status_human, handle_terminal_size, handle_toggle_mode,
     handle_workers,
-};
-pub use task_cmds::{
-    handle_subtask_add, handle_subtask_done, handle_task_add, handle_task_block,
-    handle_task_cancel, handle_task_cleanup, handle_task_done, handle_task_list,
-    handle_task_remove, handle_task_show, handle_task_start,
 };
