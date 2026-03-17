@@ -74,6 +74,12 @@ enum Command {
         /// main window stays clean. Pass --no-hide to keep the pane visible instead.
         #[arg(long)]
         no_hide: bool,
+
+        /// Optional task ID (prefix) from .superharness/tasks.json to link to this worker.
+        /// When provided, the task is automatically set to in-progress with the pane ID stored,
+        /// and will be marked done when the worker is killed.
+        #[arg(long)]
+        task_id: Option<String>,
     },
 
     /// List all pending (dependency-gated) tasks
@@ -469,8 +475,11 @@ fn main() -> anyhow::Result<()> {
             mode,
             depends_on,
             no_hide,
+            task_id,
         }) => {
-            handlers::handle_spawn(task, dir, name, model, harness, mode, depends_on, no_hide)?;
+            handlers::handle_spawn(
+                task, dir, name, model, harness, mode, depends_on, no_hide, task_id,
+            )?;
         }
 
         Some(Command::Tasks) => {

@@ -9,7 +9,7 @@ use crate::util::{generate_id, now_unix, BOLD, CYAN, GREEN, RED, RESET, YELLOW};
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum TaskStatus {
     Pending,
     InProgress,
@@ -22,7 +22,7 @@ impl std::fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TaskStatus::Pending => write!(f, "pending"),
-            TaskStatus::InProgress => write!(f, "in_progress"),
+            TaskStatus::InProgress => write!(f, "in-progress"),
             TaskStatus::Done => write!(f, "done"),
             TaskStatus::Blocked => write!(f, "blocked"),
             TaskStatus::Cancelled => write!(f, "cancelled"),
@@ -102,6 +102,10 @@ pub struct Task {
     pub subtasks: Vec<Subtask>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Pane ID of the worker currently executing this task (e.g. "%23").
+    /// Set when a worker is spawned with --task-id; cleared when the worker is killed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_pane: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -120,14 +124,16 @@ pub fn parse_priority(s: &str) -> Result<Priority> {
 }
 
 pub fn parse_status(s: &str) -> Result<TaskStatus> {
-    match s.to_lowercase().replace('-', "_").as_str() {
+    match s.to_lowercase().as_str() {
         "pending" => Ok(TaskStatus::Pending),
-        "in_progress" | "inprogress" | "started" | "wip" => Ok(TaskStatus::InProgress),
+        "in-progress" | "in_progress" | "inprogress" | "started" | "wip" => {
+            Ok(TaskStatus::InProgress)
+        }
         "done" | "completed" | "finished" => Ok(TaskStatus::Done),
         "blocked" => Ok(TaskStatus::Blocked),
         "cancelled" | "canceled" => Ok(TaskStatus::Cancelled),
         _ => anyhow::bail!(
-            "invalid status '{}': use pending, in_progress, done, blocked, or cancelled",
+            "invalid status '{}': use pending, in-progress, done, blocked, or cancelled",
             s
         ),
     }
@@ -185,6 +191,7 @@ impl TaskManager {
             subtasks: Vec::new(),
             created_at: now,
             updated_at: now,
+            worker_pane: None,
         };
         tasks.push(task.clone());
         self.save(&tasks)?;
@@ -258,6 +265,74 @@ impl TaskManager {
                 id_prefix
             ),
         }
+    }
+
+    /// Set worker_pane on a task (by ID prefix) and optionally change its status.
+    /// Pass `status = None` to leave the status unchanged.
+    pub fn set_worker_pane(
+        &self,
+        id_prefix: &str,
+        pane: Option<String>,
+        status: Option<TaskStatus>,
+    ) -> Result<Task> {
+        let mut tasks = self.load()?;
+        let indices: Vec<usize> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.id.starts_with(id_prefix))
+            .map(|(i, _)| i)
+            .collect();
+        match indices.len() {
+            0 => anyhow::bail!("no task found with ID prefix: {}", id_prefix),
+            1 => {
+                let idx = indices[0];
+                tasks[idx].worker_pane = pane;
+                if let Some(s) = status {
+                    tasks[idx].status = s;
+                }
+                tasks[idx].updated_at = now_unix();
+                let updated = tasks[idx].clone();
+                self.save(&tasks)?;
+                Ok(updated)
+            }
+            _ => anyhow::bail!(
+                "multiple tasks match prefix '{}' — use more characters",
+                id_prefix
+            ),
+        }
+    }
+
+    /// Find a task whose worker_pane matches the given pane ID.
+    /// Returns the task index and a clone of the task if found.
+    #[allow(dead_code)]
+    pub fn find_by_worker_pane(&self, pane_id: &str) -> Result<Option<(usize, Task)>> {
+        let tasks = self.load()?;
+        for (i, t) in tasks.iter().enumerate() {
+            if t.worker_pane.as_deref() == Some(pane_id) {
+                return Ok(Some((i, t.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Mark a task done and clear its worker_pane, identified by pane ID.
+    /// Best-effort: returns Ok(()) even if no matching task exists.
+    pub fn complete_by_worker_pane(&self, pane_id: &str) -> Result<()> {
+        let mut tasks = self.load()?;
+        let mut found = false;
+        for t in tasks.iter_mut() {
+            if t.worker_pane.as_deref() == Some(pane_id) {
+                t.status = TaskStatus::Done;
+                t.worker_pane = None;
+                t.updated_at = now_unix();
+                found = true;
+                break;
+            }
+        }
+        if found {
+            self.save(&tasks)?;
+        }
+        Ok(())
     }
 
     pub fn add_subtask(&self, task_id_prefix: &str, title: &str) -> Result<Subtask> {
