@@ -458,3 +458,815 @@ pub fn status_counts() -> String {
 
     total.to_string()
 }
+
+// ---------------------------------------------------------------------------
+// Pure guard helpers — extracted for testability
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when the dedup guard would **allow** a heartbeat to fire.
+///
+/// A heartbeat is suppressed when `last_beat_ts` was fewer than 5 seconds
+/// before `now` (rapid-fire guard).
+pub fn dedup_guard_allows(state: &HeartbeatState, now: u64) -> bool {
+    now.saturating_sub(state.last_beat_ts) >= 5
+}
+
+/// Returns `true` when the stale-state guard fires, i.e. `next_beat_ts` is
+/// more than 300 seconds (5 minutes) in the past relative to `now`.
+///
+/// Mirrors the condition in `daemon_tick()` that resets a stale countdown.
+pub fn stale_state_guard_fires(state: &HeartbeatState, now: u64) -> bool {
+    state.next_beat_ts > 0 && now > state.next_beat_ts.saturating_add(300)
+}
+
+// ---------------------------------------------------------------------------
+// Pure status-kaomoji helper — extracted for testability
+// ---------------------------------------------------------------------------
+
+/// Compute the tmux-formatted kaomoji status string for the given state and
+/// current unix timestamp.
+///
+/// This is the same logic as `handle_heartbeat_status` in `heartbeat_cmds.rs`,
+/// extracted as a pure function so it can be unit-tested without I/O.
+pub fn status_kaomoji(state: &HeartbeatState, now: u64) -> String {
+    // No state yet (never fired) and not disabled.
+    if state.last_beat_ts == 0 && !state.disabled {
+        return "#[fg=colour245](^_^) --#[default]".to_string();
+    }
+
+    // Permanently disabled.
+    if state.disabled {
+        return "#[fg=colour240](x_x)#[default]".to_string();
+    }
+
+    let secs_since_beat = now.saturating_sub(state.last_beat_ts);
+    let secs_to_next = state.next_beat_ts.saturating_sub(now);
+
+    if secs_since_beat <= 3 {
+        // Just fired — excited, bright green.
+        format!("#[fg=colour156](^o^) {secs_to_next}s#[default]")
+    } else if !state.last_sent {
+        // Last scheduled beat was skipped (busy) — sleepy, muted yellow.
+        format!("#[fg=colour180](-_-) {secs_to_next}s#[default]")
+    } else if state.needs_attention {
+        // Workers need attention — alarmed, orange.
+        format!("#[fg=colour214](o_O)! {secs_to_next}s#[default]")
+    } else {
+        // Normal — happy, calm green.
+        format!("#[fg=colour114](^_^) {secs_to_next}s#[default]")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test-only file I/O helpers that accept an explicit path
+// ---------------------------------------------------------------------------
+
+/// Read a `HeartbeatState` from an arbitrary path.
+/// Returns `HeartbeatState::default()` when the file is missing or
+/// contains invalid JSON — mirrors the graceful-degradation behaviour of
+/// `read_heartbeat_state()`.
+#[cfg(test)]
+pub(crate) fn read_heartbeat_state_from(path: &std::path::Path) -> HeartbeatState {
+    if !path.exists() {
+        return HeartbeatState::default();
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Write a `HeartbeatState` to an arbitrary path.
+/// Silently ignores I/O errors — mirrors `write_heartbeat_state()`.
+#[cfg(test)]
+pub(crate) fn write_heartbeat_state_to(state: &HeartbeatState, path: &std::path::Path) {
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use tempfile::NamedTempFile;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn make_pane(id: &str, window: &str, title: &str) -> crate::tmux::PaneInfo {
+        crate::tmux::PaneInfo {
+            id: id.to_string(),
+            window: window.to_string(),
+            command: "bash".to_string(),
+            path: "/tmp".to_string(),
+            title: title.to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 1. HeartbeatState defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn heartbeat_state_default_values() {
+        let s = HeartbeatState::default();
+        assert_eq!(s.last_beat_ts, 0, "last_beat_ts must start at 0");
+        assert_eq!(s.interval_secs, 0, "interval_secs must start at 0");
+        assert!(!s.last_sent, "last_sent must start false");
+        assert_eq!(s.next_beat_ts, 0, "next_beat_ts must start at 0");
+        assert!(!s.needs_attention, "needs_attention must start false");
+        assert!(!s.disabled, "disabled must start false");
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Serialization / deserialization round-trips
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn serde_round_trip_all_fields() {
+        let orig = HeartbeatState {
+            last_beat_ts: 1_700_000_000,
+            interval_secs: 30,
+            last_sent: true,
+            next_beat_ts: 1_700_000_030,
+            needs_attention: false,
+            disabled: false,
+        };
+
+        let json = serde_json::to_string_pretty(&orig).expect("serialize");
+        let restored: HeartbeatState = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.last_beat_ts, orig.last_beat_ts);
+        assert_eq!(restored.interval_secs, orig.interval_secs);
+        assert_eq!(restored.last_sent, orig.last_sent);
+        assert_eq!(restored.next_beat_ts, orig.next_beat_ts);
+        assert_eq!(restored.needs_attention, orig.needs_attention);
+        assert_eq!(restored.disabled, orig.disabled);
+    }
+
+    #[test]
+    fn serde_round_trip_disabled_true() {
+        let orig = HeartbeatState {
+            disabled: true,
+            last_beat_ts: 42,
+            interval_secs: 60,
+            last_sent: false,
+            next_beat_ts: 102,
+            needs_attention: true,
+        };
+
+        let json = serde_json::to_string_pretty(&orig).unwrap();
+        let restored: HeartbeatState = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.disabled);
+        assert!(restored.needs_attention);
+        assert_eq!(restored.last_beat_ts, 42);
+    }
+
+    #[test]
+    fn serde_missing_disabled_field_defaults_to_false() {
+        // Simulates JSON written before the `disabled` field existed.
+        let json = r#"{
+            "last_beat_ts": 100,
+            "interval_secs": 30,
+            "last_sent": false,
+            "next_beat_ts": 130,
+            "needs_attention": false
+        }"#;
+
+        let state: HeartbeatState = serde_json::from_str(json).expect("should deserialize");
+        assert!(
+            !state.disabled,
+            "`disabled` must default to false via #[serde(default)]"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Read/write round-trips with temp files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_write_round_trip_temp_file() {
+        let tmp = NamedTempFile::new().unwrap();
+
+        let state = HeartbeatState {
+            last_beat_ts: 1_700_000_000,
+            interval_secs: 60,
+            last_sent: true,
+            next_beat_ts: 1_700_000_060,
+            needs_attention: true,
+            disabled: false,
+        };
+
+        write_heartbeat_state_to(&state, tmp.path());
+        let restored = read_heartbeat_state_from(tmp.path());
+
+        assert_eq!(restored.last_beat_ts, state.last_beat_ts);
+        assert_eq!(restored.interval_secs, state.interval_secs);
+        assert_eq!(restored.last_sent, state.last_sent);
+        assert_eq!(restored.next_beat_ts, state.next_beat_ts);
+        assert_eq!(restored.needs_attention, state.needs_attention);
+        assert_eq!(restored.disabled, state.disabled);
+    }
+
+    #[test]
+    fn read_write_preserves_disabled_flag() {
+        let tmp = NamedTempFile::new().unwrap();
+
+        let state = HeartbeatState {
+            disabled: true,
+            ..Default::default()
+        };
+        write_heartbeat_state_to(&state, tmp.path());
+
+        let restored = read_heartbeat_state_from(tmp.path());
+        assert!(restored.disabled, "disabled flag must survive round-trip");
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Corrupt / malformed file handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_from_corrupt_file_returns_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(tmp, "{{not valid json!!!").unwrap();
+        tmp.flush().unwrap();
+
+        let result = read_heartbeat_state_from(tmp.path());
+        // Must not panic and must return the safe default
+        assert_eq!(
+            result.last_beat_ts, 0,
+            "corrupt file → default last_beat_ts"
+        );
+        assert!(!result.disabled, "corrupt file → default disabled");
+    }
+
+    #[test]
+    fn read_from_empty_file_returns_default() {
+        let tmp = NamedTempFile::new().unwrap();
+        // File exists but is empty
+        let result = read_heartbeat_state_from(tmp.path());
+        assert_eq!(result.last_beat_ts, 0);
+        assert_eq!(result.interval_secs, 0);
+    }
+
+    #[test]
+    fn read_from_missing_file_returns_default() {
+        // Deliberately use a path that doesn't exist
+        let path =
+            std::path::PathBuf::from("/tmp/superharness-test-NONEXISTENT-file-abc12345.json");
+        let _ = std::fs::remove_file(&path); // ensure absence
+
+        let result = read_heartbeat_state_from(&path);
+        assert_eq!(result.last_beat_ts, 0);
+        assert!(!result.disabled);
+    }
+
+    #[test]
+    fn read_from_wrong_type_json_returns_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        // Valid JSON but wrong type (array instead of object)
+        write!(tmp, "[1, 2, 3]").unwrap();
+        tmp.flush().unwrap();
+
+        let result = read_heartbeat_state_from(tmp.path());
+        assert_eq!(result.last_beat_ts, 0);
+    }
+
+    #[test]
+    fn read_from_null_json_returns_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(tmp, "null").unwrap();
+        tmp.flush().unwrap();
+
+        let result = read_heartbeat_state_from(tmp.path());
+        assert_eq!(result.last_beat_ts, 0);
+        assert!(!result.disabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Dedup guard logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dedup_guard_suppresses_beat_fired_3s_ago() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 3, // only 3 seconds ago
+            ..Default::default()
+        };
+        assert!(
+            !dedup_guard_allows(&state, now),
+            "beat 3s ago should be suppressed (< 5s window)"
+        );
+    }
+
+    #[test]
+    fn dedup_guard_suppresses_beat_fired_exactly_4s_ago() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 4,
+            ..Default::default()
+        };
+        assert!(!dedup_guard_allows(&state, now));
+    }
+
+    #[test]
+    fn dedup_guard_allows_beat_fired_5s_ago() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 5,
+            ..Default::default()
+        };
+        assert!(
+            dedup_guard_allows(&state, now),
+            "beat exactly 5s ago should be allowed"
+        );
+    }
+
+    #[test]
+    fn dedup_guard_allows_beat_fired_10s_ago() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 10,
+            ..Default::default()
+        };
+        assert!(dedup_guard_allows(&state, now));
+    }
+
+    #[test]
+    fn dedup_guard_allows_when_never_fired() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: 0, // never fired
+            ..Default::default()
+        };
+        // 0 is far in the past so the guard should allow
+        assert!(dedup_guard_allows(&state, now));
+    }
+
+    #[test]
+    fn dedup_guard_handles_saturating_subtraction() {
+        // now < last_beat_ts (clock went backward — shouldn't panic)
+        let now = 10u64;
+        let state = HeartbeatState {
+            last_beat_ts: 9999, // in the future relative to now
+            ..Default::default()
+        };
+        // saturating_sub(9999) → 0 < 5 → suppressed, no panic
+        assert!(!dedup_guard_allows(&state, now));
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Stale-state guard
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stale_guard_fires_when_next_beat_400s_in_past() {
+        let now = 1_700_000_600u64;
+        let state = HeartbeatState {
+            next_beat_ts: now - 400, // 400 > 300 → stale
+            ..Default::default()
+        };
+        assert!(
+            stale_state_guard_fires(&state, now),
+            "next_beat_ts 400s in the past should be stale"
+        );
+    }
+
+    #[test]
+    fn stale_guard_does_not_fire_when_next_beat_100s_in_past() {
+        let now = 1_700_000_600u64;
+        let state = HeartbeatState {
+            next_beat_ts: now - 100, // 100 < 300 → not stale
+            ..Default::default()
+        };
+        assert!(
+            !stale_state_guard_fires(&state, now),
+            "next_beat_ts only 100s in the past should not be stale"
+        );
+    }
+
+    #[test]
+    fn stale_guard_does_not_fire_when_next_beat_in_future() {
+        let now = 1_700_000_600u64;
+        let state = HeartbeatState {
+            next_beat_ts: now + 20, // upcoming beat
+            ..Default::default()
+        };
+        assert!(!stale_state_guard_fires(&state, now));
+    }
+
+    #[test]
+    fn stale_guard_does_not_fire_when_next_beat_ts_is_zero() {
+        // next_beat_ts == 0 means uninitialized; guard must not fire.
+        let now = 1_700_000_600u64;
+        let state = HeartbeatState {
+            next_beat_ts: 0,
+            ..Default::default()
+        };
+        assert!(
+            !stale_state_guard_fires(&state, now),
+            "next_beat_ts == 0 (uninitialized) must not trigger stale guard"
+        );
+    }
+
+    #[test]
+    fn stale_guard_fires_at_exact_boundary() {
+        let now = 1_700_000_600u64;
+        // Exactly at the boundary: now == next_beat_ts + 301 (> 300)
+        let state = HeartbeatState {
+            next_beat_ts: now - 301,
+            ..Default::default()
+        };
+        assert!(stale_state_guard_fires(&state, now));
+    }
+
+    #[test]
+    fn stale_guard_does_not_fire_just_below_boundary() {
+        let now = 1_700_000_600u64;
+        // now == next_beat_ts + 299 (< 300 → not stale)
+        let state = HeartbeatState {
+            next_beat_ts: now - 299,
+            ..Default::default()
+        };
+        assert!(!stale_state_guard_fires(&state, now));
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Toggle transitions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn toggle_off_sets_disabled_flag() {
+        let mut state = HeartbeatState::default();
+        assert!(!state.disabled, "should start enabled");
+
+        // Simulate toggling off
+        state.disabled = true;
+        assert!(state.disabled);
+    }
+
+    #[test]
+    fn toggle_on_clears_disabled_flag() {
+        let mut state = HeartbeatState {
+            disabled: true,
+            ..Default::default()
+        };
+        // Simulate toggling on
+        state.disabled = false;
+        assert!(!state.disabled);
+    }
+
+    #[test]
+    fn toggle_on_resets_countdown() {
+        let now = 1_700_000_000u64;
+        let interval = 30u64;
+        let mut state = HeartbeatState {
+            disabled: true,
+            interval_secs: interval,
+            next_beat_ts: 0,
+            ..Default::default()
+        };
+
+        // Simulate the logic in handle_heartbeat_toggle() when re-enabling
+        state.disabled = false;
+        state.next_beat_ts = now + state.interval_secs;
+
+        assert!(!state.disabled, "must be enabled after toggle");
+        assert_eq!(
+            state.next_beat_ts,
+            now + interval,
+            "countdown must restart at now + interval"
+        );
+    }
+
+    #[test]
+    fn toggle_survives_file_round_trip() {
+        let tmp = NamedTempFile::new().unwrap();
+
+        // Write disabled=true
+        let state = HeartbeatState {
+            disabled: true,
+            last_beat_ts: 1_000,
+            interval_secs: 30,
+            next_beat_ts: 1_030,
+            ..Default::default()
+        };
+        write_heartbeat_state_to(&state, tmp.path());
+
+        // Toggle on
+        let mut loaded = read_heartbeat_state_from(tmp.path());
+        assert!(loaded.disabled);
+        loaded.disabled = false;
+        loaded.next_beat_ts = 2_000 + loaded.interval_secs;
+        write_heartbeat_state_to(&loaded, tmp.path());
+
+        // Verify persisted
+        let final_state = read_heartbeat_state_from(tmp.path());
+        assert!(!final_state.disabled, "disabled=false must be persisted");
+        assert_eq!(final_state.next_beat_ts, 2_030);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Interval computation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interval_next_beat_equals_last_beat_plus_interval() {
+        let last = 1_700_000_000u64;
+        let interval = 45u64;
+        let state = HeartbeatState {
+            last_beat_ts: last,
+            interval_secs: interval,
+            next_beat_ts: last + interval,
+            ..Default::default()
+        };
+        assert_eq!(state.next_beat_ts, state.last_beat_ts + state.interval_secs);
+    }
+
+    #[test]
+    fn interval_round_trips_via_temp_file() {
+        let tmp = NamedTempFile::new().unwrap();
+
+        let last = 1_700_000_000u64;
+        let interval = 45u64;
+        let state = HeartbeatState {
+            last_beat_ts: last,
+            interval_secs: interval,
+            next_beat_ts: last + interval,
+            last_sent: false,
+            needs_attention: false,
+            disabled: false,
+        };
+
+        write_heartbeat_state_to(&state, tmp.path());
+        let restored = read_heartbeat_state_from(tmp.path());
+
+        assert_eq!(restored.next_beat_ts, last + interval);
+        assert_eq!(restored.interval_secs, interval);
+    }
+
+    #[test]
+    fn interval_zero_does_not_panic() {
+        let state = HeartbeatState {
+            interval_secs: 0,
+            last_beat_ts: 1000,
+            next_beat_ts: 1000, // 1000 + 0
+            ..Default::default()
+        };
+        // The fallback in daemon_tick would call get_interval(), but the state
+        // struct itself is valid with interval == 0.
+        assert_eq!(state.next_beat_ts, state.last_beat_ts + state.interval_secs);
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. is_daemon_pane detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn daemon_pane_detected_by_window_name() {
+        let pane = make_pane("%5", DAEMON_WINDOW, "other-title");
+        assert!(
+            is_daemon_pane(&pane),
+            "pane with daemon window name must be detected"
+        );
+    }
+
+    #[test]
+    fn daemon_pane_detected_by_title() {
+        let pane = make_pane("%5", "some-other-window", DAEMON_WINDOW);
+        assert!(
+            is_daemon_pane(&pane),
+            "pane with daemon title must be detected"
+        );
+    }
+
+    #[test]
+    fn daemon_pane_detected_by_both_window_and_title() {
+        let pane = make_pane("%5", DAEMON_WINDOW, DAEMON_WINDOW);
+        assert!(is_daemon_pane(&pane));
+    }
+
+    #[test]
+    fn worker_pane_not_mistaken_for_daemon() {
+        let pane = make_pane("%3", "my-feature", "my-feature");
+        assert!(
+            !is_daemon_pane(&pane),
+            "regular worker must not be identified as daemon"
+        );
+    }
+
+    #[test]
+    fn orchestrator_pane_not_mistaken_for_daemon() {
+        let pane = make_pane("%0", "superharness", "superharness");
+        assert!(
+            !is_daemon_pane(&pane),
+            "orchestrator (%0) must not be identified as daemon"
+        );
+    }
+
+    #[test]
+    fn pane_with_partial_daemon_name_not_detected() {
+        // "heartbeat-daemon-extra" is NOT the daemon window
+        let pane = make_pane("%7", "heartbeat-daemon-extra", "other");
+        assert!(
+            !is_daemon_pane(&pane),
+            "partial match on window name must not trigger detection"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. Status display kaomoji
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kaomoji_disabled_shows_dead_face() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            disabled: true,
+            ..Default::default()
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(x_x)"),
+            "disabled should show dead face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_no_state_shows_placeholder() {
+        // last_beat_ts == 0 and not disabled → neutral placeholder
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: 0,
+            disabled: false,
+            ..Default::default()
+        };
+        let face = status_kaomoji(&state, now);
+        // The placeholder contains "(^_^)" and "--"
+        assert!(
+            face.contains("(^_^)") && face.contains("--"),
+            "no-state placeholder not found in: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_just_fired_shows_excited_face() {
+        let now = 1_700_000_100u64;
+        // Fired 2 seconds ago (within the 3-second "just fired" window)
+        let state = HeartbeatState {
+            last_beat_ts: now - 2,
+            last_sent: true,
+            needs_attention: false,
+            next_beat_ts: now + 28,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(^o^)"),
+            "just-fired beat should show excited face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_skipped_beat_shows_sleepy_face() {
+        let now = 1_700_000_100u64;
+        // Beat was more than 3s ago AND last_sent = false (skipped)
+        let state = HeartbeatState {
+            last_beat_ts: now - 60,
+            last_sent: false,
+            needs_attention: false,
+            next_beat_ts: now + 30,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(-_-)"),
+            "skipped beat should show sleepy face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_needs_attention_shows_alarmed_face() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 60,
+            last_sent: true,
+            needs_attention: true,
+            next_beat_ts: now + 30,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(o_O)"),
+            "needs-attention state should show alarmed face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_normal_shows_happy_face() {
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 60,
+            last_sent: true,
+            needs_attention: false,
+            next_beat_ts: now + 30,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(^_^)"),
+            "normal state should show happy face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_contains_countdown_seconds() {
+        let now = 1_700_000_100u64;
+        let secs_to_next = 17u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 60,
+            last_sent: true,
+            needs_attention: false,
+            next_beat_ts: now + secs_to_next,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains(&format!("{secs_to_next}s")),
+            "kaomoji must include countdown '17s', got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_priority_skipped_beats_needs_attention() {
+        // When last_sent=false AND needs_attention=true, sleepy face wins
+        // (last_sent check comes first in the if-else chain)
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: now - 60,
+            last_sent: false,
+            needs_attention: true,
+            next_beat_ts: now + 30,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(-_-)"),
+            "sleepy face (skipped) must take priority over alarmed face, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_just_fired_boundary_exactly_3s() {
+        let now = 1_700_000_100u64;
+        // Exactly 3 seconds ago (boundary — should still show excited face)
+        let state = HeartbeatState {
+            last_beat_ts: now - 3,
+            last_sent: true,
+            needs_attention: false,
+            next_beat_ts: now + 27,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("(^o^)"),
+            "beat at exactly 3s boundary should still be excited, got: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_just_past_boundary_4s() {
+        let now = 1_700_000_100u64;
+        // 4 seconds ago → falls out of the excited window
+        let state = HeartbeatState {
+            last_beat_ts: now - 4,
+            last_sent: true,
+            needs_attention: false,
+            next_beat_ts: now + 26,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        // Should show happy face (last_sent=true, no attention needed)
+        assert!(
+            face.contains("(^_^)"),
+            "beat 4s ago should no longer show excited face, got: {face}"
+        );
+    }
+}
