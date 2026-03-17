@@ -54,12 +54,23 @@ pub fn spawn(
 
     let effective_mode = mode.unwrap_or("build");
 
-    // Prefix every worker task with identity and constraints.
-    let worker_prefix = "You are a worker agent spawned by superharness. \
+    // Resolve the superharness binary path at spawn time so the worker pane
+    // can always find it even if PATH is different inside the new bash session.
+    let sh_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "superharness".to_string());
+
+    // Prefix every worker task with identity, constraints, and the binary path.
+    let worker_prefix = format!(
+        "You are a worker agent spawned by superharness. \
         You CANNOT spawn sub-workers — do not attempt to run `superharness spawn`. \
         Focus only on the task given to you. \
         Commit your work frequently with `git add -A && git commit -m 'wip: <desc>'` — \
-        the session can crash at any time and uncommitted work is lost.\n\n";
+        the session can crash at any time and uncommitted work is lost.\n\n\
+        The superharness binary is at: {sh_bin}\n\
+        When your task is complete, run: {sh_bin} heartbeat\n\n"
+    );
 
     // In plan mode, additionally instruct the agent not to make changes.
     let effective_task = match effective_mode {
@@ -79,18 +90,10 @@ pub fn spawn(
     // Build the harness command string (handles per-harness flag differences).
     let opencode_cmd = harness::build_harness_cmd(&active_harness, model, &effective_task);
 
-    // We wrap opencode so that when it exits the pane auto-kills itself.
-    // The wrapper uses tmux display-message to get the pane's own ID at runtime,
-    // then invokes `superharness kill --pane <id>` after opencode finishes.
-    // We resolve the superharness binary path at spawn time so the worker pane
-    // can always find it even if PATH is different inside the new bash session.
-    let sh_bin = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(String::from))
-        .unwrap_or_else(|| "superharness".to_string());
-
+    // Wrap harness so that when it exits the pane auto-kills itself.
+    // Export SUPERHARNESS_BIN so scripts/tools in the worker shell can find it too.
     let cmd = format!(
-        "export SUPERHARNESS_WORKER=1; {opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')"
+        "export SUPERHARNESS_WORKER=1 SUPERHARNESS_BIN='{sh_bin}'; {opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')"
     );
 
     // Split the current window to create a new pane running opencode directly
