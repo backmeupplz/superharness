@@ -226,7 +226,8 @@ pub fn get_interval() -> u64 {
 
 /// Send a [HEARTBEAT] status message to %0 unconditionally.
 ///
-/// No busy/disabled/countdown checks — those are the daemon's responsibility.
+/// Self-guards against disabled state and rapid-fire duplicates so callers
+/// don't need to check those conditions themselves.
 /// Called by:
 ///   - `daemon_tick()` after all gating checks pass
 ///   - `handle_heartbeat(None)` when a worker explicitly fires a beat
@@ -235,6 +236,17 @@ pub fn get_interval() -> u64 {
 /// Returns `needs_attention` — `true` when at least one worker is stalled or
 /// waiting for approval.
 pub fn heartbeat() -> Result<bool> {
+    let state = read_heartbeat_state();
+    // Bug 1 fix: self-guard — honour disabled flag regardless of caller
+    if state.disabled {
+        return Ok(false);
+    }
+    // Bug 3 fix: dedup guard — don't pile up messages if fired in quick succession
+    let now = util::now_unix();
+    if now.saturating_sub(state.last_beat_ts) < 5 {
+        return Ok(false);
+    }
+
     let all_panes = tmux::list().unwrap_or_default();
     let worker_panes: Vec<_> = all_panes
         .iter()
@@ -332,14 +344,25 @@ pub fn daemon_tick() -> Result<()> {
         return Ok(());
     }
 
-    // 5. All clear — fire the heartbeat
+    // 5. Re-read state to catch any toggle that happened during this tick
+    //    (TOCTOU fix: heartbeat-toggle may have written disabled=true after our
+    //    initial read at the top of this function)
+    let fresh = read_heartbeat_state();
+    if fresh.disabled {
+        return Ok(());
+    }
+
+    // 5b. All clear — fire the heartbeat
     let needs_attention = heartbeat().unwrap_or(false);
 
-    state.last_beat_ts = now;
-    state.next_beat_ts = now + interval;
-    state.last_sent = true;
-    state.needs_attention = needs_attention;
-    write_heartbeat_state(&state);
+    // Re-read one more time so we only overwrite timing fields and preserve
+    // the disabled flag (and any other fields) from the most-recent disk state.
+    let mut latest = read_heartbeat_state();
+    latest.last_beat_ts = now;
+    latest.next_beat_ts = now + interval;
+    latest.last_sent = true;
+    latest.needs_attention = needs_attention;
+    write_heartbeat_state(&latest);
 
     Ok(())
 }
