@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::util;
+use crate::project;
 
 fn memory_dir() -> Result<PathBuf> {
-    Ok(util::superharness_data_dir().join("memory"))
+    Ok(project::get_project_state_dir()?.join("memory"))
 }
 
 fn memory_file(pane_id: &str) -> Result<PathBuf> {

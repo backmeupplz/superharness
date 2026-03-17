@@ -3,10 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-use crate::util::{self, now_unix};
+use crate::project;
+use crate::util::now_unix;
 
 fn checkpoints_base_dir() -> Result<PathBuf> {
-    Ok(util::superharness_data_dir().join("checkpoints"))
+    Ok(project::get_project_state_dir()?.join("checkpoints"))
 }
 
 fn pane_checkpoint_dir(pane_id: &str) -> Result<PathBuf> {

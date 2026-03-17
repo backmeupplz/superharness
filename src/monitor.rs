@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::util;
+use crate::project;
 
 /// State persisted between monitor runs.
 #[derive(Serialize, Deserialize, Default)]
@@ -15,12 +15,15 @@ pub struct MonitorState {
     pub recovery_attempts: HashMap<String, u32>,
 }
 
-fn state_path() -> PathBuf {
-    util::superharness_data_dir().join("monitor_state.json")
+fn state_path() -> anyhow::Result<PathBuf> {
+    Ok(project::get_project_state_dir()?.join("monitor_state.json"))
 }
 
 pub fn load_state() -> MonitorState {
-    let path = state_path();
+    let path = match state_path() {
+        Ok(p) => p,
+        Err(_) => return MonitorState::default(),
+    };
     if !path.exists() {
         return MonitorState::default();
     }
