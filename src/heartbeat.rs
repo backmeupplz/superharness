@@ -429,31 +429,6 @@ pub fn write_heartbeat_state(state: &HeartbeatState) {
     }
 }
 
-/// Convenience writer: `next_beat_ts` is computed as `last_beat_ts + interval_secs`.
-/// For fine-grained control over `next_beat_ts` use `write_heartbeat_state()` directly.
-#[allow(dead_code)]
-pub fn write_heartbeat_state_full(
-    last_beat_ts: u64,
-    interval_secs: u64,
-    sent: bool,
-    needs_attention: bool,
-    disabled: bool,
-) {
-    let interval = if interval_secs == 0 {
-        get_interval()
-    } else {
-        interval_secs
-    };
-    write_heartbeat_state(&HeartbeatState {
-        last_beat_ts,
-        interval_secs: interval,
-        last_sent: sent,
-        next_beat_ts: last_beat_ts + interval,
-        needs_attention,
-        disabled,
-    });
-}
-
 /// Read the heartbeat state from disk (returns default if file is missing or corrupt).
 pub fn read_heartbeat_state() -> HeartbeatState {
     let path = heartbeat_state_path();
