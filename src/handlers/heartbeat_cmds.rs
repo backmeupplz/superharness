@@ -98,12 +98,20 @@ pub fn handle_heartbeat_toggle() -> Result<()> {
 ///
 /// Pure display: reads state file, prints kaomoji + countdown. Never fires anything.
 ///
+/// Also acts as a watchdog: calls [`heartbeat::ensure_daemon_running`] on every
+/// invocation. Because the tmux status bar runs this command every ~1 s
+/// (status-interval = 1), a crashed or missing daemon window will be detected
+/// and recreated within one second — without any additional polling loop.
+///
 /// Simplified faces:
 /// - Disabled: `(x_x)`
 /// - No scheduled beat (`next_beat_ts == 0`): `(^_^) --`
 /// - Normal countdown: `(^_^) Ns`
 /// - Just fired (within 3s): `(^o^) Ns`
 pub fn handle_heartbeat_status() -> Result<()> {
+    // Watchdog: silently recreate the daemon window if it disappeared.
+    heartbeat::ensure_daemon_running();
+
     let now = now_secs();
 
     let state = heartbeat::read_heartbeat_state();

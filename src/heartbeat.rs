@@ -28,6 +28,82 @@ pub fn is_daemon_pane(p: &tmux::PaneInfo) -> bool {
     p.window == DAEMON_WINDOW || p.title == DAEMON_WINDOW
 }
 
+/// Ensure the heartbeat daemon window is running inside the `superharness`
+/// tmux session.
+///
+/// Checks for a window named [`DAEMON_WINDOW`] with `tmux list-windows`. If
+/// the window is absent (crashed, accidentally killed, or never started),
+/// recreates it using the path returned by `std::env::current_exe()` so the
+/// recovery works regardless of `$PATH`.
+///
+/// Designed to be called from a frequent, low-cost code path such as
+/// `handle_heartbeat_status` (which runs every ~1 s via the tmux status bar).
+/// The check is a single fast subprocess; the heavier `new-window` call is
+/// only made when the daemon is actually missing.
+///
+/// Returns `true` if the daemon was (re)created, `false` if it was already
+/// running (normal case).
+pub fn ensure_daemon_running() -> bool {
+    // ── 1. Check whether the daemon window is still alive ───────────────────
+    let exists = std::process::Command::new("tmux")
+        .args([
+            "list-windows",
+            "-t",
+            crate::tmux::SESSION,
+            "-F",
+            "#{window_name}",
+        ])
+        .output()
+        .ok()
+        .map(|out| {
+            let output = String::from_utf8_lossy(&out.stdout);
+            output.lines().any(|line| line.trim() == DAEMON_WINDOW)
+        })
+        .unwrap_or(false);
+
+    if exists {
+        return false; // daemon is healthy — nothing to do
+    }
+
+    // ── 2. Daemon is gone — locate the binary and recreate the window ────────
+    let bin_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "superharness".to_string());
+
+    let daemon_cmd =
+        format!("while true; do {bin_path} heartbeat-daemon-tick 2>/dev/null; sleep 1; done");
+
+    let result = std::process::Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            crate::tmux::SESSION,
+            "-d", // don't steal focus
+            "-n",
+            DAEMON_WINDOW,
+            "bash",
+            "-c",
+            &daemon_cmd,
+        ])
+        .status();
+
+    match result {
+        Ok(s) if s.success() => {
+            eprintln!("[heartbeat] daemon window was missing — recreated successfully");
+            true
+        }
+        Ok(s) => {
+            eprintln!("[heartbeat] daemon window recreation failed (status {s})");
+            false
+        }
+        Err(e) => {
+            eprintln!("[heartbeat] daemon window recreation error: {e}");
+            false
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------

@@ -514,7 +514,10 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         "-c",
         &daemon_cmd,
     ]);
-    // Set the pane title as well (belt-and-suspenders filter)
+    // Set the pane title as well (belt-and-suspenders filter).
+    // Guard: verify the returned pane ID is NOT %0 before setting the title.
+    // display-message can fall through to the current pane (%0) when the
+    // daemon window lookup fails, which would rename the orchestrator pane.
     if let Ok(pane_id) = tmux(&[
         "display-message",
         "-t",
@@ -522,13 +525,10 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         "-p",
         "#{pane_id}",
     ]) {
-        let _ = tmux_ok(&[
-            "select-pane",
-            "-t",
-            pane_id.trim(),
-            "-T",
-            heartbeat::DAEMON_WINDOW,
-        ]);
+        let pane_id = pane_id.trim();
+        if !pane_id.is_empty() && pane_id != "%0" {
+            let _ = tmux_ok(&["select-pane", "-t", pane_id, "-T", heartbeat::DAEMON_WINDOW]);
+        }
     }
 
     // ── Initialize heartbeat state ───────────────────────────────────────────
