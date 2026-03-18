@@ -45,29 +45,21 @@ fn now_secs() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Return `true` when the last few lines of %0's output suggest it is
-/// actively processing (spinner or block characters visible).
+/// actively processing (braille spinner characters visible, threshold >= 3).
 ///
-/// Threshold: 1 character = busy (any spinner/block char in last 5 lines).
+/// Block chars (■/⬝) are intentionally excluded — they appear in the opencode
+/// status bar even when idle, causing false positives.
 pub fn main_pane_is_busy() -> bool {
     let output = match tmux::read("%0", 5) {
         Ok(o) => o,
         Err(_) => return false,
     };
-
-    // Block characters
-    const BLOCK_CHARS: &[char] = &['\u{25A0}', '\u{2B1D}'];
-    // Braille spinner characters
-    const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-    for line in output.lines() {
-        for &c in BLOCK_CHARS.iter().chain(SPINNER_CHARS.iter()) {
-            if line.contains(c) {
-                return true;
-            }
-        }
-    }
-
-    false
+    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spinner_count: usize = output
+        .lines()
+        .map(|line| spinner_chars.iter().filter(|&&c| line.contains(c)).count())
+        .sum();
+    spinner_count >= 3
 }
 
 // ---------------------------------------------------------------------------
@@ -114,13 +106,41 @@ fn line_has_content(raw: &str) -> bool {
 /// Return `true` when the user appears to have pending (unsent) input in the
 /// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
 ///
-/// Strategy (for ANY foreground process, not just shells):
+/// Strategy:
+/// 0. Shell-only guard: if the foreground process is not a known shell, return false
 /// 1. Get cursor position via tmux display-message
 /// 2. If cursor_x == 0, return false
 /// 3. Capture cursor line via tmux capture-pane
 /// 4. Strip ANSI, strip prompt chars, check for remaining content
 /// 5. If content exists, return true
 pub fn main_pane_has_input() -> bool {
+    // ── step 0: shell-only guard ─────────────────────────────────────────────
+    let foreground_cmd_out = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            "%0",
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    {
+        let foreground_cmd = foreground_cmd_out.trim();
+        const SHELLS: &[&str] = &["bash", "zsh", "sh", "fish", "dash", "tcsh", "csh"];
+        if !SHELLS.contains(&foreground_cmd) {
+            return false;
+        }
+    }
+
     // ── step 1: get cursor position ──────────────────────────────────────────
 
     let pos_output = match std::process::Command::new("tmux")
