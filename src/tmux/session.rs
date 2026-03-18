@@ -501,12 +501,18 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     // Spawn a hidden background window that runs the daemon loop.
     // The window is named "heartbeat-daemon" so it is filtered out of all
     // worker counts and listings.  It is never visible to the user.
+
+    // Clean up any orphaned daemon windows from previous/crashed processes
+    // before creating a fresh one. This prevents index collisions and
+    // duplicate daemon windows accumulating across sessions.
+    heartbeat::clean_dangling_daemons();
+
     let daemon_cmd =
         format!("while true; do {bin_path} heartbeat-daemon-tick 2>/dev/null; sleep 1; done");
     let _ = tmux_ok(&[
         "new-window",
         "-t",
-        SESSION,
+        &format!("{}:99", SESSION),
         "-d", // don't switch focus to this window
         "-n",
         heartbeat::DAEMON_WINDOW,

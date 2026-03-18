@@ -78,7 +78,7 @@ pub fn ensure_daemon_running() -> bool {
         .args([
             "new-window",
             "-t",
-            crate::tmux::SESSION,
+            &format!("{}:99", crate::tmux::SESSION),
             "-d", // don't steal focus
             "-n",
             DAEMON_WINDOW,
@@ -100,6 +100,64 @@ pub fn ensure_daemon_running() -> bool {
         Err(e) => {
             eprintln!("[heartbeat] daemon window recreation error: {e}");
             false
+        }
+    }
+}
+
+/// Kill any tmux window named [`DAEMON_WINDOW`] across ALL sessions.
+///
+/// Called from `init()` before creating a fresh daemon window to prevent
+/// duplicate or orphaned daemon windows from crashed/killed superharness
+/// processes accumulating across sessions.
+///
+/// The algorithm:
+/// 1. List every tmux session (`tmux list-sessions -F #{session_name}`).
+/// 2. For each session, list its windows (`tmux list-windows -t <session> -F #{window_name}`).
+/// 3. Kill any window named [`DAEMON_WINDOW`] found in any session, including
+///    the current superharness session (whose init() is about to create a fresh
+///    replacement anyway).
+///
+/// Errors from individual kill/list calls are silently ignored — this is a
+/// best-effort cleanup and must not prevent normal startup.
+pub fn clean_dangling_daemons() {
+    // Step 1: enumerate all tmux sessions.
+    let sessions_out = match std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return, // tmux not running or no sessions — nothing to clean
+    };
+
+    let sessions_str = String::from_utf8_lossy(&sessions_out.stdout);
+
+    for session in sessions_str.lines() {
+        let session = session.trim();
+        if session.is_empty() {
+            continue;
+        }
+
+        // Step 2: list windows in this session.
+        let windows_out = match std::process::Command::new("tmux")
+            .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
+        };
+
+        let windows_str = String::from_utf8_lossy(&windows_out.stdout);
+
+        for window in windows_str.lines() {
+            if window.trim() == DAEMON_WINDOW {
+                // Step 3: kill the daemon window in this session.
+                let target = format!("{}:{}", session, DAEMON_WINDOW);
+                let _ = std::process::Command::new("tmux")
+                    .args(["kill-window", "-t", &target])
+                    .status();
+                eprintln!("[heartbeat] cleaned dangling daemon window in session '{session}'");
+                break; // only one daemon window expected per session
+            }
         }
     }
 }
