@@ -560,6 +560,24 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     // sourced, ensuring PATH and credential env vars are fully initialised.
     tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-lc", &splash])?;
 
+    // When already inside a tmux session ($TMUX is set), attach-session fails
+    // with "sessions should be nested with care, unset $TMUX to force".
+    // Use switch-client instead, which moves the current client to the new
+    // session without nesting. switch-client returns immediately, so we skip
+    // the session-cleanup block (the session stays alive for the user to use).
+    if std::env::var("TMUX").is_ok() {
+        let status = Command::new("tmux")
+            .args(["switch-client", "-t", SESSION])
+            .status()
+            .context("failed to switch to tmux session")?;
+
+        if !status.success() {
+            bail!("tmux switch-client failed");
+        }
+
+        return Ok(());
+    }
+
     let status = Command::new("tmux")
         .args(["attach-session", "-t", SESSION])
         .status()
