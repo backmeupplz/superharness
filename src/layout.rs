@@ -19,7 +19,7 @@
 
 use std::process::Command;
 
-use crate::tmux::SESSION;
+use crate::tmux::{orchestrator_pane_id, SESSION};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -130,12 +130,13 @@ pub fn apply_strategy(
 ) -> anyhow::Result<()> {
     let session_win = format!("{SESSION}:0");
     let is_wide = term_width >= 120;
+    let orch_id = orchestrator_pane_id();
 
     // ------------------------------------------------------------------
-    // 1.  Select %0 as the active pane so tmux main-* layouts treat it
-    //     as the "main" pane (tmux uses the active pane for that role).
+    // 1.  Select the orchestrator as the active pane so tmux main-*
+    //     layouts treat it as the "main" pane.
     // ------------------------------------------------------------------
-    run_tmux(&["select-pane", "-t", "%0"]);
+    run_tmux(&["select-pane", "-t", &orch_id]);
 
     // ------------------------------------------------------------------
     // 2.  Apply the base tmux layout.
@@ -150,12 +151,12 @@ pub fn apply_strategy(
                 // Horizontal split: orchestrator left, worker right.
                 run_tmux(&["select-layout", "-t", &session_win, "even-horizontal"]);
                 let orch_w = ((term_width as f64 * 0.40) as u32).max(20);
-                run_tmux(&["resize-pane", "-t", "%0", "-x", &orch_w.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-x", &orch_w.to_string()]);
             } else {
                 // Narrow: stack vertically.
                 run_tmux(&["select-layout", "-t", &session_win, "even-vertical"]);
                 let orch_h = ((term_height as f64 * 0.40) as u32).max(8);
-                run_tmux(&["resize-pane", "-t", "%0", "-y", &orch_h.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-y", &orch_h.to_string()]);
             }
         }
 
@@ -164,12 +165,12 @@ pub fn apply_strategy(
                 // Orchestrator left 35 %, workers stacked vertically on the right.
                 run_tmux(&["select-layout", "-t", &session_win, "main-vertical"]);
                 let orch_w = ((term_width as f64 * 0.35) as u32).max(20);
-                run_tmux(&["resize-pane", "-t", "%0", "-x", &orch_w.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-x", &orch_w.to_string()]);
             } else {
                 // Narrow: orchestrator top, workers side-by-side below.
                 run_tmux(&["select-layout", "-t", &session_win, "main-horizontal"]);
                 let orch_h = ((term_height as f64 * 0.35) as u32).max(8);
-                run_tmux(&["resize-pane", "-t", "%0", "-y", &orch_h.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-y", &orch_h.to_string()]);
             }
         }
 
@@ -182,12 +183,12 @@ pub fn apply_strategy(
                 // Orchestrator left 35 %, workers fill the right column.
                 run_tmux(&["select-layout", "-t", &session_win, "main-vertical"]);
                 let orch_w = ((term_width as f64 * 0.35) as u32).max(20);
-                run_tmux(&["resize-pane", "-t", "%0", "-x", &orch_w.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-x", &orch_w.to_string()]);
             } else {
                 // Narrow: orchestrator top 40 %, workers fill the bottom strip.
                 run_tmux(&["select-layout", "-t", &session_win, "main-horizontal"]);
                 let orch_h = ((term_height as f64 * 0.40) as u32).max(8);
-                run_tmux(&["resize-pane", "-t", "%0", "-y", &orch_h.to_string()]);
+                run_tmux(&["resize-pane", "-t", &orch_id, "-y", &orch_h.to_string()]);
             }
         }
     }
@@ -208,12 +209,12 @@ pub fn apply_strategy(
                 LayoutStrategy::SideBySide if is_wide => {
                     // Shrink orchestrator further so the worker gets more space.
                     let orch_w = ((term_width as f64 * 0.28) as u32).max(20);
-                    run_tmux(&["resize-pane", "-t", "%0", "-x", &orch_w.to_string()]);
+                    run_tmux(&["resize-pane", "-t", &orch_id, "-x", &orch_w.to_string()]);
                 }
                 LayoutStrategy::SideBySide => {
                     // Narrow: shrink orchestrator top slice.
                     let orch_h = ((term_height as f64 * 0.28) as u32).max(6);
-                    run_tmux(&["resize-pane", "-t", "%0", "-y", &orch_h.to_string()]);
+                    run_tmux(&["resize-pane", "-t", &orch_id, "-y", &orch_h.to_string()]);
                 }
                 LayoutStrategy::MainWithStack | LayoutStrategy::OrchestratorMain => {
                     // Give the attention pane extra columns on the right.
@@ -247,11 +248,13 @@ pub const MIN_PANE_COLS: u32 = 60;
 pub const MIN_PANE_ROWS: u32 = 12;
 
 /// Scan all panes in the main window (window 0) and hide any that are smaller
-/// than [`MIN_PANE_COLS`] × [`MIN_PANE_ROWS`], except for `%0` (orchestrator).
+/// than [`MIN_PANE_COLS`] × [`MIN_PANE_ROWS`], except for the orchestrator pane.
 ///
 /// Called automatically at the end of `smart_layout()` and `auto_compact()` in
 /// `tmux.rs` to ensure the main window never shows unreadably-small panes.
 pub fn enforce_min_pane_size() -> anyhow::Result<()> {
+    let orch_id = orchestrator_pane_id();
+
     // List all panes across all windows with dimensions and window index.
     let output = Command::new("tmux")
         .args([
@@ -286,8 +289,8 @@ pub fn enforce_min_pane_size() -> anyhow::Result<()> {
         let window_index: u32 = parts[3].parse().unwrap_or(999);
         let title = parts.get(4).copied().unwrap_or("worker");
 
-        // Only enforce in the main window; never touch %0 or background panes.
-        if id == "%0" || window_index != 0 {
+        // Only enforce in the main window; never touch orchestrator or background panes.
+        if id == orch_id || window_index != 0 {
             continue;
         }
 

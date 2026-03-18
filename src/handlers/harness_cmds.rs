@@ -49,8 +49,9 @@ pub fn handle_harness_set(name: String) -> Result<()> {
 /// Handle `Command::HarnessSwitch`.
 pub fn handle_harness_switch(name: String) -> Result<()> {
     // Refuse to switch if any worker panes are running
+    let orch_id = tmux::orchestrator_pane_id();
     let panes = tmux::list().unwrap_or_default();
-    let worker_panes: Vec<_> = panes.iter().filter(|p| p.id != "%0").collect();
+    let worker_panes: Vec<_> = panes.iter().filter(|p| p.id != orch_id).collect();
     if !worker_panes.is_empty() {
         let ids: Vec<&str> = worker_panes.iter().map(|p| p.id.as_str()).collect();
         anyhow::bail!(

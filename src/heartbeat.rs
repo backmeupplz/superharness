@@ -136,19 +136,20 @@ fn extract_busy_state(raw_pane: &str) -> bool {
     false
 }
 
-/// Return `true` when the harness in %0 is busy (processing, streaming,
-/// executing tools).
+/// Return `true` when the harness in the orchestrator pane is busy
+/// (processing, streaming, executing tools).
 ///
 /// Uses single-snapshot pattern matching — no sleeping or diffing.
 pub fn is_harness_busy() -> bool {
-    let snap = match tmux::read("%0", 15) {
+    let orch = tmux::orchestrator_pane_id();
+    let snap = match tmux::read(&orch, 15) {
         Ok(o) => o,
         Err(_) => return false,
     };
     extract_busy_state(&snap)
 }
 
-/// Return `true` when %0's harness is busy.
+/// Return `true` when the orchestrator harness is busy.
 ///
 /// Delegates to [`is_harness_busy`] which uses single-snapshot pattern
 /// matching instead of the old two-snapshot diff approach.
@@ -328,7 +329,7 @@ fn extract_prompt_text(raw_pane: &str) -> String {
     String::new()
 }
 
-/// Return the text currently in the %0 prompt input area.
+/// Return the text currently in the orchestrator prompt input area.
 ///
 /// Works across harnesses:
 /// - **opencode** — scans the TUI input box (┃-bordered area)
@@ -337,8 +338,9 @@ fn extract_prompt_text(raw_pane: &str) -> String {
 ///
 /// Returns an empty string when the input area is empty or undetectable.
 pub fn get_prompt_text() -> String {
+    let orch = tmux::orchestrator_pane_id();
     // Try TUI-based detection first (opencode / Codex)
-    let pane_text = match tmux::read("%0", 25) {
+    let pane_text = match tmux::read(&orch, 25) {
         Ok(t) => t,
         Err(_) => return String::new(),
     };
@@ -366,7 +368,7 @@ pub fn get_prompt_text() -> String {
         .args([
             "display-message",
             "-t",
-            "%0",
+            &orch,
             "-p",
             "#{cursor_x} #{cursor_y}",
         ])
@@ -403,7 +405,7 @@ pub fn get_prompt_text() -> String {
                 .args([
                     "capture-pane",
                     "-t",
-                    "%0",
+                    &orch,
                     "-p",
                     "-S",
                     &start.to_string(),
@@ -436,7 +438,7 @@ pub fn get_prompt_text() -> String {
         .args([
             "capture-pane",
             "-t",
-            "%0",
+            &orch,
             "-p",
             "-S",
             &cursor_y.to_string(),
@@ -464,7 +466,7 @@ pub fn get_prompt_text() -> String {
 }
 
 /// Return `true` when the user appears to have pending (unsent) input in the
-/// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
+/// orchestrator prompt — i.e. they are mid-typing and have not yet pressed Enter.
 pub fn main_pane_has_input() -> bool {
     !get_prompt_text().trim().is_empty()
 }
@@ -473,10 +475,10 @@ pub fn main_pane_has_input() -> bool {
 // beat() — the ONLY place that sends to %0
 // ---------------------------------------------------------------------------
 
-/// Send a [HEARTBEAT] status message to %0.
+/// Send a [HEARTBEAT] status message to the orchestrator pane.
 ///
 /// Guards inline: checks busy and input before sending.
-/// This is the ONLY function that sends heartbeat messages to %0.
+/// This is the ONLY function that sends heartbeat messages to the orchestrator.
 fn beat() {
     if main_pane_is_busy() {
         return;
@@ -484,7 +486,8 @@ fn beat() {
     if main_pane_has_input() {
         return;
     }
-    let _ = tmux::send("%0", "[HEARTBEAT]");
+    let orch = tmux::orchestrator_pane_id();
+    let _ = tmux::send(&orch, "[HEARTBEAT]");
 }
 
 // ---------------------------------------------------------------------------
@@ -695,10 +698,11 @@ pub fn start_thread() {
 // ---------------------------------------------------------------------------
 
 /// Return the total worker count as a plain number string for the tmux status bar
-/// (e.g. "3"). Filters out the orchestrator pane %0.
+/// (e.g. "3"). Filters out the orchestrator pane.
 pub fn status_counts() -> String {
     let all_panes = tmux::list().unwrap_or_default();
-    let total = all_panes.iter().filter(|p| p.id != "%0").count();
+    let orch = tmux::orchestrator_pane_id();
+    let total = all_panes.iter().filter(|p| p.id != orch).count();
 
     total.to_string()
 }

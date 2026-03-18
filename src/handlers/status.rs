@@ -4,10 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 use crate::{health, heartbeat, monitor, project, tmux};
 
-/// Filter predicate: exclude %0 (orchestrator) so only real worker panes
+/// Filter predicate: exclude the orchestrator pane so only real worker panes
 /// are shown / counted.
 fn is_worker_pane(p: &tmux::PaneInfo) -> bool {
-    p.id != "%0"
+    p.id != tmux::orchestrator_pane_id()
 }
 
 /// Handle `Command::StatusHuman` — human-readable mode + worker health display.
@@ -233,14 +233,15 @@ pub fn handle_toggle_mode() -> Result<()> {
         "present".to_string()
     };
 
-    // Find the main orchestrator pane (%0 or first pane)
+    // Find the main orchestrator pane
+    let orch_id = tmux::orchestrator_pane_id();
     let panes = tmux::list().unwrap_or_default();
     let target_pane = panes
         .iter()
-        .find(|p| p.id == "%0")
+        .find(|p| p.id == orch_id)
         .or_else(|| panes.first())
         .map(|p| p.id.clone())
-        .unwrap_or_else(|| "%0".to_string());
+        .unwrap_or(orch_id);
 
     let (message, new_mode) = if current_mode == "away" {
         (
