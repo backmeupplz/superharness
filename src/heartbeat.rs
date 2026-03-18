@@ -19,19 +19,6 @@ use crate::util;
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Return the current UTC wall-clock time as "HH:MMZ" derived from the Unix
-/// epoch — no subprocess fork required.
-fn time_hhmm() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let secs_in_day = ts % 86400;
-    let h = secs_in_day / 3600;
-    let m = (secs_in_day % 3600) / 60;
-    format!("{h:02}:{m:02}Z")
-}
-
 /// Return the current unix timestamp in seconds.
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -497,11 +484,7 @@ fn beat() {
     if main_pane_has_input() {
         return;
     }
-    let all_panes = tmux::list().unwrap_or_default();
-    let worker_count = all_panes.iter().filter(|p| p.id != "%0").count();
-    let time = time_hhmm();
-    let msg = format!("[HEARTBEAT] Active workers: {worker_count} | Time: {time}");
-    let _ = tmux::send("%0", &msg);
+    let _ = tmux::send("%0", "[HEARTBEAT]");
 }
 
 // ---------------------------------------------------------------------------
