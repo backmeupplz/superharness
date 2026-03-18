@@ -100,7 +100,10 @@ fn strip_ansi(s: &str) -> String {
 fn line_has_content(raw: &str) -> bool {
     let stripped = strip_ansi(raw);
     let trimmed = stripped.trim_start_matches(|c: char| {
-        matches!(c, '>' | '$' | '#' | '%' | '│' | '|') || c.is_whitespace()
+        matches!(c, '>' | '$' | '#' | '%' | '│' | '|')
+            || c.is_whitespace()
+            || ('\u{2500}'..='\u{257F}').contains(&c)  // Box Drawing
+            || ('\u{2580}'..='\u{259F}').contains(&c) // Block Elements
     });
     let trimmed = trimmed
         .trim_start_matches('❯')
