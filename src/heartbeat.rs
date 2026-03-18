@@ -44,22 +44,24 @@ fn now_secs() -> u64 {
 // Guard: main_pane_is_busy
 // ---------------------------------------------------------------------------
 
-/// Return `true` when the last few lines of %0's output suggest it is
-/// actively processing (braille spinner characters visible, threshold >= 3).
+/// Return `true` when %0's visible content is actively changing — i.e. the
+/// harness is streaming a response, executing a tool, or otherwise producing
+/// output.
 ///
-/// Block chars (■/⬝) are intentionally excluded — they appear in the opencode
-/// status bar even when idle, causing false positives.
+/// Strategy: capture the last 10 lines twice, 500 ms apart.  If the two
+/// snapshots differ the pane is busy.  This is harness-agnostic and catches
+/// all forms of activity (streaming text, spinners, progress bars, etc.).
 pub fn main_pane_is_busy() -> bool {
-    let output = match tmux::read("%0", 5) {
+    let snap1 = match tmux::read("%0", 10) {
         Ok(o) => o,
         Err(_) => return false,
     };
-    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let spinner_count: usize = output
-        .lines()
-        .map(|line| spinner_chars.iter().filter(|&&c| line.contains(c)).count())
-        .sum();
-    spinner_count >= 3
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let snap2 = match tmux::read("%0", 10) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    snap1 != snap2
 }
 
 // ---------------------------------------------------------------------------
@@ -67,40 +69,71 @@ pub fn main_pane_is_busy() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Strip ANSI escape sequences from a string.
+///
+/// Iterates over UTF-8 chars (not raw bytes) so that multi-byte characters
+/// like box-drawing `┃` (U+2503) are preserved intact.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            i += 2;
-            while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x3f {
-                i += 1;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Check for CSI sequence: ESC [
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                              // Skip parameter bytes (0x20..=0x3f)
+                while let Some(&p) = chars.peek() {
+                    if (' '..='?').contains(&p) {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                // Skip final byte (0x40..=0x7e)
+                if let Some(&f) = chars.peek() {
+                    if ('@'..='~').contains(&f) {
+                        chars.next();
+                    }
+                }
             }
-            if i < bytes.len() && bytes[i] >= 0x40 && bytes[i] <= 0x7e {
-                i += 1;
-            }
+            // else: lone ESC — just skip it
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out.push(c);
         }
     }
     out
 }
 
+/// Characters considered prompt chrome — prompt indicators, box-drawing,
+/// block elements, and common shell prompt symbols.
+fn is_prompt_chrome(c: char) -> bool {
+    matches!(c, '>' | '$' | '#' | '%' | '│' | '|' | '❯')
+        || c.is_whitespace()
+        || ('\u{2500}'..='\u{257F}').contains(&c) // Box Drawing
+        || ('\u{2580}'..='\u{259F}').contains(&c) // Block Elements
+}
+
 /// Return `true` if the line has user-typed content beyond prompt chars.
 fn line_has_content(raw: &str) -> bool {
     let stripped = strip_ansi(raw);
-    let trimmed = stripped.trim_start_matches(|c: char| {
-        matches!(c, '>' | '$' | '#' | '%' | '│' | '|')
-            || c.is_whitespace()
-            || ('\u{2500}'..='\u{257F}').contains(&c)  // Box Drawing
-            || ('\u{2580}'..='\u{259F}').contains(&c) // Block Elements
-    });
-    let trimmed = trimmed
-        .trim_start_matches('❯')
+    let trimmed = stripped
+        .trim_start_matches(is_prompt_chrome)
         .trim_start_matches(char::is_whitespace);
     !trimmed.is_empty()
+}
+
+/// Return `true` if the line consists entirely of prompt chrome (non-empty
+/// but no user content).  This means the line is part of an active prompt
+/// border/indicator — e.g. a bare `┃` in opencode's input area.
+#[cfg(test)]
+fn line_is_prompt_chrome(raw: &str) -> bool {
+    let stripped = strip_ansi(raw);
+    let trimmed = stripped.trim();
+    // Must have at least one non-whitespace char to count as chrome
+    // (a fully blank line is just empty, not a prompt indicator).
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.chars().all(is_prompt_chrome)
 }
 
 /// Return `true` when the user appears to have pending (unsent) input in the
@@ -149,12 +182,14 @@ pub fn main_pane_has_input() -> bool {
     };
 
     // ── step 2: cursor_x guard ───────────────────────────────────────────────
-    // When cursor_x == 0 the user might be on a blank new line after pressing
-    // Enter in a multi-line prompt.  Before concluding "no input", peek at up
-    // to 3 lines above cursor_y — if any contains user content the prompt is
-    // still active.
+    // When cursor_x == 0 the user might be on a blank new line at the end of
+    // a multi-line prompt.  Peek at up to 10 lines above cursor_y:
+    //   - If any line has actual user content → prompt is active (return true)
+    //   - If any line is prompt chrome only (e.g. bare `┃`) → we are inside
+    //     an active prompt border/input area (return true)
+    //   - If all lines are completely blank → no prompt (return false)
     if cursor_x == 0 {
-        let look_back: i64 = 3;
+        let look_back: i64 = 10;
         let start = (cursor_y - look_back).max(0);
         if start < cursor_y {
             let above_output = std::process::Command::new("tmux")
@@ -998,5 +1033,28 @@ mod tests {
         assert!(!line_has_content("")); // blank cursor line
         assert!(!line_has_content("   ")); // whitespace-only
         assert!(line_has_content("hello")); // bare content (no prompt char)
+    }
+
+    /// Verify `line_is_prompt_chrome()` correctly identifies lines that consist
+    /// entirely of prompt border/indicator chars (e.g. opencode's `┃`).
+    #[test]
+    fn line_is_prompt_chrome_detects_tui_borders() {
+        // Bare box-drawing chars — these are prompt borders in opencode
+        assert!(line_is_prompt_chrome("  ┃"));
+        assert!(line_is_prompt_chrome("┃"));
+        assert!(line_is_prompt_chrome("  ╹"));
+        assert!(line_is_prompt_chrome(" │ "));
+        assert!(line_is_prompt_chrome("> "));
+        assert!(line_is_prompt_chrome("$ "));
+        assert!(line_is_prompt_chrome("❯"));
+
+        // Completely blank or whitespace-only lines are NOT prompt chrome
+        assert!(!line_is_prompt_chrome(""));
+        assert!(!line_is_prompt_chrome("   "));
+
+        // Lines with actual content are NOT prompt chrome
+        assert!(!line_is_prompt_chrome("┃  hello"));
+        assert!(!line_is_prompt_chrome("> some input"));
+        assert!(!line_is_prompt_chrome("Build  Claude Opus 4.6"));
     }
 }
