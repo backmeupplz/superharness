@@ -43,11 +43,11 @@
     <circle cx="18" cy="18" r="6" fill="#ff5f57"/>
     <circle cx="36" cy="18" r="6" fill="#ffbd2e"/>
     <circle cx="54" cy="18" r="6" fill="#28c840"/>
-    <text x="260" y="23" font-family="monospace" font-size="11" fill="#6b756e" text-anchor="middle">your-project — opencode + superharness</text>
+    <text x="260" y="23" font-family="monospace" font-size="11" fill="#6b756e" text-anchor="middle">your-project — superharness</text>
     <!-- Terminal body -->
     <text x="20" y="68" font-family="monospace" font-size="13" fill="#39d353">$</text>
     <text x="34" y="68" font-family="monospace" font-size="13" fill="#eef2ee">superharness</text>
-    <text x="20" y="92" font-family="monospace" font-size="12" fill="#6b756e">  opencode starting — orchestrator mode</text>
+    <text x="20" y="92" font-family="monospace" font-size="12" fill="#6b756e">  spawning workers — orchestrator mode</text>
     <text x="20" y="116" font-family="monospace" font-size="12" fill="#6b756e">  [orchestrator] Breaking into 3 workstreams...</text>
     <text x="20" y="144" font-family="monospace" font-size="12" fill="#e8760a">  [worker-1]</text>
     <text x="110" y="144" font-family="monospace" font-size="12" fill="#6b756e"> spawned → JWT middleware</text>
@@ -69,10 +69,10 @@
   <text x="80" y="300" font-family="'Fira Code', 'Courier New', monospace" font-size="72" font-weight="700" fill="#e8760a" letter-spacing="-2">harness</text>
 
   <!-- Tagline -->
-  <text x="80" y="360" font-family="system-ui, -apple-system, sans-serif" font-size="22" fill="#6b756e" letter-spacing="0">Give opencode a team.</text>
+  <text x="80" y="360" font-family="system-ui, -apple-system, sans-serif" font-size="22" fill="#6b756e" letter-spacing="0">Give your AI agent a whole team.</text>
 
   <!-- Divider -->
-  <line x1="80" y1="395" x2="390" y2="395" stroke="#1e2420" stroke-width="1.5"/>
+  <line x1="80" y1="395" x2="430" y2="395" stroke="#1e2420" stroke-width="1.5"/>
 
   <!-- Three pills -->
   <!-- Run superharness -->
@@ -83,9 +83,9 @@
   <rect x="80" y="462" width="220" height="36" rx="18" fill="rgba(57,211,83,0.06)" stroke="rgba(57,211,83,0.2)" stroke-width="1"/>
   <text x="190" y="485" font-family="system-ui,-apple-system,sans-serif" font-size="13" fill="#39d353" text-anchor="middle">parallel workers spawn</text>
 
-  <!-- Opencode -->
-  <rect x="80" y="509" width="220" height="36" rx="18" fill="rgba(255,255,255,0.03)" stroke="#1e2420" stroke-width="1"/>
-  <text x="190" y="532" font-family="system-ui,-apple-system,sans-serif" font-size="13" fill="#6b756e" text-anchor="middle">built on opencode</text>
+  <!-- Harnesses pill — wider to fit all three names -->
+  <rect x="80" y="509" width="340" height="36" rx="18" fill="rgba(255,255,255,0.03)" stroke="#1e2420" stroke-width="1"/>
+  <text x="250" y="532" font-family="system-ui,-apple-system,sans-serif" font-size="13" fill="#6b756e" text-anchor="middle">Claude Code · OpenCode · Codex</text>
 
   <!-- Domain -->
   <text x="80" y="595" font-family="'Fira Code','Courier New',monospace" font-size="15" fill="#6b756e">superharness.dev</text>
