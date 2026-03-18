@@ -1,7 +1,7 @@
 /// Clean raw tmux capture-pane output from opencode/claude/codex TUI.
 ///
 /// Removes box-drawing characters, ANSI escape sequences, status bar lines,
-/// right-panel fragments, spinner characters, and collapses blank lines.
+/// spinner characters, and collapses blank lines.
 pub fn clean_output(raw: &str) -> String {
     let lines: Vec<&str> = raw.lines().collect();
     let mut cleaned: Vec<String> = Vec::with_capacity(lines.len());
@@ -12,21 +12,20 @@ pub fn clean_output(raw: &str) -> String {
         // 1. Strip ANSI escape sequences
         let line = strip_ansi(line);
 
-        // 2. Strip box-drawing and geometric shape characters
+        // 2. Strip box-drawing and block element characters only
         let line = strip_box_chars(&line);
 
-        // 3. Remove right-panel content (large whitespace gap + short trailing text)
-        let line = strip_right_panel(&line);
+        // 3. Trim trailing whitespace only — preserve leading spaces so that
+        // indented code output is not destroyed. A little TUI padding surviving
+        // on the left is acceptable; losing indentation is not.
+        let line = line.trim_end().to_string();
 
-        // 4. Trim leading/trailing whitespace
-        let line = line.trim().to_string();
-
-        // 5. Drop known status bar / UI chrome lines
+        // 4. Drop known status bar / UI chrome lines
         if is_ui_chrome(&line) {
             continue;
         }
 
-        // 6. Handle thinking blocks
+        // 5. Handle thinking blocks
         if line.starts_with("Thinking:") || line == "Thinking" {
             if !in_thinking {
                 in_thinking = true;
@@ -40,7 +39,7 @@ pub fn clean_output(raw: &str) -> String {
             in_thinking = false;
         }
 
-        // 7. Collapse consecutive blank lines
+        // 6. Collapse consecutive blank lines
         if line.is_empty() {
             blank_run += 1;
             if blank_run <= 1 {
@@ -109,9 +108,14 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Remove Unicode box-drawing (U+2500–U+257F), block elements (U+2580–U+259F),
-/// geometric shapes (U+25A0–U+25FF), Braille patterns used as spinners (U+2800–U+28FF),
-/// and a few other common TUI decoration code points.
+/// Remove only Unicode box-drawing (U+2500–U+257F) and block elements (U+2580–U+259F).
+/// These are TUI frame characters like ┃ ━ ┏ ┓ ▀ ▄ █ that are never legitimate output.
+///
+/// NOT stripped (may appear in legitimate output):
+/// - Geometric Shapes: U+25A0–U+25FF
+/// - Braille Patterns: U+2800–U+28FF (spinners — needed by heartbeat.rs for busy detection)
+/// - Miscellaneous Symbols: U+2600–U+26FF
+/// - Dingbats: U+2700–U+27BF
 fn strip_box_chars(s: &str) -> String {
     s.chars()
         .filter(|&c| {
@@ -124,56 +128,10 @@ fn strip_box_chars(s: &str) -> String {
             if (0x2580..=0x259F).contains(&cp) {
                 return false;
             }
-            // Geometric Shapes
-            if (0x25A0..=0x25FF).contains(&cp) {
-                return false;
-            }
-            // Braille Patterns (used as spinners: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏)
-            if (0x2800..=0x28FF).contains(&cp) {
-                return false;
-            }
-            // Miscellaneous Symbols (includes ▼ ▶ etc. used as panel headers)
-            if (0x2600..=0x26FF).contains(&cp) {
-                return false;
-            }
-            // Dingbats
-            if (0x2700..=0x27BF).contains(&cp) {
-                return false;
-            }
-            // Supplemental Arrows / Math operators sometimes appear
-            // Keep everything else
+            // Keep everything else (geometric shapes, braille, symbols, dingbats, etc.)
             true
         })
         .collect()
-}
-
-/// If a line has a run of 4+ consecutive spaces followed by short text at the
-/// end, strip everything from that gap onwards. This removes right-panel
-/// fragments (Context, LSP, Todo, Modified Files) that the TUI inlines
-/// at the ends of lines after a wide whitespace column.
-fn strip_right_panel(s: &str) -> String {
-    // Find the first run of 4+ spaces
-    let chars: Vec<char> = s.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    while i < len {
-        if chars[i] == ' ' {
-            // Count the run
-            let start = i;
-            while i < len && chars[i] == ' ' {
-                i += 1;
-            }
-            let run_len = i - start;
-            if run_len >= 4 {
-                // Everything before the gap is the main content
-                let main: String = chars[..start].iter().collect();
-                return main;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    s.to_string()
 }
 
 /// Return true for lines that are pure UI chrome and should be dropped entirely.
@@ -249,29 +207,47 @@ mod tests {
 
     #[test]
     fn strips_box_drawing() {
-        // U+2503 BOX DRAWINGS LIGHT VERTICAL
+        // U+2503 BOX DRAWINGS LIGHT VERTICAL — box chars removed, but a leading
+        // space artifact from the removed ┃ is acceptable (TUI padding); trim in
+        // the assertion to verify the content is present.
         let input = "┃ some content ┃";
-        assert_eq!(clean_output(input), "some content");
+        assert_eq!(clean_output(input).trim(), "some content");
     }
 
     #[test]
-    fn strips_spinner_chars() {
+    fn strips_spinner_chars_pure_line_dropped() {
+        // A line that is ONLY braille spinner chars is dropped by is_ui_chrome
+        // (not by strip_box_chars — braille now passes through strip_box_chars)
         let input = "⠋⠙⠹";
-        // Should become empty (only spinner chars → is_ui_chrome after strip_box_chars)
-        // Actually braille is stripped in strip_box_chars, so the line becomes empty
         assert_eq!(clean_output(input), "");
+    }
+
+    #[test]
+    fn braille_chars_pass_through() {
+        // Braille chars embedded in real content should NOT be stripped
+        let input = "Working ⠋ processing request";
+        assert_eq!(clean_output(input), "Working ⠋ processing request");
+    }
+
+    #[test]
+    fn geometric_shapes_pass_through() {
+        // Geometric shapes (U+25A0–U+25FF) should NOT be stripped
+        // ▶ (U+25B6), ● (U+25CF), ◆ (U+25C6) are common in real output
+        let input = "▶ Running tests\n● passed\n◆ result";
+        assert_eq!(clean_output(input), "▶ Running tests\n● passed\n◆ result");
+    }
+
+    #[test]
+    fn indented_code_preserved() {
+        // Lines with 4+ spaces (indented code) must NOT be truncated
+        let input = "fn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
+        assert_eq!(clean_output(input), input);
     }
 
     #[test]
     fn collapses_blank_lines() {
         let input = "line1\n\n\n\nline2";
         assert_eq!(clean_output(input), "line1\n\nline2");
-    }
-
-    #[test]
-    fn strips_right_panel() {
-        let input = "main content    Context";
-        assert_eq!(clean_output(input), "main content");
     }
 
     #[test]
