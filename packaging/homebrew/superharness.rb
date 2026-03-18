@@ -17,24 +17,24 @@ class Superharness < Formula
   # SHA256 values are updated automatically by the Homebrew workflow on release.
   on_macos do
     on_intel do
-      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-v#{version}-x86_64-apple-darwin"
+      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-x86_64-apple-darwin"
       sha256 "PLACEHOLDER_MACOS_AMD64"
     end
 
     on_arm do
-      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-v#{version}-aarch64-apple-darwin"
+      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-aarch64-apple-darwin"
       sha256 "PLACEHOLDER_MACOS_ARM64"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-v#{version}-x86_64-unknown-linux-musl"
+      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-x86_64-unknown-linux-gnu"
       sha256 "PLACEHOLDER_LINUX_AMD64"
     end
 
     on_arm do
-      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-v#{version}-aarch64-unknown-linux-musl"
+      url "https://github.com/backmeupplz/superharness/releases/download/v#{version}/superharness-aarch64-unknown-linux-gnu"
       sha256 "PLACEHOLDER_LINUX_ARM64"
     end
   end
@@ -42,7 +42,7 @@ class Superharness < Formula
   # No build step needed — we ship pre-built binaries.
   def install
     # The downloaded file is named after the asset URL; rename it on install.
-    binary = Dir["superharness-v#{version}-*"].first
+    binary = Dir["superharness-*"].first
     bin.install binary => "superharness"
   end
 
