@@ -44,24 +44,129 @@ fn now_secs() -> u64 {
 // Guard: main_pane_is_busy
 // ---------------------------------------------------------------------------
 
-/// Return `true` when %0's visible content is actively changing — i.e. the
-/// harness is streaming a response, executing a tool, or otherwise producing
-/// output.
+/// Braille spinner characters used by Claude Code and opencode.
+const BRAILLE_SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Determine whether the harness running in %0 is busy from a single snapshot.
 ///
-/// Strategy: capture the last 10 lines twice, 500 ms apart.  If the two
-/// snapshots differ the pane is busy.  This is harness-agnostic and catches
-/// all forms of activity (streaming text, spinners, progress bars, etc.).
+/// This is the pure-logic core of [`main_pane_is_busy`] — it takes the raw
+/// string returned by `tmux capture-pane` and returns `true` when the harness
+/// appears to be actively processing (streaming a response, executing a tool,
+/// waiting for an API response, etc.).
+///
+/// Detection order:
+///
+/// 1. **opencode** (TUI) — bottom bar shows `esc interrupt` when busy,
+///    `tab agents` / `commands` when idle.
+/// 2. **Codex CLI** (Rust TUI) — shows `esc to interrupt` and/or `Working`
+///    when busy, `? for shortcuts` when idle.
+/// 3. **Claude Code** (CLI) — braille spinner characters `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`
+///    appear in the bottom lines while processing.
+/// 4. No pattern matched → **not busy** (safe default: allow heartbeat).
+fn extract_busy_state(raw_pane: &str) -> bool {
+    let lines: Vec<&str> = raw_pane.lines().collect();
+    let len = lines.len();
+
+    // Collect the bottom 10 lines (stripped of ANSI) for scanning.
+    let bottom_10: Vec<String> = lines[len.saturating_sub(10)..]
+        .iter()
+        .map(|l| strip_ansi(l))
+        .collect();
+
+    // Narrow view: bottom 5 lines for footer-specific checks.
+    let bottom_5: Vec<&str> = bottom_10[bottom_10.len().saturating_sub(5)..]
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+
+    // ── 1. opencode detection ────────────────────────────────────────────────
+    // opencode always renders a footer line below the ╹▀▀ input-box border.
+    // Busy:  "⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt"
+    // Idle:  "... ctrl+t variants  tab agents  ctrl+p commands  • OpenCode ..."
+    //
+    // Check if this looks like an opencode pane first (has ╹▀ border or
+    // "OpenCode" in the footer).
+    let is_opencode = bottom_10
+        .iter()
+        .any(|l| l.contains("OpenCode") || (l.contains('╹') && l.contains('▀')));
+
+    if is_opencode {
+        // "esc interrupt" in the footer → busy
+        let has_esc_interrupt = bottom_5
+            .iter()
+            .any(|l| l.contains("esc interrupt") || l.contains("esc again to interrupt"));
+        // "tab agents" or "commands" in the footer → idle
+        let has_idle_hints = bottom_5
+            .iter()
+            .any(|l| l.contains("tab agents") || l.contains("commands"));
+
+        // "esc interrupt" is the definitive busy signal — it takes priority
+        // even when idle hints (tab agents, commands) appear on the same line.
+        if has_esc_interrupt {
+            return true;
+        }
+        if has_idle_hints {
+            return false;
+        }
+        // opencode detected but neither signal clear — fall through to
+        // generic checks below.
+    }
+
+    // ── 2. Codex CLI detection ───────────────────────────────────────────────
+    // Busy:  "• Working (Ns • esc to interrupt)"  or  "tab to queue"
+    // Idle:  "? for shortcuts   N% context left"
+    let has_codex_busy = bottom_10.iter().any(|l| {
+        l.contains("esc to interrupt")
+            || (l.contains("Working") && l.contains('•'))
+            || l.contains("tab to queue")
+    });
+
+    if has_codex_busy {
+        return true;
+    }
+
+    let has_codex_idle = bottom_5
+        .iter()
+        .any(|l| l.contains("? for shortcuts") || l.contains("% context left"));
+
+    // If we see Codex idle markers and no busy markers → not busy.
+    if has_codex_idle {
+        return false;
+    }
+
+    // ── 3. Claude Code detection (braille spinners) ──────────────────────────
+    // Braille spinner chars only appear during processing.  Count them in the
+    // bottom 10 lines — even a single one is a strong busy signal.
+    let has_braille = bottom_10
+        .iter()
+        .any(|l| l.chars().any(|c| BRAILLE_SPINNERS.contains(&c)));
+
+    if has_braille {
+        return true;
+    }
+
+    // ── 4. No pattern matched → not busy ─────────────────────────────────────
+    false
+}
+
+/// Return `true` when the harness in %0 is busy (processing, streaming,
+/// executing tools).
+///
+/// Uses single-snapshot pattern matching — no sleeping or diffing.
+pub fn is_harness_busy() -> bool {
+    let snap = match tmux::read("%0", 15) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    extract_busy_state(&snap)
+}
+
+/// Return `true` when %0's harness is busy.
+///
+/// Delegates to [`is_harness_busy`] which uses single-snapshot pattern
+/// matching instead of the old two-snapshot diff approach.
 pub fn main_pane_is_busy() -> bool {
-    let snap1 = match tmux::read("%0", 10) {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let snap2 = match tmux::read("%0", 10) {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
-    snap1 != snap2
+    is_harness_busy()
 }
 
 // ---------------------------------------------------------------------------
@@ -1332,5 +1437,245 @@ output line 2
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
    ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
         assert_eq!(extract_prompt_text(pane), "fix the heartbeat bug");
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. extract_busy_state — single-snapshot busy detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_busy_opencode_idle() {
+        // opencode idle: footer shows "tab agents" and "ctrl+p commands",
+        // NO "esc interrupt"
+        let pane = "\
+     Some response text here.
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                    ctrl+t variants  tab agents  ctrl+p commands    • OpenCode 1.2.27";
+        assert!(
+            !extract_busy_state(pane),
+            "opencode idle should NOT be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_opencode_busy() {
+        // opencode busy: footer shows "esc interrupt", no idle hints
+        let pane = "\
+     Some response text here.
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert!(extract_busy_state(pane), "opencode busy should be busy");
+    }
+
+    #[test]
+    fn extract_busy_opencode_esc_again() {
+        // opencode after first Esc press: "esc again to interrupt"
+        let pane = "\
+     Streaming response...
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc again to interrupt                   • OpenCode 1.2.27";
+        assert!(
+            extract_busy_state(pane),
+            "opencode 'esc again to interrupt' should be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_opencode_real_capture_busy() {
+        // Real-world capture from tmux while opencode was processing
+        let pane = "\
+     → Read src/heartbeat.rs [offset=389, limit=80]
+     ✱ Grep \"spinner|braille\" in src (10 matches)
+
+     Now let me look at health.rs:
+
+     → Read src/health.rs [limit=300]
+
+     ~ Writing command...
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                     • OpenCode 1.2.27";
+        assert!(
+            extract_busy_state(pane),
+            "real opencode busy capture should be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_codex_idle() {
+        // Codex CLI idle: shows "? for shortcuts" and "% context left"
+        let pane = "\
+     Some previous output here.
+     Tool result: success.
+
+▌ 
+  ? for shortcuts                              100% context left";
+        assert!(!extract_busy_state(pane), "codex idle should NOT be busy");
+    }
+
+    #[test]
+    fn extract_busy_codex_busy() {
+        // Codex CLI busy: shows "Working" with spinner and "esc to interrupt"
+        let pane = "\
+     Running tool: bash ...
+
+  • Working (5s • esc to interrupt)
+    └ Executing bash command
+
+▌ 
+  tab to queue message                         72% context left";
+        assert!(extract_busy_state(pane), "codex busy should be busy");
+    }
+
+    #[test]
+    fn extract_busy_codex_busy_esc_only() {
+        // Codex CLI busy: only "esc to interrupt" visible
+        let pane = "\
+     Streaming response text...
+     More streaming text...
+
+  • Exploring (12s • esc to interrupt)";
+        assert!(
+            extract_busy_state(pane),
+            "codex 'esc to interrupt' should be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_claude_code_idle() {
+        // Claude Code idle: prompt with ? or >, no spinners
+        let pane = "\
+  Some previous output.
+  File written successfully.
+
+? ";
+        assert!(
+            !extract_busy_state(pane),
+            "claude code idle should NOT be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_claude_code_busy() {
+        // Claude Code busy: braille spinners present
+        let pane = "\
+  Some previous output.
+
+  ⠹ Cogitating…
+
+";
+        assert!(
+            extract_busy_state(pane),
+            "claude code with braille spinner should be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_claude_code_busy_multiple_spinners() {
+        // Claude Code: multiple spinner chars on one line
+        let pane = "\
+  Previous response text.
+  ⠋ Architecting…
+  Running bash command...";
+        assert!(
+            extract_busy_state(pane),
+            "claude code multiple spinners should be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_empty_pane() {
+        let pane = "";
+        assert!(!extract_busy_state(pane), "empty pane should NOT be busy");
+    }
+
+    #[test]
+    fn extract_busy_blank_lines() {
+        let pane = "\n\n\n\n\n";
+        assert!(!extract_busy_state(pane), "blank lines should NOT be busy");
+    }
+
+    #[test]
+    fn extract_busy_generic_text() {
+        // No harness-specific patterns — default to not busy
+        let pane = "\
+user@host:~$ ls -la
+total 42
+drwxr-xr-x  5 user user 4096 Mar 18 12:00 .
+drwxr-xr-x  3 user user 4096 Mar 17 10:00 ..
+user@host:~$ ";
+        assert!(
+            !extract_busy_state(pane),
+            "generic shell output should NOT be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_opencode_idle_with_context_panel() {
+        // opencode idle with the right-side context panel visible
+        let pane = "\
+     Response complete.                                                              Context
+                                                                                     87,449 tokens
+     ▣  Build · claude-opus-4-6                                                      9% used
+
+  ┃                                                                                  LSP
+  ┃                                                                                  LSPs active
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                    ctrl+t variants  tab agents  ctrl+p commands    • OpenCode 1.2.27";
+        assert!(
+            !extract_busy_state(pane),
+            "opencode idle with context panel should NOT be busy"
+        );
+    }
+
+    #[test]
+    fn extract_busy_opencode_both_indicators_same_line() {
+        // Real-world capture: opencode puts BOTH "esc interrupt" AND
+        // "tab agents"/"ctrl+p commands" on the same footer line when busy.
+        // "esc interrupt" must take priority → busy.
+        let pane = "\
+     Let me check the current heartbeat and busy detection code.
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                                                                        ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                                                   ctrl+t variants  tab agents  ctrl+p commands    • OpenCode 1.2.27";
+        assert!(
+            extract_busy_state(pane),
+            "opencode footer with both 'esc interrupt' and idle hints on same line should be BUSY"
+        );
     }
 }
