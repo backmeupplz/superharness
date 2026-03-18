@@ -147,8 +147,13 @@ pub fn read(pane: &str, lines: u32) -> Result<String> {
 }
 
 /// Send text to a pane.
+///
+/// Uses `-l` (literal) flag for the text so that tmux does not interpret
+/// brackets or other special sequences as key names. Enter is sent in a
+/// separate call without `-l` so it is always delivered correctly.
 pub fn send(pane: &str, text: &str) -> Result<()> {
-    tmux_ok(&["send-keys", "-t", pane, text, "Enter"])?;
+    tmux_ok(&["send-keys", "-l", "-t", pane, text])?;
+    tmux_ok(&["send-keys", "-t", pane, "Enter"])?;
     Ok(())
 }
 

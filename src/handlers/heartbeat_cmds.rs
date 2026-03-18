@@ -27,12 +27,10 @@ pub fn handle_heartbeat(snooze: Option<u64>) -> Result<()> {
         // Snooze: write N to the snooze file for the background thread to pick up.
         let snooze_path = state_dir.join("heartbeat_snooze");
         std::fs::write(&snooze_path, secs.to_string())?;
-        eprintln!("[heartbeat] snooze {secs}s requested via file");
     } else {
         // Worker-triggered immediate beat: write trigger file.
         let trigger_path = state_dir.join("heartbeat_trigger");
         std::fs::write(&trigger_path, "1")?;
-        eprintln!("[heartbeat] trigger file written — background thread will fire beat");
     }
 
     Ok(())
@@ -45,7 +43,7 @@ pub fn handle_heartbeat_toggle() -> Result<()> {
     let state_dir = project::get_project_state_dir()?;
     let toggle_path = state_dir.join("heartbeat_toggle_trigger");
     std::fs::write(&toggle_path, "1")?;
-    eprintln!("[heartbeat] toggle trigger file written");
+
     Ok(())
 }
 
