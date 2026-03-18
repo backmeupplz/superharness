@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>superharness — give opencode a team</title>
-  <meta name="description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
+  <title>superharness — give your AI coding agent a team</title>
+  <meta name="description" content="superharness wraps tmux orchestration around your AI coding agent — Claude Code, OpenCode, or Codex — spawning parallel workers, surfacing what needs attention, and keeping work flowing while you're away." />
 
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://superharness.dev" />
-  <meta property="og:title" content="superharness — give opencode a team" />
-  <meta property="og:description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
+  <meta property="og:title" content="superharness — give your AI coding agent a team" />
+  <meta property="og:description" content="superharness wraps tmux orchestration around your AI coding agent — Claude Code, OpenCode, or Codex — spawning parallel workers, surfacing what needs attention, and keeping work flowing while you're away." />
   <meta property="og:image" content="https://superharness.dev/og-image.png" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:url" content="https://superharness.dev" />
-  <meta name="twitter:title" content="superharness — give opencode a team" />
-  <meta name="twitter:description" content="superharness sits on top of opencode and gives it the ability to spawn and coordinate a parallel team of agents — as many as it needs, automatically." />
+  <meta name="twitter:title" content="superharness — give your AI coding agent a team" />
+  <meta name="twitter:description" content="superharness wraps tmux orchestration around your AI coding agent — Claude Code, OpenCode, or Codex — spawning parallel workers, surfacing what needs attention, and keeping work flowing while you're away." />
   <meta name="twitter:image" content="https://superharness.dev/og-image.png" />
 
   <!-- Favicon -->
@@ -357,9 +357,9 @@
       margin-bottom: 10px;
     }
 
-    .compare-card.opencode .compare-label { color: var(--text-dim); }
-    .compare-card.superharness .compare-label { color: var(--orange); }
-    .compare-card.superharness { border-color: rgba(232,118,10,.3); background: rgba(232,118,10,.03); }
+  .compare-card.solo-agent .compare-label { color: var(--text-dim); }
+  .compare-card.superharness .compare-label { color: var(--orange); }
+  .compare-card.superharness { border-color: rgba(232,118,10,.3); background: rgba(232,118,10,.03); }
 
     .compare-card ul {
       list-style: none;
@@ -503,9 +503,9 @@
       <span class="dot"></span>
       Autonomous &nbsp;·&nbsp; Rust &nbsp;·&nbsp; MIT
     </div>
-    <h1>Give <span class="accent">opencode</span><br/>a whole team.</h1>
+    <h1>Give your <span class="accent">AI agent</span><br/>a whole team.</h1>
     <p class="subtitle">
-      superharness sits on top of opencode and lets it spawn parallel worker agents, manage them, and clean up — all on its own.
+      superharness wraps tmux orchestration around Claude Code, OpenCode, or Codex — spawning parallel workers, surfacing panes that need your attention, and keeping work flowing while you step away.
     </p>
     <div class="hero-ctas">
       <a href="#install" class="btn btn-primary">
@@ -528,10 +528,10 @@
         <span class="term-dot red"></span>
         <span class="term-dot yellow"></span>
         <span class="term-dot green"></span>
-        <span class="term-title">your-project — opencode + superharness</span>
+        <span class="term-title">your-project — superharness</span>
       </div>
       <div class="term-body"><span class="c-green">$</span> <span class="c-bright">superharness</span>
-<span class="c-dim">  opencode starting — orchestrator mode</span>
+<span class="c-dim">  AI agent starting — orchestrator mode</span>
 
 <span class="c-dim">  You: </span><span class="c-bright">build a REST API with JWT auth</span>
 
@@ -540,11 +540,12 @@
 <span class="c-orange">  [worker-2]</span><span class="c-dim"> spawned → building user CRUD endpoints</span>
 <span class="c-orange">  [worker-3]</span><span class="c-dim"> spawned → creating database schemas &amp; migrations</span>
 
+<span class="c-dim">  [heartbeat] worker-2 waiting — surfacing pane</span>
 <span class="c-dim">  [worker-2] asks: allow file write to src/routes/users.ts?</span>
-<span class="c-green">  [orchestrator] approved ✓</span>
+<span class="c-green">  [orchestrator] approved ✓  (hiding pane)</span>
 
 <span class="c-dim">  [worker-1] done  ·  [worker-3] done  ·  [worker-2] 80%...</span>
-<span class="c-green">  [orchestrator] all workers finished — cleaning up</span>
+<span class="c-green">  [orchestrator] all workers finished — branches merged, cleanup done</span>
 </div>
     </div>
   </div>
@@ -554,27 +555,27 @@
 <section id="how-it-works">
   <div class="container">
     <h2>How it works</h2>
-    <p class="section-lead">Install once. Run instead of opencode. The rest is automatic.</p>
+    <p class="section-lead">Install once. Works with Claude Code, OpenCode, or Codex. The rest is automatic.</p>
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
         <div class="step-content">
-          <h3>Install superharness</h3>
-          <p>One command: <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">cargo install superharness</code>. Requires tmux and opencode already installed.</p>
+          <h3>Install superharness and run it in your project</h3>
+          <p>One command: <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">curl -fsSL https://superharness.dev/install.sh | sh</code>. Requires tmux and your AI coding agent (Claude Code, OpenCode, or Codex). Navigate to your project, run <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">superharness</code>, and you're set.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">2</div>
         <div class="step-content">
-          <h3>Run <code style="font-family:var(--font-mono);font-size:.9em;color:var(--orange)">superharness</code> in your project</h3>
-          <p>Navigate to your project directory and run <code style="font-family:var(--font-mono);font-size:.85em;color:var(--orange)">superharness</code>. You get a normal opencode session — the same interface you already know — but now the AI has access to a full team.</p>
+          <h3>Tmux management: surface, approve, relay</h3>
+          <p>superharness actively manages your tmux panes — automatically surfacing workers that need attention, relaying questions to you, approving safe operations on your behalf, and hiding idle panes out of the way. A heartbeat loop detects stuck workers before they stall.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">3</div>
         <div class="step-content">
-          <h3>Your AI spawns and manages a team</h3>
-          <p>When the task warrants it, opencode spawns parallel worker agents — each in its own isolated git worktree. Workers run concurrently, report back, and are cleaned up automatically. The AI decides how many to spawn, when to spawn them, and when they're done. You just see results.</p>
+          <h3>Away mode + task tracking</h3>
+          <p>Step away and superharness keeps running. It auto-approves safe operations, queues uncertain decisions, and debriefs you when you return. Tasks are tracked from breakdown through spawning to completion — you always know what's in progress, blocked, or done.</p>
         </div>
       </div>
     </div>
@@ -585,7 +586,7 @@
 <section id="features">
   <div class="container">
     <h2>What you gain</h2>
-    <p class="section-lead">Everything opencode does, plus a team behind it.</p>
+    <p class="section-lead">Your AI agent, now running a whole team — with you always in control.</p>
     <div class="features-grid">
       <div class="feature-card">
         <div class="feature-icon">⚡</div>
@@ -593,19 +594,29 @@
         <p>The AI spawns as many worker agents as the task needs — each tackling an independent workstream simultaneously. What takes one agent 4 hours takes a team of 4 about an hour.</p>
       </div>
       <div class="feature-card">
+        <div class="feature-icon">🖥️</div>
+        <h3>Smart tmux management</h3>
+        <p>superharness surfaces worker panes that need attention, hides idle ones, and keeps the workspace clean. You always see what matters — and nothing you don't.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">💓</div>
+        <h3>Heartbeat loop</h3>
+        <p>A continuous heartbeat detects stuck or waiting workers before they stall your session. superharness wakes the orchestrator the moment a worker needs a decision, approval, or recovery.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌙</div>
+        <h3>Away mode</h3>
+        <p>Step away and superharness keeps working. It auto-approves safe operations, queues uncertain decisions, and gives you a full debrief when you return — no context lost.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📋</div>
+        <h3>Task tracking</h3>
+        <p>Work is broken into tasks and tracked from spawn to done. See what's running, blocked, or finished at a glance — F5 shows the live task board.</p>
+      </div>
+      <div class="feature-card">
         <div class="feature-icon">🔒</div>
         <h3>Isolated workspaces</h3>
-        <p>Every worker gets its own git worktree. No file conflicts. Workers commit their own branches; the orchestrator merges results when everything looks good.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">✅</div>
-        <h3>Permission management</h3>
-        <p>Workers ask for file writes and shell commands as usual. The orchestrating AI reviews them in context — approving safe operations automatically and surfacing anything that needs your eyes.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">👁️</div>
-        <h3>Automatic cleanup</h3>
-        <p>Stuck workers are detected and recovered. Finished workers are killed and their worktrees removed. The orchestrator keeps the workspace clean without you doing anything.</p>
+        <p>Every worker gets its own git worktree. No file conflicts. Workers commit their own branches; the orchestrator merges results and cleans up automatically.</p>
       </div>
     </div>
   </div>
@@ -614,27 +625,29 @@
 <!-- Comparison -->
 <section id="comparison">
   <div class="container">
-      <h2>opencode alone vs. opencode + superharness</h2>
-    <p class="section-lead">Same opencode you love. Now with the ability to run a team.</p>
+      <h2>Single agent vs. superharness team</h2>
+    <p class="section-lead">Your AI agent is great. Now give it a team.</p>
     <div class="comparison">
-      <div class="compare-card opencode">
-        <div class="compare-label">opencode alone</div>
+      <div class="compare-card solo-agent">
+        <div class="compare-label">solo agent</div>
         <ul>
-          <li>Single agent, one task at a time</li>
-          <li>Sequential — slow on complex work</li>
-          <li>All permissions come to you</li>
-          <li>No awareness of parallel execution</li>
+          <li>One task at a time, sequential</li>
+          <li>Slow on complex multi-part work</li>
+          <li>Every permission prompt reaches you</li>
+          <li>Stalls when waiting — no recovery</li>
           <li>One context window for everything</li>
+          <li>Nothing happens when you step away</li>
         </ul>
       </div>
       <div class="compare-card superharness">
         <div class="compare-label">superharness</div>
         <ul>
-          <li>Orchestrator spawns workers as needed</li>
-          <li>Parallel execution across isolated worktrees</li>
-          <li>Safe permissions auto-handled by orchestrator</li>
-          <li>Workers collaborate and merge results</li>
+          <li>Orchestrator spawns workers in parallel</li>
+          <li>Each worker gets an isolated worktree</li>
+          <li>Safe operations auto-approved, rest surfaces to you</li>
+          <li>Heartbeat detects and recovers stuck workers</li>
           <li>Each worker gets a fresh focused context</li>
+          <li>Away mode keeps work flowing while you're gone</li>
         </ul>
       </div>
     </div>
