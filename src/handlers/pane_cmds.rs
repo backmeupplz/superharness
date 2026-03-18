@@ -39,7 +39,7 @@ pub fn handle_kill(pane: String) -> Result<()> {
         "worker killed",
     );
     // Trigger a heartbeat so the orchestrator wakes up immediately.
-    let _ = heartbeat::heartbeat();
+    let _ = heartbeat::heartbeat(); // returns Result<()>
     let out = serde_json::json!({ "pane": pane, "killed": true });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

@@ -163,14 +163,12 @@ fn heartbeat_delivers_to_pane_zero() {
     let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let guard = ProjectGuard::new();
 
-    // Set up: heartbeat enabled, last beat was 60 s ago (clears dedup guard).
+    // Set up: heartbeat enabled, last beat was 60 s ago.
     let old_ts = now_secs().saturating_sub(60);
     guard.write_state(&serde_json::json!({
         "last_beat_ts": old_ts,
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -212,13 +210,11 @@ fn heartbeat_skipped_when_disabled() {
     let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let guard = ProjectGuard::new();
 
-    // State: disabled=true, dedup guard would otherwise allow a beat.
+    // State: disabled=true.
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": true
     }));
 
@@ -266,9 +262,7 @@ fn heartbeat_toggle_enabled_to_disabled() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": 0,
         "interval_secs": 30,
-        "last_sent": false,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -302,9 +296,7 @@ fn heartbeat_toggle_disabled_to_enabled() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": 0,
         "interval_secs": 30,
-        "last_sent": false,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": true
     }));
 
@@ -342,9 +334,7 @@ fn heartbeat_toggle_roundtrip() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": 0,
         "interval_secs": 30,
-        "last_sent": false,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -383,9 +373,7 @@ fn heartbeat_toggle_from_default_state_disables() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": 0,
         "interval_secs": 0,
-        "last_sent": false,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -413,9 +401,7 @@ fn heartbeat_toggle_on_preserves_interval() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": 0,
         "interval_secs": 45,
-        "last_sent": false,
         "next_beat_ts": 0,
-        "needs_attention": false,
         "disabled": true
     }));
 
@@ -452,9 +438,7 @@ fn heartbeat_snooze_advances_next_beat_by_given_seconds() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": baseline_next_beat,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -488,9 +472,7 @@ fn heartbeat_snooze_is_additive() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": baseline,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -529,9 +511,7 @@ fn heartbeat_snooze_zero_is_noop() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": baseline,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -562,9 +542,7 @@ fn heartbeat_snooze_large_value_does_not_overflow() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": baseline,
-        "needs_attention": false,
         "disabled": false
     }));
 
@@ -598,9 +576,7 @@ fn heartbeat_snooze_does_not_send_heartbeat_to_pane_zero() {
     guard.write_state(&serde_json::json!({
         "last_beat_ts": now_secs().saturating_sub(60),
         "interval_secs": 30,
-        "last_sent": true,
         "next_beat_ts": baseline,
-        "needs_attention": false,
         "disabled": false
     }));
 

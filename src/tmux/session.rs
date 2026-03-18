@@ -550,8 +550,6 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
             interval_secs: interval,
             next_beat_ts: now + interval,
             last_beat_ts: 0,
-            last_sent: false,
-            needs_attention: false,
         });
     }
 
