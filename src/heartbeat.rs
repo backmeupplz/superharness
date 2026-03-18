@@ -107,40 +107,12 @@ fn line_has_content(raw: &str) -> bool {
 /// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
 ///
 /// Strategy:
-/// 0. Shell-only guard: if the foreground process is not a known shell, return false
 /// 1. Get cursor position via tmux display-message
 /// 2. If cursor_x == 0, return false
 /// 3. Capture cursor line via tmux capture-pane
 /// 4. Strip ANSI, strip prompt chars, check for remaining content
 /// 5. If content exists, return true
 pub fn main_pane_has_input() -> bool {
-    // ── step 0: shell-only guard ─────────────────────────────────────────────
-    let foreground_cmd_out = std::process::Command::new("tmux")
-        .args([
-            "display-message",
-            "-t",
-            "%0",
-            "-p",
-            "#{pane_current_command}",
-        ])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-    {
-        let foreground_cmd = foreground_cmd_out.trim();
-        const SHELLS: &[&str] = &["bash", "zsh", "sh", "fish", "dash", "tcsh", "csh"];
-        if !SHELLS.contains(&foreground_cmd) {
-            return false;
-        }
-    }
-
     // ── step 1: get cursor position ──────────────────────────────────────────
 
     let pos_output = match std::process::Command::new("tmux")
