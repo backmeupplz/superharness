@@ -484,6 +484,10 @@ const SCANNER_INTERVAL_SECS: u64 = 5;
 /// With a 5-second scan interval, 3 scans = 15 seconds of no output change.
 const STALE_SCAN_THRESHOLD: u32 = 3;
 
+/// How often (in seconds) the daemon auto-compacts excess visible panes.
+/// Runs on the main 1-second tick, independent of the scanner cycle.
+const AUTO_COMPACT_INTERVAL_SECS: u64 = 30;
+
 /// Return `true` if the pane output contains a permission / approval prompt.
 ///
 /// This is intentionally similar to `health::is_waiting_for_permission()` but
@@ -772,6 +776,10 @@ pub fn start_thread() {
         // Key: pane_id, Value: (hash of last output, consecutive-unchanged count)
         let mut pane_hashes: HashMap<String, (u64, u32)> = HashMap::new();
 
+        // --- Auto-compact countdown ---
+        // Every AUTO_COMPACT_INTERVAL_SECS, hide excess visible worker panes.
+        let mut compact_countdown: u64 = AUTO_COMPACT_INTERVAL_SECS;
+
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -829,7 +837,9 @@ pub fn start_thread() {
                     scanner_countdown = SCANNER_INTERVAL_SECS;
 
                     if let Ok(panes) = tmux::list() {
-                        let mut any_needs_attention = false;
+                        // Collect panes that need attention, classified by kind.
+                        // select_attention_pane() will pick the best one to surface.
+                        let mut attention_panes: Vec<PaneAttentionKind> = Vec::new();
 
                         // Collect live pane IDs so we can prune stale entries later
                         let mut live_ids: Vec<String> = Vec::new();
@@ -849,7 +859,7 @@ pub fn start_thread() {
 
                             // --- Permission / question prompt detection ---
                             if worker_needs_attention(&output) {
-                                any_needs_attention = true;
+                                attention_panes.push(PaneAttentionKind::Prompt(pane.id.clone()));
                                 // Reset stale counter since the worker is
                                 // actively waiting (not truly "stale")
                                 pane_hashes
@@ -870,7 +880,7 @@ pub fn start_thread() {
                                     // STALE_SCAN_THRESHOLD × SCANNER_INTERVAL_SECS.
                                     // This could mean it finished, crashed,
                                     // or is genuinely idle.
-                                    any_needs_attention = true;
+                                    attention_panes.push(PaneAttentionKind::Stale(pane.id.clone()));
                                 }
                             } else {
                                 // Output changed — reset counter
@@ -883,13 +893,18 @@ pub fn start_thread() {
 
                         // If any worker needs attention, trigger an early beat
                         // UNLESS the orchestrator is in a question dialog.
-                        if any_needs_attention {
+                        if !attention_panes.is_empty() {
                             let suppress = match tmux::read("%0", 25) {
                                 Ok(orch_out) => is_orchestrator_in_question_dialog(&orch_out),
                                 Err(_) => false,
                             };
 
                             if !suppress {
+                                // Pick the highest-priority pane and surface it.
+                                if let Some(pane_id) = select_attention_pane(&attention_panes) {
+                                    let _ = tmux::smart_layout_with_attention(Some(&pane_id));
+                                }
+
                                 // Reset countdown to 0 so beat() fires on
                                 // the next tick.
                                 countdown = 0;
@@ -897,6 +912,17 @@ pub fn start_thread() {
                         }
                     }
                 }
+            }
+
+            // ── Auto-compact cycle ───────────────────────────────────────────
+            // Every AUTO_COMPACT_INTERVAL_SECS, collapse excess visible worker
+            // panes into background tabs so the main window stays readable.
+            // This runs outside the `!disabled` guard — layout management is
+            // always useful regardless of heartbeat state.
+            compact_countdown = compact_countdown.saturating_sub(1);
+            if compact_countdown == 0 {
+                compact_countdown = AUTO_COMPACT_INTERVAL_SECS;
+                let _ = tmux::auto_compact();
             }
 
             // Write state to disk so heartbeat-status CLI can read it
@@ -923,6 +949,49 @@ pub fn status_counts() -> String {
     let total = all_panes.iter().filter(|p| p.id != "%0").count();
 
     total.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Auto-pane management — pure logic helpers
+// ---------------------------------------------------------------------------
+
+/// Describes why a worker pane needs attention, carrying its pane ID.
+///
+/// Used as the input to [`select_attention_pane`] so the selection logic is
+/// pure and fully testable without any tmux calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneAttentionKind {
+    /// Pane is showing a permission or question prompt — highest priority.
+    Prompt(String),
+    /// Pane output has been unchanged for `STALE_SCAN_THRESHOLD` scans.
+    Stale(String),
+}
+
+impl PaneAttentionKind {
+    /// Return the pane ID contained in this variant.
+    pub fn pane_id(&self) -> &str {
+        match self {
+            Self::Prompt(id) | Self::Stale(id) => id,
+        }
+    }
+}
+
+/// Choose which pane to surface, given a list of panes that need attention.
+///
+/// Priority rule: **Prompt > Stale**.  Within each tier, the first one in
+/// insertion order wins (i.e. the first pane detected by the scanner).
+///
+/// Returns `None` when the slice is empty.
+pub fn select_attention_pane(panes: &[PaneAttentionKind]) -> Option<String> {
+    // First pass: any prompt pane?
+    if let Some(p) = panes
+        .iter()
+        .find(|p| matches!(p, PaneAttentionKind::Prompt(_)))
+    {
+        return Some(p.pane_id().to_string());
+    }
+    // Second pass: first stale pane.
+    panes.first().map(|p| p.pane_id().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2221,6 +2290,65 @@ Finished dev profile";
             SCANNER_INTERVAL_SECS * STALE_SCAN_THRESHOLD as u64,
             15,
             "stale detection should trigger after ~15 seconds"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. Auto-pane management — select_attention_pane pure logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn select_attention_pane_prefers_prompt_over_stale() {
+        // A permission/question pane should win over a stale pane.
+        let panes = vec![
+            PaneAttentionKind::Stale("%3".to_string()),
+            PaneAttentionKind::Prompt("%5".to_string()),
+        ];
+        let chosen = select_attention_pane(&panes);
+        assert_eq!(
+            chosen.as_deref(),
+            Some("%5"),
+            "prompt pane should take priority over stale pane"
+        );
+    }
+
+    #[test]
+    fn select_attention_pane_stale_when_no_prompt() {
+        let panes = vec![
+            PaneAttentionKind::Stale("%3".to_string()),
+            PaneAttentionKind::Stale("%4".to_string()),
+        ];
+        let chosen = select_attention_pane(&panes);
+        assert_eq!(
+            chosen.as_deref(),
+            Some("%3"),
+            "first stale pane chosen when no prompt pane exists"
+        );
+    }
+
+    #[test]
+    fn select_attention_pane_empty_returns_none() {
+        let chosen = select_attention_pane(&[]);
+        assert!(chosen.is_none(), "empty list should return None");
+    }
+
+    #[test]
+    fn select_attention_pane_prompt_wins_regardless_of_order() {
+        // Even when prompt appears last, it should win.
+        let panes = vec![
+            PaneAttentionKind::Stale("%1".to_string()),
+            PaneAttentionKind::Stale("%2".to_string()),
+            PaneAttentionKind::Prompt("%9".to_string()),
+        ];
+        let chosen = select_attention_pane(&panes);
+        assert_eq!(chosen.as_deref(), Some("%9"));
+    }
+
+    #[test]
+    fn auto_compact_interval_constant() {
+        assert_eq!(
+            AUTO_COMPACT_INTERVAL_SECS, 30,
+            "auto-compact should fire every 30 seconds"
         );
     }
 }
