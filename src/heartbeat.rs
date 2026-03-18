@@ -1,7 +1,7 @@
 //! Heartbeat and worker status utilities for SuperHarness.
 //!
 //! This module provides:
-//! - `heartbeat()` — sends [HEARTBEAT] messages to the orchestrator pane (%0) unconditionally
+//! - `heartbeat()` — sends [HEARTBEAT] messages to the orchestrator pane (%0)
 //! - `daemon_tick()` — called every 1s by the background daemon; checks countdown and fires
 //! - Heartbeat state persistence (read/write to disk)
 //! - `status_counts()` — lightweight active/total worker count for the status bar
@@ -10,8 +10,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::health::{classify_pane, HealthStatus};
-use crate::monitor::load_state;
 use crate::project;
 use crate::tmux;
 use crate::util;
@@ -212,69 +210,22 @@ pub fn get_interval() -> u64 {
 // Heartbeat — unconditional send to %0
 // ---------------------------------------------------------------------------
 
-/// Send a [HEARTBEAT] status message to %0 unconditionally.
+/// Send a [HEARTBEAT] status message to %0.
 ///
-/// Self-guards against disabled state and rapid-fire duplicates so callers
-/// don't need to check those conditions themselves.
-/// Called by:
-///   - `daemon_tick()` after all gating checks pass
-///   - `handle_heartbeat(None)` when a worker explicitly fires a beat
-///   - `handle_kill()` after killing a worker
-///
-/// Returns `needs_attention` — `true` when at least one worker is stalled or
-/// waiting for approval.
-pub fn heartbeat() -> Result<bool> {
-    let state = read_heartbeat_state();
-    // Bug 1 fix: self-guard — honour disabled flag regardless of caller
-    if state.disabled {
-        return Ok(false);
-    }
-    // Bug 3 fix: dedup guard — don't pile up messages if fired in quick succession
-    let now = util::now_unix();
-    if now.saturating_sub(state.last_beat_ts) < 5 {
-        return Ok(false);
-    }
-
+/// Simple: counts active workers, formats a message, sends it.
+/// No guards here — callers (daemon_tick, handle_heartbeat, handle_kill)
+/// are responsible for their own gating logic.
+pub fn heartbeat() -> Result<()> {
     let all_panes = tmux::list().unwrap_or_default();
-    let worker_panes: Vec<_> = all_panes
+    let worker_count = all_panes
         .iter()
         .filter(|p| p.id != "%0" && !is_daemon_pane(p))
-        .collect();
-    let worker_count = worker_panes.len();
+        .count();
     let time = time_hhmm();
 
-    let (status_part, needs_attention) = if worker_count == 0 {
-        ("No workers running".to_string(), false)
-    } else {
-        let monitor_state = load_state();
-        let attention_count = worker_panes
-            .iter()
-            .filter(|p| {
-                matches!(
-                    classify_pane(&p.id, &monitor_state, 60),
-                    Ok(h)
-                        if matches!(
-                            h.status,
-                            HealthStatus::Stalled | HealthStatus::Waiting
-                        )
-                )
-            })
-            .count();
-
-        let msg = if attention_count == 0 {
-            "All systems nominal".to_string()
-        } else {
-            format!("{attention_count} worker(s) need attention")
-        };
-        (msg, attention_count > 0)
-    };
-
-    let msg = format!("[HEARTBEAT] Active workers: {worker_count} | Time: {time} | {status_part}");
-
+    let msg = format!("[HEARTBEAT] Active workers: {worker_count} | Time: {time}");
     tmux::send("%0", &msg)?;
-    let _ = tmux::flash_notification(&msg);
-
-    Ok(needs_attention)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -283,15 +234,12 @@ pub fn heartbeat() -> Result<bool> {
 
 /// Process one daemon tick. Called every 1s by the background daemon loop.
 ///
-/// Silent — no stdout output. Logic:
+/// Silent — no stdout output. Simplified logic:
 /// 1. Read state. If disabled → return.
-/// 2. Stale-state guard: if `next_beat_ts` is >5 min in the past, reset it.
+/// 2. If `next_beat_ts == 0` → initialize to `now + interval`, write, return.
 /// 3. If `now < next_beat_ts` → return (countdown still running).
-/// 4. If %0 has pending input or is busy → skip beat, reschedule to now+interval.
-/// 5. Otherwise → fire heartbeat, update state.
-///
-/// When a beat is skipped (busy/pending input), `next_beat_ts` is set to
-/// `now + interval` — the daemon does NOT retry every second.
+/// 4. If %0 has pending input or is busy → reschedule to `now + interval`, write, return.
+/// 5. Fire heartbeat. Set `last_beat_ts = now`, `next_beat_ts = now + interval`. Write.
 pub fn daemon_tick() -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -311,46 +259,30 @@ pub fn daemon_tick() -> Result<()> {
         return Ok(());
     }
 
-    // 2. Stale-state guard: next_beat_ts more than 5 minutes in the past
-    //    Avoids firing a backlog of beats from a previous session.
-    if state.next_beat_ts > 0 && now > state.next_beat_ts.saturating_add(300) {
+    // 2. Uninitialized — set first countdown and return
+    if state.next_beat_ts == 0 {
         state.next_beat_ts = now + interval;
         write_heartbeat_state(&state);
         return Ok(());
     }
 
     // 3. Countdown still running — nothing to do
-    if state.next_beat_ts > now {
+    if now < state.next_beat_ts {
         return Ok(());
     }
 
-    // 4. %0 has pending input or is busy → skip this beat entirely,
-    //    schedule the next one at the normal interval (don't retry every 1s)
+    // 4. %0 has pending input or is busy → reschedule, don't retry every 1s
     if orchestrator_has_pending_input() || orchestrator_is_busy() {
         state.next_beat_ts = now + interval;
         write_heartbeat_state(&state);
         return Ok(());
     }
 
-    // 5. Re-read state to catch any toggle that happened during this tick
-    //    (TOCTOU fix: heartbeat-toggle may have written disabled=true after our
-    //    initial read at the top of this function)
-    let fresh = read_heartbeat_state();
-    if fresh.disabled {
-        return Ok(());
-    }
-
-    // 5b. All clear — fire the heartbeat
-    let needs_attention = heartbeat().unwrap_or(false);
-
-    // Re-read one more time so we only overwrite timing fields and preserve
-    // the disabled flag (and any other fields) from the most-recent disk state.
-    let mut latest = read_heartbeat_state();
-    latest.last_beat_ts = now;
-    latest.next_beat_ts = now + interval;
-    latest.last_sent = true;
-    latest.needs_attention = needs_attention;
-    write_heartbeat_state(&latest);
+    // 5. Fire heartbeat and update state
+    let _ = heartbeat();
+    state.last_beat_ts = now;
+    state.next_beat_ts = now + interval;
+    write_heartbeat_state(&state);
 
     Ok(())
 }
@@ -362,20 +294,19 @@ pub fn daemon_tick() -> Result<()> {
 /// On-disk record updated after every heartbeat event.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HeartbeatState {
-    /// Unix timestamp of the last fired heartbeat (0 = never fired).
-    pub last_beat_ts: u64,
-    /// Configured heartbeat interval in seconds.
-    pub interval_secs: u64,
-    /// Whether the last scheduled beat was actually sent to %0 (false = skipped).
-    pub last_sent: bool,
-    /// Predicted unix timestamp of the next beat.
-    pub next_beat_ts: u64,
-    /// True when at least one worker is stalled/waiting and needs attention.
-    pub needs_attention: bool,
     /// When true, heartbeats are permanently disabled until explicitly toggled
     /// back on.  Survives restarts.  Set/cleared by `superharness heartbeat-toggle`.
     #[serde(default)]
     pub disabled: bool,
+    /// Configured heartbeat interval in seconds.
+    #[serde(default)]
+    pub interval_secs: u64,
+    /// Predicted unix timestamp of the next beat.
+    #[serde(default)]
+    pub next_beat_ts: u64,
+    /// Unix timestamp of the last fired heartbeat (0 = never fired).
+    #[serde(default)]
+    pub last_beat_ts: u64,
 }
 
 /// Return the path to the heartbeat state file.
@@ -449,28 +380,6 @@ pub fn status_counts() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Pure guard helpers — extracted for testability
-// ---------------------------------------------------------------------------
-
-/// Returns `true` when the dedup guard would **allow** a heartbeat to fire.
-///
-/// A heartbeat is suppressed when `last_beat_ts` was fewer than 5 seconds
-/// before `now` (rapid-fire guard).
-#[cfg(test)]
-pub fn dedup_guard_allows(state: &HeartbeatState, now: u64) -> bool {
-    now.saturating_sub(state.last_beat_ts) >= 5
-}
-
-/// Returns `true` when the stale-state guard fires, i.e. `next_beat_ts` is
-/// more than 300 seconds (5 minutes) in the past relative to `now`.
-///
-/// Mirrors the condition in `daemon_tick()` that resets a stale countdown.
-#[cfg(test)]
-pub fn stale_state_guard_fires(state: &HeartbeatState, now: u64) -> bool {
-    state.next_beat_ts > 0 && now > state.next_beat_ts.saturating_add(300)
-}
-
-// ---------------------------------------------------------------------------
 // Pure status-kaomoji helper — extracted for testability
 // ---------------------------------------------------------------------------
 
@@ -479,30 +388,30 @@ pub fn stale_state_guard_fires(state: &HeartbeatState, now: u64) -> bool {
 ///
 /// This is the same logic as `handle_heartbeat_status` in `heartbeat_cmds.rs`,
 /// extracted as a pure function so it can be unit-tested without I/O.
+///
+/// Simplified faces:
+/// - Disabled: `(x_x)`
+/// - No scheduled beat (`next_beat_ts == 0`): `(^_^) --`
+/// - Normal countdown: `(^_^) Ns`
+/// - Just fired (within 3s): `(^o^) Ns`
 #[cfg(test)]
 pub fn status_kaomoji(state: &HeartbeatState, now: u64) -> String {
-    // No state yet (never fired) and not disabled.
-    if state.last_beat_ts == 0 && !state.disabled {
-        return "#[fg=colour245](^_^) --#[default]".to_string();
-    }
-
     // Permanently disabled.
     if state.disabled {
         return "#[fg=colour240](x_x)#[default]".to_string();
     }
 
+    // No scheduled beat.
+    if state.next_beat_ts == 0 {
+        return "#[fg=colour245](^_^) --#[default]".to_string();
+    }
+
     let secs_since_beat = now.saturating_sub(state.last_beat_ts);
     let secs_to_next = state.next_beat_ts.saturating_sub(now);
 
-    if secs_since_beat <= 3 {
+    if state.last_beat_ts > 0 && secs_since_beat <= 3 {
         // Just fired — excited, bright green.
         format!("#[fg=colour156](^o^) {secs_to_next}s#[default]")
-    } else if !state.last_sent {
-        // Last scheduled beat was skipped (busy) — sleepy, muted yellow.
-        format!("#[fg=colour180](-_-) {secs_to_next}s#[default]")
-    } else if state.needs_attention {
-        // Workers need attention — alarmed, orange.
-        format!("#[fg=colour214](o_O)! {secs_to_next}s#[default]")
     } else {
         // Normal — happy, calm green.
         format!("#[fg=colour114](^_^) {secs_to_next}s#[default]")
@@ -570,9 +479,7 @@ mod tests {
         let s = HeartbeatState::default();
         assert_eq!(s.last_beat_ts, 0, "last_beat_ts must start at 0");
         assert_eq!(s.interval_secs, 0, "interval_secs must start at 0");
-        assert!(!s.last_sent, "last_sent must start false");
         assert_eq!(s.next_beat_ts, 0, "next_beat_ts must start at 0");
-        assert!(!s.needs_attention, "needs_attention must start false");
         assert!(!s.disabled, "disabled must start false");
     }
 
@@ -585,9 +492,7 @@ mod tests {
         let orig = HeartbeatState {
             last_beat_ts: 1_700_000_000,
             interval_secs: 30,
-            last_sent: true,
             next_beat_ts: 1_700_000_030,
-            needs_attention: false,
             disabled: false,
         };
 
@@ -596,9 +501,7 @@ mod tests {
 
         assert_eq!(restored.last_beat_ts, orig.last_beat_ts);
         assert_eq!(restored.interval_secs, orig.interval_secs);
-        assert_eq!(restored.last_sent, orig.last_sent);
         assert_eq!(restored.next_beat_ts, orig.next_beat_ts);
-        assert_eq!(restored.needs_attention, orig.needs_attention);
         assert_eq!(restored.disabled, orig.disabled);
     }
 
@@ -608,16 +511,13 @@ mod tests {
             disabled: true,
             last_beat_ts: 42,
             interval_secs: 60,
-            last_sent: false,
             next_beat_ts: 102,
-            needs_attention: true,
         };
 
         let json = serde_json::to_string_pretty(&orig).unwrap();
         let restored: HeartbeatState = serde_json::from_str(&json).unwrap();
 
         assert!(restored.disabled);
-        assert!(restored.needs_attention);
         assert_eq!(restored.last_beat_ts, 42);
     }
 
@@ -627,9 +527,7 @@ mod tests {
         let json = r#"{
             "last_beat_ts": 100,
             "interval_secs": 30,
-            "last_sent": false,
-            "next_beat_ts": 130,
-            "needs_attention": false
+            "next_beat_ts": 130
         }"#;
 
         let state: HeartbeatState = serde_json::from_str(json).expect("should deserialize");
@@ -637,6 +535,23 @@ mod tests {
             !state.disabled,
             "`disabled` must default to false via #[serde(default)]"
         );
+    }
+
+    #[test]
+    fn serde_ignores_removed_fields_gracefully() {
+        // Old state files may still have last_sent and needs_attention — must not fail.
+        let json = r#"{
+            "last_beat_ts": 100,
+            "interval_secs": 30,
+            "last_sent": true,
+            "next_beat_ts": 130,
+            "needs_attention": false,
+            "disabled": false
+        }"#;
+
+        let state: HeartbeatState = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(state.last_beat_ts, 100);
+        assert_eq!(state.next_beat_ts, 130);
     }
 
     // -----------------------------------------------------------------------
@@ -650,9 +565,7 @@ mod tests {
         let state = HeartbeatState {
             last_beat_ts: 1_700_000_000,
             interval_secs: 60,
-            last_sent: true,
             next_beat_ts: 1_700_000_060,
-            needs_attention: true,
             disabled: false,
         };
 
@@ -661,9 +574,7 @@ mod tests {
 
         assert_eq!(restored.last_beat_ts, state.last_beat_ts);
         assert_eq!(restored.interval_secs, state.interval_secs);
-        assert_eq!(restored.last_sent, state.last_sent);
         assert_eq!(restored.next_beat_ts, state.next_beat_ts);
-        assert_eq!(restored.needs_attention, state.needs_attention);
         assert_eq!(restored.disabled, state.disabled);
     }
 
@@ -744,156 +655,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 5. Dedup guard logic
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn dedup_guard_suppresses_beat_fired_3s_ago() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 3, // only 3 seconds ago
-            ..Default::default()
-        };
-        assert!(
-            !dedup_guard_allows(&state, now),
-            "beat 3s ago should be suppressed (< 5s window)"
-        );
-    }
-
-    #[test]
-    fn dedup_guard_suppresses_beat_fired_exactly_4s_ago() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 4,
-            ..Default::default()
-        };
-        assert!(!dedup_guard_allows(&state, now));
-    }
-
-    #[test]
-    fn dedup_guard_allows_beat_fired_5s_ago() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 5,
-            ..Default::default()
-        };
-        assert!(
-            dedup_guard_allows(&state, now),
-            "beat exactly 5s ago should be allowed"
-        );
-    }
-
-    #[test]
-    fn dedup_guard_allows_beat_fired_10s_ago() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 10,
-            ..Default::default()
-        };
-        assert!(dedup_guard_allows(&state, now));
-    }
-
-    #[test]
-    fn dedup_guard_allows_when_never_fired() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: 0, // never fired
-            ..Default::default()
-        };
-        // 0 is far in the past so the guard should allow
-        assert!(dedup_guard_allows(&state, now));
-    }
-
-    #[test]
-    fn dedup_guard_handles_saturating_subtraction() {
-        // now < last_beat_ts (clock went backward — shouldn't panic)
-        let now = 10u64;
-        let state = HeartbeatState {
-            last_beat_ts: 9999, // in the future relative to now
-            ..Default::default()
-        };
-        // saturating_sub(9999) → 0 < 5 → suppressed, no panic
-        assert!(!dedup_guard_allows(&state, now));
-    }
-
-    // -----------------------------------------------------------------------
-    // 6. Stale-state guard
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn stale_guard_fires_when_next_beat_400s_in_past() {
-        let now = 1_700_000_600u64;
-        let state = HeartbeatState {
-            next_beat_ts: now - 400, // 400 > 300 → stale
-            ..Default::default()
-        };
-        assert!(
-            stale_state_guard_fires(&state, now),
-            "next_beat_ts 400s in the past should be stale"
-        );
-    }
-
-    #[test]
-    fn stale_guard_does_not_fire_when_next_beat_100s_in_past() {
-        let now = 1_700_000_600u64;
-        let state = HeartbeatState {
-            next_beat_ts: now - 100, // 100 < 300 → not stale
-            ..Default::default()
-        };
-        assert!(
-            !stale_state_guard_fires(&state, now),
-            "next_beat_ts only 100s in the past should not be stale"
-        );
-    }
-
-    #[test]
-    fn stale_guard_does_not_fire_when_next_beat_in_future() {
-        let now = 1_700_000_600u64;
-        let state = HeartbeatState {
-            next_beat_ts: now + 20, // upcoming beat
-            ..Default::default()
-        };
-        assert!(!stale_state_guard_fires(&state, now));
-    }
-
-    #[test]
-    fn stale_guard_does_not_fire_when_next_beat_ts_is_zero() {
-        // next_beat_ts == 0 means uninitialized; guard must not fire.
-        let now = 1_700_000_600u64;
-        let state = HeartbeatState {
-            next_beat_ts: 0,
-            ..Default::default()
-        };
-        assert!(
-            !stale_state_guard_fires(&state, now),
-            "next_beat_ts == 0 (uninitialized) must not trigger stale guard"
-        );
-    }
-
-    #[test]
-    fn stale_guard_fires_at_exact_boundary() {
-        let now = 1_700_000_600u64;
-        // Exactly at the boundary: now == next_beat_ts + 301 (> 300)
-        let state = HeartbeatState {
-            next_beat_ts: now - 301,
-            ..Default::default()
-        };
-        assert!(stale_state_guard_fires(&state, now));
-    }
-
-    #[test]
-    fn stale_guard_does_not_fire_just_below_boundary() {
-        let now = 1_700_000_600u64;
-        // now == next_beat_ts + 299 (< 300 → not stale)
-        let state = HeartbeatState {
-            next_beat_ts: now - 299,
-            ..Default::default()
-        };
-        assert!(!stale_state_guard_fires(&state, now));
-    }
-
-    // -----------------------------------------------------------------------
-    // 7. Toggle transitions
+    // 5. Toggle transitions
     // -----------------------------------------------------------------------
 
     #[test]
@@ -950,7 +712,6 @@ mod tests {
             last_beat_ts: 1_000,
             interval_secs: 30,
             next_beat_ts: 1_030,
-            ..Default::default()
         };
         write_heartbeat_state_to(&state, tmp.path());
 
@@ -968,7 +729,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 8. Interval computation
+    // 6. Interval computation
     // -----------------------------------------------------------------------
 
     #[test]
@@ -994,8 +755,6 @@ mod tests {
             last_beat_ts: last,
             interval_secs: interval,
             next_beat_ts: last + interval,
-            last_sent: false,
-            needs_attention: false,
             disabled: false,
         };
 
@@ -1020,7 +779,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9. is_daemon_pane detection
+    // 7. is_daemon_pane detection
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1076,7 +835,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 10. Status display kaomoji
+    // 8. Status display kaomoji
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1094,19 +853,39 @@ mod tests {
     }
 
     #[test]
-    fn kaomoji_no_state_shows_placeholder() {
-        // last_beat_ts == 0 and not disabled → neutral placeholder
+    fn kaomoji_no_scheduled_beat_shows_placeholder() {
+        // next_beat_ts == 0 → neutral placeholder
         let now = 1_700_000_100u64;
         let state = HeartbeatState {
-            last_beat_ts: 0,
+            next_beat_ts: 0,
             disabled: false,
             ..Default::default()
         };
         let face = status_kaomoji(&state, now);
-        // The placeholder contains "(^_^)" and "--"
         assert!(
             face.contains("(^_^)") && face.contains("--"),
-            "no-state placeholder not found in: {face}"
+            "no-scheduled-beat placeholder not found in: {face}"
+        );
+    }
+
+    #[test]
+    fn kaomoji_shows_countdown_when_last_beat_ts_zero_but_next_beat_ts_set() {
+        // This is the main bug fix: countdown should show even if no beat has fired yet
+        let now = 1_700_000_100u64;
+        let state = HeartbeatState {
+            last_beat_ts: 0,
+            next_beat_ts: now + 25,
+            interval_secs: 30,
+            disabled: false,
+        };
+        let face = status_kaomoji(&state, now);
+        assert!(
+            face.contains("25s"),
+            "should show countdown even when last_beat_ts==0 but next_beat_ts is set, got: {face}"
+        );
+        assert!(
+            face.contains("(^_^)"),
+            "should show happy face for normal countdown, got: {face}"
         );
     }
 
@@ -1116,8 +895,6 @@ mod tests {
         // Fired 2 seconds ago (within the 3-second "just fired" window)
         let state = HeartbeatState {
             last_beat_ts: now - 2,
-            last_sent: true,
-            needs_attention: false,
             next_beat_ts: now + 28,
             interval_secs: 30,
             disabled: false,
@@ -1130,49 +907,10 @@ mod tests {
     }
 
     #[test]
-    fn kaomoji_skipped_beat_shows_sleepy_face() {
-        let now = 1_700_000_100u64;
-        // Beat was more than 3s ago AND last_sent = false (skipped)
-        let state = HeartbeatState {
-            last_beat_ts: now - 60,
-            last_sent: false,
-            needs_attention: false,
-            next_beat_ts: now + 30,
-            interval_secs: 30,
-            disabled: false,
-        };
-        let face = status_kaomoji(&state, now);
-        assert!(
-            face.contains("(-_-)"),
-            "skipped beat should show sleepy face, got: {face}"
-        );
-    }
-
-    #[test]
-    fn kaomoji_needs_attention_shows_alarmed_face() {
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 60,
-            last_sent: true,
-            needs_attention: true,
-            next_beat_ts: now + 30,
-            interval_secs: 30,
-            disabled: false,
-        };
-        let face = status_kaomoji(&state, now);
-        assert!(
-            face.contains("(o_O)"),
-            "needs-attention state should show alarmed face, got: {face}"
-        );
-    }
-
-    #[test]
     fn kaomoji_normal_shows_happy_face() {
         let now = 1_700_000_100u64;
         let state = HeartbeatState {
             last_beat_ts: now - 60,
-            last_sent: true,
-            needs_attention: false,
             next_beat_ts: now + 30,
             interval_secs: 30,
             disabled: false,
@@ -1190,8 +928,6 @@ mod tests {
         let secs_to_next = 17u64;
         let state = HeartbeatState {
             last_beat_ts: now - 60,
-            last_sent: true,
-            needs_attention: false,
             next_beat_ts: now + secs_to_next,
             interval_secs: 30,
             disabled: false,
@@ -1204,33 +940,11 @@ mod tests {
     }
 
     #[test]
-    fn kaomoji_priority_skipped_beats_needs_attention() {
-        // When last_sent=false AND needs_attention=true, sleepy face wins
-        // (last_sent check comes first in the if-else chain)
-        let now = 1_700_000_100u64;
-        let state = HeartbeatState {
-            last_beat_ts: now - 60,
-            last_sent: false,
-            needs_attention: true,
-            next_beat_ts: now + 30,
-            interval_secs: 30,
-            disabled: false,
-        };
-        let face = status_kaomoji(&state, now);
-        assert!(
-            face.contains("(-_-)"),
-            "sleepy face (skipped) must take priority over alarmed face, got: {face}"
-        );
-    }
-
-    #[test]
     fn kaomoji_just_fired_boundary_exactly_3s() {
         let now = 1_700_000_100u64;
         // Exactly 3 seconds ago (boundary — should still show excited face)
         let state = HeartbeatState {
             last_beat_ts: now - 3,
-            last_sent: true,
-            needs_attention: false,
             next_beat_ts: now + 27,
             interval_secs: 30,
             disabled: false,
@@ -1248,14 +962,12 @@ mod tests {
         // 4 seconds ago → falls out of the excited window
         let state = HeartbeatState {
             last_beat_ts: now - 4,
-            last_sent: true,
-            needs_attention: false,
             next_beat_ts: now + 26,
             interval_secs: 30,
             disabled: false,
         };
         let face = status_kaomoji(&state, now);
-        // Should show happy face (last_sent=true, no attention needed)
+        // Should show happy face (normal state)
         assert!(
             face.contains("(^_^)"),
             "beat 4s ago should no longer show excited face, got: {face}"
