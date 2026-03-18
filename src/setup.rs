@@ -122,51 +122,6 @@ fn harness_display_name(harness: &str) -> &'static str {
     }
 }
 
-fn get_available_models(harness: &str) -> String {
-    let output = std::process::Command::new(harness).arg("models").output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let models = String::from_utf8_lossy(&o.stdout);
-            let lines: Vec<&str> = models.lines().filter(|l| !l.is_empty()).collect();
-            if lines.is_empty() {
-                return format!(
-                    "(could not detect models — run `{harness} models` to see available)"
-                );
-            }
-            lines.join("\n")
-        }
-        _ => format!("(could not detect models — run `{harness} models` to see available)"),
-    }
-}
-
-fn get_authenticated_providers(harness: &str) -> String {
-    let output = std::process::Command::new(harness)
-        .args(["auth", "list"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            // Strip ANSI codes
-            let stripped: String = text
-                .replace("\x1b[90m", "")
-                .replace("\x1b[0m", "")
-                .replace("│", "|")
-                .replace("●", "-")
-                .replace("┌", "")
-                .replace("└", "")
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            stripped
-        }
-        _ => format!("(could not detect — run `{harness} auth list`)"),
-    }
-}
-
 pub fn write_config(dir: &str, bin: &str) -> Result<()> {
     let base = Path::new(dir);
     let config_dir = util::superharness_config_dir();
@@ -185,14 +140,10 @@ pub fn write_config(dir: &str, bin: &str) -> Result<()> {
         .or_else(|| harness::get_default_model(&config_dir))
         .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
 
-    let models = get_available_models(&harness_name);
-    let providers = get_authenticated_providers(&harness_name);
     let preferences = build_preferences_section(&user_cfg);
     // Note: replace $HARNESS_DISPLAY before $HARNESS so the longer token is matched first.
     let content = AGENTS_MD
         .replace("$BIN", bin)
-        .replace("$MODELS", &models)
-        .replace("$PROVIDERS", &providers)
         .replace("$PREFERENCES", &preferences)
         .replace("$HARNESS_DISPLAY", harness_display)
         .replace("$HARNESS", &harness_name)
