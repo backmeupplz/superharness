@@ -153,6 +153,7 @@ pub fn send(pane: &str, text: &str) -> Result<()> {
 }
 
 /// Flash a notification message in the tmux status bar for 6 seconds.
+#[allow(dead_code)]
 pub fn flash_notification(msg: &str) -> Result<()> {
     tmux_ok(&["display-message", "-t", SESSION, "-d", "6000", msg])
 }
