@@ -494,6 +494,8 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     );
 
     tmux_ok(&["new-session", "-d", "-s", SESSION, "-c", &dir_str])?;
+    tmux_ok(&["rename-window", "-t", SESSION, "superharness"])?;
+    tmux_ok(&["select-pane", "-t", "%0", "-T", "superharness"])?;
     configure_session(bin_path)?;
     export_env_to_session()?;
 
