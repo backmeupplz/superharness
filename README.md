@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/backmeupplz/superharness)](https://github.com/backmeupplz/superharness)
 
-**Give opencode a team.**
+**Multi-agent orchestration for Claude Code, OpenCode, and Codex CLI.**
 
-superharness sits on top of [opencode](https://opencode.ai) and gives it the ability to spawn parallel worker agents, manage them, and clean up — all on its own. You just run `superharness` in your project instead of `opencode`.
+superharness sits on top of your AI coding agent and gives it the ability to spawn parallel worker agents, manage them in tmux, handle permissions, detect stalls, and clean up — all autonomously. You just run `superharness` in your project instead of your agent directly.
 
 ## Quick start
 
@@ -16,13 +16,14 @@ cd your-project
 superharness
 ```
 
-That's it. You get a normal opencode session — the same interface you already know — but now the AI can spawn as many parallel workers as the task needs, coordinate them across isolated git worktrees, handle permission prompts, and clean up when they're done.
+That's it. You get the normal agent interface you already know — but now the AI can spawn parallel workers, coordinate them across isolated git worktrees, auto-approve safe operations, detect stuck workers, and clean up — all without you lifting a finger.
 
 ## How it works
 
-1. **Install** — `cargo install superharness`. Requires tmux and opencode.
+1. **Install** — `cargo install superharness`. Requires tmux and an AI coding agent (Claude Code, OpenCode, or Codex CLI).
 2. **Run** — `superharness` in your project directory.
-3. **Work** — opencode spawns worker agents in parallel when the task warrants it. Each worker runs in its own git worktree. The orchestrating AI reviews permission prompts, detects stalled workers, merges results, and cleans up — without you doing anything.
+3. **Work** — The AI orchestrator spawns parallel worker agents when the task needs them. Each worker runs in its own git worktree. The orchestrator reviews permission prompts, auto-approves safe operations, detects stalled workers, merges results, and cleans up — without you doing anything.
+4. **Optional: Away Mode** — Step away and superharness keeps working autonomously, queuing uncertain decisions for your return.
 
 ## Install
 
@@ -58,13 +59,50 @@ brew install backmeupplz/superharness/superharness
 cargo install superharness
 ```
 
-Requires: [tmux](https://github.com/tmux/tmux) · an AI coding agent ([opencode](https://opencode.ai), claude, or codex)
+Requires: [tmux](https://github.com/tmux/tmux) · an AI coding agent ([Claude Code](https://claude.ai/code), [OpenCode](https://opencode.ai), or [Codex CLI](https://openrouter.ai))
 
 ---
 
 ## Going somewhere?
 
 superharness has an away mode for when you step out. The AI keeps workers running and handles safe operations, but queues any real decision — architecture choices, destructive operations, anything it isn't sure about — for your return. Full debrief when you're back.
+
+---
+
+## Features
+
+**Multi-Harness Support**
+- Works seamlessly with Claude Code, OpenCode, and Codex CLI
+- Unified orchestration across different AI agents
+- Automatic busy/idle detection per harness
+
+**Tmux Management**
+- Spawns workers in isolated panes and git worktrees
+- Auto-surfaces workers needing attention
+- Hides idle workers, keeps main window clean
+- Permission prompts are auto-approved for safe operations (edits, git, builds, tests)
+
+**Task Decomposition & Parallelization**
+- Breaks work into independent task units
+- Spawns multiple workers simultaneously
+- Tracks progress across all tasks
+- Respawns crashed workers with context
+
+**Away Mode**
+- Run `superharness` and step away
+- AI keeps workers running autonomously
+- Safe operations auto-approved, uncertain decisions queued
+- Get a full debrief when you return
+
+**Heartbeat System**
+- Detects stuck/idle workers
+- Wakes the orchestrator immediately when work is done
+- No polling, no artificial sleep — event-driven throughout
+
+**Intelligent Detection**
+- Detects busy/idle state per harness (spinners, permission prompts, keybind hints)
+- Automatically re-runs blocked tasks when dependencies finish
+- Cleans up worktrees on exit
 
 ---
 
