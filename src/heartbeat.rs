@@ -136,19 +136,140 @@ fn line_is_prompt_chrome(raw: &str) -> bool {
     trimmed.chars().all(is_prompt_chrome)
 }
 
-/// Return `true` when the user appears to have pending (unsent) input in the
-/// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
+/// Extract the user's prompt text from raw pane output.
 ///
-/// Strategy:
-/// 1. Get cursor position via tmux display-message
-/// 2. If cursor_x == 0, check up to 3 lines above cursor for content
-///    (handles multi-line input where Enter moved cursor to a blank line)
-/// 3. Capture cursor line via tmux capture-pane
-/// 4. Strip ANSI, strip prompt chars, check for remaining content
-/// 5. If content exists, return true
-pub fn main_pane_has_input() -> bool {
-    // ── step 1: get cursor position ──────────────────────────────────────────
+/// This is the pure-logic core of [`get_prompt_text`] — it takes the raw
+/// string returned by `tmux capture-pane` and returns whatever text the user
+/// has typed into the harness's input area.  Returns an empty string when the
+/// input area is empty or when the harness layout is not recognised.
+///
+/// Detection order:
+/// 1. **opencode** — TUI with `┃`-bordered input box above a `╹▀▀▀` border.
+/// 2. **Codex CLI** — TUI with `▌` (U+258C) left-border input area.
+/// 3. Falls through to empty string (caller can try cursor-based fallback).
+fn extract_prompt_text(raw_pane: &str) -> String {
+    let lines: Vec<&str> = raw_pane.lines().collect();
 
+    // ── 1. opencode detection ────────────────────────────────────────────────
+    // Find the bottom border: a line containing ╹ followed by ▀
+    // Then collect ┃-prefixed lines above it.
+    if let Some(border_idx) = lines.iter().rposition(|l| {
+        let s = strip_ansi(l);
+        let t = s.trim_start();
+        t.starts_with('╹') && t.contains('▀')
+    }) {
+        let mut input_lines: Vec<&str> = Vec::new();
+        // Walk upward from the line just above the border
+        for i in (0..border_idx).rev() {
+            let s = strip_ansi(lines[i]);
+            let t = s.trim_start();
+            if t.starts_with('┃') {
+                input_lines.push(lines[i]);
+            } else {
+                break;
+            }
+        }
+        input_lines.reverse();
+
+        // Drop the last ┃ line — it's the status line (model/plan info)
+        if input_lines.len() > 1 {
+            input_lines.pop();
+        } else {
+            // Only one ┃ line (the status line itself) — input area is empty
+            return String::new();
+        }
+
+        // Strip ┃ prefix and extract user text
+        let mut text_parts: Vec<String> = Vec::new();
+        for raw_line in &input_lines {
+            let stripped = strip_ansi(raw_line);
+            // Find the ┃ character and take everything after it
+            if let Some(pos) = stripped.find('┃') {
+                let after = &stripped[pos + '┃'.len_utf8()..];
+                text_parts.push(after.to_string());
+            }
+        }
+
+        let joined = text_parts.join("\n");
+        let trimmed = joined.trim();
+        return trimmed.to_string();
+    }
+
+    // ── 2. Codex CLI detection ───────────────────────────────────────────────
+    // Look for lines with ▌ (U+258C LEFT HALF BLOCK) as the input border.
+    // Scan from the bottom for the first ▌-prefixed line.
+    if let Some(codex_idx) = lines.iter().rposition(|l| {
+        let s = strip_ansi(l);
+        let t = s.trim_start();
+        t.starts_with('▌')
+    }) {
+        // Collect consecutive ▌-prefixed lines upward
+        let mut input_lines: Vec<&str> = Vec::new();
+        for i in (0..=codex_idx).rev() {
+            let s = strip_ansi(lines[i]);
+            let t = s.trim_start();
+            if t.starts_with('▌') {
+                input_lines.push(lines[i]);
+            } else {
+                break;
+            }
+        }
+        input_lines.reverse();
+
+        let mut text_parts: Vec<String> = Vec::new();
+        for raw_line in &input_lines {
+            let stripped = strip_ansi(raw_line);
+            if let Some(pos) = stripped.find('▌') {
+                let after = &stripped[pos + '▌'.len_utf8()..];
+                text_parts.push(after.to_string());
+            }
+        }
+
+        let joined = text_parts.join("\n");
+        let trimmed = joined.trim();
+        return trimmed.to_string();
+    }
+
+    // ── 3. No TUI pattern recognised — return empty ─────────────────────────
+    // The caller (get_prompt_text) will try the cursor-based fallback for
+    // plain CLI harnesses like Claude Code.
+    String::new()
+}
+
+/// Return the text currently in the %0 prompt input area.
+///
+/// Works across harnesses:
+/// - **opencode** — scans the TUI input box (┃-bordered area)
+/// - **Codex CLI** — scans the ▌-bordered input area
+/// - **Claude Code** — falls back to cursor-position-based detection
+///
+/// Returns an empty string when the input area is empty or undetectable.
+pub fn get_prompt_text() -> String {
+    // Try TUI-based detection first (opencode / Codex)
+    let pane_text = match tmux::read("%0", 25) {
+        Ok(t) => t,
+        Err(_) => return String::new(),
+    };
+
+    let tui_result = extract_prompt_text(&pane_text);
+    if !tui_result.is_empty() {
+        return tui_result;
+    }
+
+    // If no TUI pattern found AND the pane *does* have ┃ or ▌ lines, the
+    // input box was found but is empty — don't fall through to cursor-based.
+    {
+        let has_tui_chrome = pane_text.lines().any(|l| {
+            let s = strip_ansi(l);
+            let t = s.trim_start();
+            t.starts_with('┃') || t.starts_with('▌')
+        });
+        if has_tui_chrome {
+            return String::new();
+        }
+    }
+
+    // ── Fallback: cursor-based detection (Claude Code / plain CLI) ───────────
     let pos_output = match std::process::Command::new("tmux")
         .args([
             "display-message",
@@ -160,34 +281,28 @@ pub fn main_pane_has_input() -> bool {
         .output()
     {
         Ok(o) if o.status.success() => o,
-        _ => return false,
+        _ => return String::new(),
     };
 
     let pos_str = match std::str::from_utf8(&pos_output.stdout) {
         Ok(s) => s.trim().to_string(),
-        Err(_) => return false,
+        Err(_) => return String::new(),
     };
 
     let parts: Vec<&str> = pos_str.split_whitespace().collect();
     if parts.len() < 2 {
-        return false;
+        return String::new();
     }
     let cursor_x: u64 = match parts[0].parse() {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(_) => return String::new(),
     };
     let cursor_y: i64 = match parts[1].parse() {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(_) => return String::new(),
     };
 
-    // ── step 2: cursor_x guard ───────────────────────────────────────────────
-    // When cursor_x == 0 the user might be on a blank new line at the end of
-    // a multi-line prompt.  Peek at up to 10 lines above cursor_y:
-    //   - If any line has actual user content → prompt is active (return true)
-    //   - If any line is prompt chrome only (e.g. bare `┃`) → we are inside
-    //     an active prompt border/input area (return true)
-    //   - If all lines are completely blank → no prompt (return false)
+    // cursor_x == 0: look back up to 10 lines for content
     if cursor_x == 0 {
         let look_back: i64 = 10;
         let start = (cursor_y - look_back).max(0);
@@ -208,20 +323,23 @@ pub fn main_pane_has_input() -> bool {
             if let Ok(o) = above_output {
                 if o.status.success() {
                     if let Ok(text) = std::str::from_utf8(&o.stdout) {
+                        let mut parts: Vec<&str> = Vec::new();
                         for line in text.lines() {
                             if line_has_content(line) {
-                                return true;
+                                parts.push(line);
                             }
+                        }
+                        if !parts.is_empty() {
+                            return parts.join("\n");
                         }
                     }
                 }
             }
         }
-        return false;
+        return String::new();
     }
 
-    // ── step 3: check the exact cursor line ──────────────────────────────────
-
+    // cursor_x > 0: capture the cursor line
     let cursor_line_output = std::process::Command::new("tmux")
         .args([
             "capture-pane",
@@ -238,14 +356,25 @@ pub fn main_pane_has_input() -> bool {
     if let Ok(o) = cursor_line_output {
         if o.status.success() {
             if let Ok(text) = std::str::from_utf8(&o.stdout) {
-                if line_has_content(text) {
-                    return true;
+                let stripped = strip_ansi(text);
+                let trimmed = stripped
+                    .trim_start_matches(is_prompt_chrome)
+                    .trim_start_matches(char::is_whitespace)
+                    .trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
                 }
             }
         }
     }
 
-    false
+    String::new()
+}
+
+/// Return `true` when the user appears to have pending (unsent) input in the
+/// %0 prompt — i.e. they are mid-typing and have not yet pressed Enter.
+pub fn main_pane_has_input() -> bool {
+    !get_prompt_text().trim().is_empty()
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,5 +1185,152 @@ mod tests {
         assert!(!line_is_prompt_chrome("┃  hello"));
         assert!(!line_is_prompt_chrome("> some input"));
         assert!(!line_is_prompt_chrome("Build  Claude Opus 4.6"));
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. extract_prompt_text — TUI input area parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_prompt_text_opencode_empty() {
+        let pane = "\
+     Some response text here
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Plan  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "");
+    }
+
+    #[test]
+    fn extract_prompt_text_opencode_with_text() {
+        let pane = "\
+     Some response text here
+
+     ▣  Build · claude-opus-4-6
+
+  ┃ hello world
+  ┃
+  ┃
+  ┃  Plan  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "hello world");
+    }
+
+    #[test]
+    fn extract_prompt_text_opencode_multiline() {
+        let pane = "\
+     Some response text here
+
+  ┃ first line
+  ┃ second line
+  ┃
+  ┃  Plan  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "first line\n second line");
+    }
+
+    #[test]
+    fn extract_prompt_text_opencode_only_status_line() {
+        // Only the status ┃ line exists (single line input box = just status)
+        let pane = "\
+     Some response text here
+  ┃  Plan  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "");
+    }
+
+    #[test]
+    fn extract_prompt_text_codex_empty() {
+        let pane = "\
+     Some output
+▌ 
+  ? for shortcuts                              100% context left";
+        // Just ▌ + space — should be empty after trimming
+        assert_eq!(extract_prompt_text(pane), "");
+    }
+
+    #[test]
+    fn extract_prompt_text_codex_with_text() {
+        let pane = "\
+     Some output
+▌ hello world
+  ? for shortcuts                              100% context left";
+        assert_eq!(extract_prompt_text(pane), "hello world");
+    }
+
+    #[test]
+    fn extract_prompt_text_no_tui_pattern() {
+        // Plain CLI output — no ┃ or ▌ patterns
+        let pane = "\
+> some previous command
+output line 1
+output line 2
+> ";
+        // No TUI detected — should return empty (caller uses cursor fallback)
+        assert_eq!(extract_prompt_text(pane), "");
+    }
+
+    #[test]
+    fn extract_prompt_text_opencode_real_capture_empty_input() {
+        // Real-world capture: tool output in ┃ blocks ABOVE the input box,
+        // separated by non-┃ response text.  Input box is empty.
+        let pane = "\
+     ▣  Build · claude-opus-4-6 · 2m 11s
+
+  ┃
+  ┃  can we somehow test it?
+  ┃
+
+     Some response text here.
+
+  ┃
+  ┃  $ tmux capture-pane -t %0 -p -S -25
+  ┃
+  ┃  Click to expand
+  ┃
+
+     More response text.
+
+     ▣  Build · claude-opus-4-6
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "");
+    }
+
+    #[test]
+    fn extract_prompt_text_opencode_real_capture_with_input() {
+        // Same layout but user has typed text
+        let pane = "\
+     ▣  Build · claude-opus-4-6 · 2m 11s
+
+  ┃
+  ┃  previous message
+  ┃
+
+     Some response text.
+
+     ▣  Build · claude-opus-4-6
+
+  ┃ fix the heartbeat bug
+  ┃
+  ┃
+  ┃  Build  Claude Opus 4.6 Anthropic                  ~/code/superharness:main
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                           • OpenCode 1.2.27";
+        assert_eq!(extract_prompt_text(pane), "fix the heartbeat bug");
     }
 }
