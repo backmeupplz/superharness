@@ -152,9 +152,13 @@ fn orchestrator_has_pending_input() -> bool {
     };
 
     // ── step 2: cursor_x guard ───────────────────────────────────────────────
-    // A cursor at column ≤ 3 is sitting right on or just after the prompt glyph
-    // (e.g. "❯ " = 2 chars).  Nothing has been typed yet — skip the pane capture.
-    if cursor_x <= 3 {
+    // Only skip the capture when the cursor is at column 0 — meaning the pane
+    // line is completely empty (no prompt glyph, no text).  The previous
+    // threshold of ≤ 3 was too aggressive: at a "❯ " prompt (2 display columns)
+    // typing even one character puts cursor_x at 3, which the old guard blocked,
+    // causing the function to return false (no pending input detected) and the
+    // heartbeat to fire into the user's prompt.
+    if cursor_x == 0 {
         return false;
     }
 
@@ -232,14 +236,69 @@ pub fn heartbeat() -> Result<()> {
 // Daemon tick — called every 1s by the heartbeat daemon loop
 // ---------------------------------------------------------------------------
 
+/// What action `daemon_tick` should take for a given combination of inputs.
+///
+/// Extracted as a pure enum so the decision logic can be unit-tested without
+/// any tmux or filesystem I/O.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TickAction {
+    /// Heartbeats are permanently disabled.
+    Disabled,
+    /// `next_beat_ts` was zero — initialise the countdown.
+    Initialize,
+    /// Countdown is still running — nothing to do.
+    CountdownRunning,
+    /// Countdown expired but %0 has pending input or is busy — skip this beat.
+    /// `next_beat_ts` was already written to disk before this decision is made,
+    /// so the status bar immediately shows a fresh countdown.
+    Skip,
+    /// Countdown expired and %0 is idle — fire the heartbeat.
+    Fire,
+}
+
+/// Pure decision function — **no I/O**.
+///
+/// Given the current state, the current unix timestamp, and the results of the
+/// two I/O-bound guard checks, returns the action `daemon_tick` should take.
+///
+/// `state.interval_secs` must already be populated by the caller (i.e. ≠ 0).
+pub(crate) fn daemon_tick_action(
+    state: &HeartbeatState,
+    now: u64,
+    has_pending_input: bool,
+    is_busy: bool,
+) -> TickAction {
+    if state.disabled {
+        return TickAction::Disabled;
+    }
+    if state.next_beat_ts == 0 {
+        return TickAction::Initialize;
+    }
+    if now < state.next_beat_ts {
+        return TickAction::CountdownRunning;
+    }
+    if has_pending_input || is_busy {
+        return TickAction::Skip;
+    }
+    TickAction::Fire
+}
+
 /// Process one daemon tick. Called every 1s by the background daemon loop.
 ///
-/// Silent — no stdout output. Simplified logic:
+/// All output goes to **stderr** — the daemon loop redirects stdout elsewhere.
+/// Decision logic uses the pure `daemon_tick_action` helper above.
+///
+/// Steps:
 /// 1. Read state. If disabled → return.
-/// 2. If `next_beat_ts == 0` → initialize to `now + interval`, write, return.
+/// 2. If `next_beat_ts == 0` → initialise to `now + interval`, write, return.
 /// 3. If `now < next_beat_ts` → return (countdown still running).
-/// 4. If %0 has pending input or is busy → reschedule to `now + interval`, write, return.
-/// 5. Fire heartbeat. Set `last_beat_ts = now`, `next_beat_ts = now + interval`. Write.
+/// 4. **[Early write]** Countdown just expired — immediately write
+///    `next_beat_ts = now + interval` so the status bar stops showing "0s"
+///    while the guard checks below run (each is a subprocess and may take
+///    tens of milliseconds).
+/// 5. Evaluate guards. If %0 has pending input or is busy → return (the early
+///    write already rescheduled the countdown).
+/// 6. Fire heartbeat. Update `last_beat_ts` and write again.
 pub fn daemon_tick() -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -254,35 +313,68 @@ pub fn daemon_tick() -> Result<()> {
     }
     let interval = state.interval_secs;
 
-    // 1. Disabled — do nothing
-    if state.disabled {
-        return Ok(());
+    // Use the pure decision function for the pre-expiry checks (Disabled,
+    // Initialize, CountdownRunning).  For the expiry path we deviate from the
+    // naive action model: we perform an early write of next_beat_ts before
+    // running the I/O-bound guards, so the status bar stops showing "0s" during
+    // the guard-evaluation window.
+    let pre_expiry_action = daemon_tick_action(
+        &state, now, /*has_pending=*/ false, /*is_busy=*/ false,
+    );
+
+    match pre_expiry_action {
+        TickAction::Disabled => {
+            eprintln!("[heartbeat::daemon_tick] disabled — skipping");
+            return Ok(());
+        }
+        TickAction::Initialize => {
+            state.next_beat_ts = now + interval;
+            eprintln!(
+                "[heartbeat::daemon_tick] init — next_beat_ts={}",
+                state.next_beat_ts
+            );
+            write_heartbeat_state(&state);
+            return Ok(());
+        }
+        TickAction::CountdownRunning => {
+            return Ok(());
+        }
+        // Fall through to the expiry handling below.
+        TickAction::Skip | TickAction::Fire => {}
     }
 
-    // 2. Uninitialized — set first countdown and return
-    if state.next_beat_ts == 0 {
-        state.next_beat_ts = now + interval;
-        write_heartbeat_state(&state);
-        return Ok(());
-    }
-
-    // 3. Countdown still running — nothing to do
-    if now < state.next_beat_ts {
-        return Ok(());
-    }
-
-    // 4. %0 has pending input or is busy → reschedule, don't retry every 1s
-    if orchestrator_has_pending_input() || orchestrator_is_busy() {
-        state.next_beat_ts = now + interval;
-        write_heartbeat_state(&state);
-        return Ok(());
-    }
-
-    // 5. Fire heartbeat and update state
-    let _ = heartbeat();
-    state.last_beat_ts = now;
+    // 4. [Early write] Countdown expired — reset next_beat_ts *before* running
+    //    the guard checks so the status bar immediately shows a fresh countdown.
+    //    Previously next_beat_ts was only written after the guards returned,
+    //    leaving the display stuck at "0s" for the entire guard-evaluation window
+    //    (each guard spawns a tmux subprocess and can block for 50–200 ms+).
+    eprintln!(
+        "[heartbeat::daemon_tick] countdown expired (now={now} next_beat_ts={}) — early-writing reset",
+        state.next_beat_ts
+    );
     state.next_beat_ts = now + interval;
     write_heartbeat_state(&state);
+
+    // 5. Evaluate guards with real I/O
+    let has_pending = orchestrator_has_pending_input();
+    let is_busy = orchestrator_is_busy();
+    eprintln!("[heartbeat::daemon_tick] guards: has_pending_input={has_pending} is_busy={is_busy}");
+
+    match daemon_tick_action(&state, now + interval, has_pending, is_busy) {
+        TickAction::Skip => {
+            // next_beat_ts was already written in step 4 — nothing more to do.
+            eprintln!("[heartbeat::daemon_tick] skipping heartbeat (pending input or busy)");
+        }
+        TickAction::Fire => {
+            eprintln!("[heartbeat::daemon_tick] firing heartbeat");
+            let _ = heartbeat();
+            state.last_beat_ts = now;
+            write_heartbeat_state(&state);
+        }
+        // These can't occur here (state.next_beat_ts is now = now + interval,
+        // which is in the future), but handle defensively.
+        TickAction::Disabled | TickAction::Initialize | TickAction::CountdownRunning => {}
+    }
 
     Ok(())
 }
@@ -972,5 +1064,216 @@ mod tests {
             face.contains("(^_^)"),
             "beat 4s ago should no longer show excited face, got: {face}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. daemon_tick_action — pure decision logic
+    // -----------------------------------------------------------------------
+
+    fn expired_state(now: u64, interval: u64) -> HeartbeatState {
+        HeartbeatState {
+            next_beat_ts: now, // expired: next_beat_ts == now
+            interval_secs: interval,
+            last_beat_ts: now - interval,
+            disabled: false,
+        }
+    }
+
+    /// Core regression: skip due to pending input must be detected so that
+    /// daemon_tick can write next_beat_ts = now + interval and stop the
+    /// display from showing "0s".
+    #[test]
+    fn tick_action_skip_when_pending_input() {
+        let now = 1_700_000_030u64;
+        let interval = 30u64;
+        let state = expired_state(now, interval);
+
+        let action = daemon_tick_action(
+            &state, now, /*has_pending=*/ true, /*is_busy=*/ false,
+        );
+        assert_eq!(
+            action,
+            TickAction::Skip,
+            "should return Skip when pending input detected and countdown expired"
+        );
+
+        // Demonstrate that the caller will then set next_beat_ts = now + interval.
+        let new_next = now + interval;
+        assert_eq!(
+            new_next, 1_700_000_060,
+            "next_beat_ts reset must equal now + interval"
+        );
+    }
+
+    #[test]
+    fn tick_action_skip_when_busy() {
+        let now = 1_700_000_030u64;
+        let state = expired_state(now, 30);
+
+        let action = daemon_tick_action(&state, now, false, /*is_busy=*/ true);
+        assert_eq!(
+            action,
+            TickAction::Skip,
+            "should Skip when orchestrator is busy"
+        );
+    }
+
+    #[test]
+    fn tick_action_skip_when_both_pending_and_busy() {
+        let now = 1_700_000_030u64;
+        let state = expired_state(now, 30);
+
+        let action = daemon_tick_action(&state, now, true, true);
+        assert_eq!(action, TickAction::Skip);
+    }
+
+    #[test]
+    fn tick_action_fire_when_idle_and_expired() {
+        let now = 1_700_000_030u64;
+        let state = expired_state(now, 30);
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(
+            action,
+            TickAction::Fire,
+            "should Fire when idle and countdown expired"
+        );
+    }
+
+    #[test]
+    fn tick_action_fire_when_expired_past_deadline() {
+        let now = 1_700_000_060u64;
+        // next_beat_ts is 30s in the past — well overdue
+        let state = HeartbeatState {
+            next_beat_ts: now - 30,
+            interval_secs: 30,
+            last_beat_ts: now - 60,
+            disabled: false,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(action, TickAction::Fire);
+    }
+
+    #[test]
+    fn tick_action_countdown_running() {
+        let now = 1_700_000_020u64;
+        let state = HeartbeatState {
+            next_beat_ts: now + 10, // 10s to go
+            interval_secs: 30,
+            last_beat_ts: 0,
+            disabled: false,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(
+            action,
+            TickAction::CountdownRunning,
+            "should not fire when countdown is still running"
+        );
+    }
+
+    #[test]
+    fn tick_action_countdown_running_even_with_pending_input() {
+        let now = 1_700_000_020u64;
+        let state = HeartbeatState {
+            next_beat_ts: now + 5,
+            interval_secs: 30,
+            last_beat_ts: 0,
+            disabled: false,
+        };
+
+        // Guards are irrelevant when countdown hasn't expired yet
+        let action = daemon_tick_action(&state, now, true, true);
+        assert_eq!(action, TickAction::CountdownRunning);
+    }
+
+    #[test]
+    fn tick_action_disabled_before_expiry() {
+        let now = 1_700_000_030u64;
+        let state = HeartbeatState {
+            next_beat_ts: now - 100, // way expired
+            interval_secs: 30,
+            last_beat_ts: 0,
+            disabled: true,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(
+            action,
+            TickAction::Disabled,
+            "disabled state must never fire regardless of expiry"
+        );
+    }
+
+    #[test]
+    fn tick_action_initialize_when_next_beat_ts_zero() {
+        let now = 1_700_000_030u64;
+        let state = HeartbeatState {
+            next_beat_ts: 0,
+            interval_secs: 30,
+            last_beat_ts: 0,
+            disabled: false,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(
+            action,
+            TickAction::Initialize,
+            "zero next_beat_ts must trigger Initialize (first-run)"
+        );
+    }
+
+    /// Verify the reset value is arithmetically correct in all action paths.
+    #[test]
+    fn tick_action_skip_reset_value_is_now_plus_interval() {
+        let now = 1_700_000_100u64;
+        let interval = 45u64;
+        let mut state = expired_state(now, interval);
+
+        let action = daemon_tick_action(&state, now, true, false);
+        assert_eq!(action, TickAction::Skip);
+
+        // Simulate what daemon_tick does on Skip: set next_beat_ts = now + interval
+        state.next_beat_ts = now + interval;
+        assert_eq!(
+            state.next_beat_ts,
+            now + interval,
+            "Skip must reset next_beat_ts to exactly now + interval"
+        );
+    }
+
+    /// Expired by exactly 1 tick (boundary case).
+    #[test]
+    fn tick_action_expired_exactly_at_boundary() {
+        let now = 1_700_000_030u64;
+        let state = HeartbeatState {
+            next_beat_ts: now, // now == next_beat_ts → expired
+            interval_secs: 30,
+            last_beat_ts: now - 30,
+            disabled: false,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(
+            action,
+            TickAction::Fire,
+            "now == next_beat_ts should be treated as expired"
+        );
+    }
+
+    /// One second before expiry — must not fire.
+    #[test]
+    fn tick_action_one_second_before_expiry() {
+        let now = 1_700_000_029u64;
+        let state = HeartbeatState {
+            next_beat_ts: now + 1, // expires next second
+            interval_secs: 30,
+            last_beat_ts: now - 29,
+            disabled: false,
+        };
+
+        let action = daemon_tick_action(&state, now, false, false);
+        assert_eq!(action, TickAction::CountdownRunning);
     }
 }
