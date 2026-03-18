@@ -7,8 +7,11 @@
 //! - Heartbeat state persistence (read/write to disk)
 //! - `status_counts()` — lightweight active/total worker count for the status bar
 //! - File-based trigger protocol for CLI ↔ thread communication
+//! - Stale worker detection daemon — scans workers every 5s for permission
+//!   prompts and stale/idle states, triggering early heartbeats when needed
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::project;
@@ -470,6 +473,139 @@ pub fn main_pane_has_input() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Stale worker detection — pure-logic helpers
+// ---------------------------------------------------------------------------
+
+/// Scan interval for the worker scanner (in seconds).
+/// The scanner runs on a separate counter inside the heartbeat thread loop.
+const SCANNER_INTERVAL_SECS: u64 = 5;
+
+/// Number of consecutive unchanged scans before a worker is considered stale.
+/// With a 5-second scan interval, 3 scans = 15 seconds of no output change.
+const STALE_SCAN_THRESHOLD: u32 = 3;
+
+/// Return `true` if the pane output contains a permission / approval prompt.
+///
+/// This is intentionally similar to `health::is_waiting_for_permission()` but
+/// kept as a standalone pure function in this module to avoid coupling to the
+/// health system and to allow independent testing.  The patterns are tuned for
+/// the bottom portion of a worker pane (last ~20 lines).
+fn has_permission_prompt(output: &str) -> bool {
+    // Check the last few non-empty lines — permission prompts sit at the end.
+    let tail: String = output
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let lower = tail.to_lowercase();
+
+    // y/n style prompts
+    if lower.contains("[y/n]")
+        || lower.contains("(y/n)")
+        || lower.contains("y/n?")
+        || lower.contains("[yes/no]")
+        || lower.contains("(yes/no)")
+        || lower.contains("yes/no?")
+        || lower.contains("(y/n):")
+        || lower.contains("yes or no")
+    {
+        return true;
+    }
+
+    // Mixed-case y/N or Y/n variants (opencode shows "Allow bash: ... (Y/n)")
+    if lower.contains("(y/n") || lower.contains("[y/n") {
+        return true;
+    }
+
+    // Generic approval keywords
+    if lower.contains("approve?")
+        || lower.contains("allow?")
+        || lower.contains("allow this?")
+        || lower.contains("confirm?")
+        || lower.contains("proceed?")
+        || lower.contains("continue? [")
+        || lower.contains("would you like to")
+        || lower.contains("do you want to")
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Return `true` if the pane output looks like the worker is asking a question
+/// to the orchestrator (e.g. "?" prompts, questions ending with "?").
+///
+/// This detects cases where a worker is waiting for user input that is NOT a
+/// simple y/n permission prompt but rather a freeform question.
+fn has_question_prompt(output: &str) -> bool {
+    let tail: Vec<&str> = output
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(5)
+        .collect();
+
+    let lower_tail: Vec<String> = tail.iter().map(|l| l.to_lowercase()).collect();
+
+    // Claude Code question tool renders "# Questions" headers
+    for line in &lower_tail {
+        if line.contains("# questions") {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Return `true` if the orchestrator pane (%0) is currently displaying an MCP
+/// question dialog.  When this is the case, sending a `[HEARTBEAT]` would
+/// interrupt the dialog — so the scanner should suppress early beats.
+///
+/// Detection: the MCP question tool renders a block starting with `# Questions`
+/// followed by option lines containing `(no answer)` or radio-button markers.
+fn is_orchestrator_in_question_dialog(orch_output: &str) -> bool {
+    let lower = orch_output.to_lowercase();
+
+    // Look for the characteristic MCP question dialog pattern
+    if lower.contains("# questions") || lower.contains("(no answer)") {
+        return true;
+    }
+
+    // Also suppress if the orchestrator is showing a selection menu
+    // (radio buttons like "○" or "●" near question text)
+    let lines: Vec<&str> = orch_output
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(15)
+        .collect();
+
+    let has_question_header = lines.iter().any(|l| l.to_lowercase().contains("question"));
+    let has_radio_buttons = lines.iter().any(|l| l.contains('○') || l.contains('●'));
+
+    has_question_header && has_radio_buttons
+}
+
+/// Determine whether a worker pane needs attention based on its output.
+///
+/// Returns `true` if:
+/// - A permission prompt is detected
+/// - A question prompt is detected
+///
+/// This is a pure function for testability — it does NOT check stale state
+/// (that requires the scan-history HashMap maintained by the thread).
+fn worker_needs_attention(output: &str) -> bool {
+    has_permission_prompt(output) || has_question_prompt(output)
+}
+
+// ---------------------------------------------------------------------------
 // beat() — the ONLY place that sends to %0
 // ---------------------------------------------------------------------------
 
@@ -629,6 +765,13 @@ pub fn start_thread() {
         let prev = read_heartbeat_state();
         let mut disabled: bool = prev.disabled;
 
+        // --- Stale worker scanner state ---
+        // Separate countdown so the scanner runs on its own 5-second cycle.
+        let mut scanner_countdown: u64 = SCANNER_INTERVAL_SECS;
+        // Track output hashes per pane for stale detection.
+        // Key: pane_id, Value: (hash of last output, consecutive-unchanged count)
+        let mut pane_hashes: HashMap<String, (u64, u32)> = HashMap::new();
+
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -674,6 +817,85 @@ pub fn start_thread() {
                         }
                     }
                     let _ = std::fs::remove_file(&snz);
+                }
+
+                // ── Stale worker scanner ─────────────────────────────────
+                // Runs on its own 5-second cycle, independent of the main
+                // heartbeat countdown.  When a worker needs attention, it
+                // resets the main countdown to 0 so beat() fires immediately
+                // (subject to the orchestrator question-dialog suppression).
+                scanner_countdown = scanner_countdown.saturating_sub(1);
+                if scanner_countdown == 0 {
+                    scanner_countdown = SCANNER_INTERVAL_SECS;
+
+                    if let Ok(panes) = tmux::list() {
+                        let mut any_needs_attention = false;
+
+                        // Collect live pane IDs so we can prune stale entries later
+                        let mut live_ids: Vec<String> = Vec::new();
+
+                        for pane in &panes {
+                            // Skip the orchestrator pane
+                            if pane.id == "%0" {
+                                continue;
+                            }
+                            live_ids.push(pane.id.clone());
+
+                            // Read last 20 lines of worker output
+                            let output = match tmux::read(&pane.id, 20) {
+                                Ok(o) => o,
+                                Err(_) => continue,
+                            };
+
+                            // --- Permission / question prompt detection ---
+                            if worker_needs_attention(&output) {
+                                any_needs_attention = true;
+                                // Reset stale counter since the worker is
+                                // actively waiting (not truly "stale")
+                                pane_hashes
+                                    .insert(pane.id.clone(), (util::hash_string(&output), 0));
+                                continue;
+                            }
+
+                            // --- Stale/idle detection via output hashing ---
+                            let current_hash = util::hash_string(&output);
+                            let entry = pane_hashes.entry(pane.id.clone()).or_insert((0, 0));
+
+                            if current_hash == entry.0 {
+                                // Output unchanged — increment stale counter
+                                entry.1 = entry.1.saturating_add(1);
+
+                                if entry.1 >= STALE_SCAN_THRESHOLD {
+                                    // Worker has been unchanged for
+                                    // STALE_SCAN_THRESHOLD × SCANNER_INTERVAL_SECS.
+                                    // This could mean it finished, crashed,
+                                    // or is genuinely idle.
+                                    any_needs_attention = true;
+                                }
+                            } else {
+                                // Output changed — reset counter
+                                *entry = (current_hash, 0);
+                            }
+                        }
+
+                        // Prune entries for panes that no longer exist
+                        pane_hashes.retain(|id, _| live_ids.contains(id));
+
+                        // If any worker needs attention, trigger an early beat
+                        // UNLESS the orchestrator is in a question dialog.
+                        if any_needs_attention {
+                            let suppress = match tmux::read("%0", 25) {
+                                Ok(orch_out) => is_orchestrator_in_question_dialog(&orch_out),
+                                Err(_) => false,
+                            };
+
+                            if !suppress {
+                                // Reset countdown to 0 so beat() fires on
+                                // the next tick.
+                                countdown = 0;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1659,6 +1881,346 @@ user@host:~$ ";
         assert!(
             extract_busy_state(pane),
             "opencode footer with both 'esc interrupt' and idle hints on same line should be BUSY"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. has_permission_prompt — worker permission prompt detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn permission_prompt_yn_brackets() {
+        let output = "\
+Running bash command...
+Allow this action? [y/n]";
+        assert!(
+            has_permission_prompt(output),
+            "[y/n] should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_yn_parens() {
+        let output = "\
+Allow bash: rm -rf /tmp/test (y/n)";
+        assert!(
+            has_permission_prompt(output),
+            "(y/n) should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_yn_question() {
+        let output = "\
+This will delete files. y/n?";
+        assert!(
+            has_permission_prompt(output),
+            "y/n? should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_yes_no_brackets() {
+        let output = "\
+Proceed with deployment? [yes/no]";
+        assert!(
+            has_permission_prompt(output),
+            "[yes/no] should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_opencode_yn() {
+        // opencode shows: "Allow bash: ... (Y/n)"
+        let output = "\
+Allow bash: cargo build --release (Y/n)";
+        assert!(
+            has_permission_prompt(output),
+            "opencode (Y/n) should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_approve() {
+        let output = "\
+The tool wants to execute: rm -rf build/
+approve?";
+        assert!(
+            has_permission_prompt(output),
+            "approve? should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_allow() {
+        let output = "\
+Tool request: write to /etc/hosts
+allow?";
+        assert!(
+            has_permission_prompt(output),
+            "allow? should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_confirm() {
+        let output = "\
+About to push to main branch.
+confirm?";
+        assert!(
+            has_permission_prompt(output),
+            "confirm? should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_proceed() {
+        let output = "\
+This will modify 15 files.
+proceed?";
+        assert!(
+            has_permission_prompt(output),
+            "proceed? should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_would_you_like() {
+        let output = "\
+Found 3 type errors.
+Would you like to fix them automatically?";
+        assert!(
+            has_permission_prompt(output),
+            "'would you like to' should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_do_you_want() {
+        let output = "\
+Build failed.
+Do you want to retry with --verbose?";
+        assert!(
+            has_permission_prompt(output),
+            "'do you want to' should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_continue_bracket() {
+        let output = "\
+Installation ready.
+continue? [press enter]";
+        assert!(
+            has_permission_prompt(output),
+            "'continue? [' should trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_not_triggered_by_normal_output() {
+        let output = "\
+Building project...
+Compiling 42 crates
+Build succeeded in 12.3s
+All tests passed.";
+        assert!(
+            !has_permission_prompt(output),
+            "normal build output should NOT trigger permission detection"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_not_triggered_by_question_in_code() {
+        // The word "confirm" appears inside code, not as a prompt
+        let output = "\
+fn confirm_action(action: &str) -> bool {
+    println!(\"Confirming: {}\", action);
+    true
+}";
+        assert!(
+            !has_permission_prompt(output),
+            "code containing 'confirm' should NOT trigger (no '?' suffix)"
+        );
+    }
+
+    #[test]
+    fn permission_prompt_yes_or_no() {
+        let output = "\
+Delete all temporary files? yes or no";
+        assert!(
+            has_permission_prompt(output),
+            "'yes or no' should trigger permission detection"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. has_question_prompt — worker question detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn question_prompt_mcp_questions_header() {
+        let output = "\
+# Questions
+
+What database should we use?
+○ PostgreSQL
+○ SQLite
+○ MySQL";
+        assert!(
+            has_question_prompt(output),
+            "'# Questions' header should trigger question detection"
+        );
+    }
+
+    #[test]
+    fn question_prompt_not_normal_output() {
+        let output = "\
+Building...
+Compiling crate...
+Done.";
+        assert!(
+            !has_question_prompt(output),
+            "normal output should NOT trigger question detection"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. is_orchestrator_in_question_dialog — suppress heartbeats
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn orchestrator_question_dialog_detected() {
+        let output = "\
+Some previous output...
+
+# Questions
+
+Which approach do you prefer?
+○ Option A (Recommended)
+○ Option B
+(no answer)";
+        assert!(
+            is_orchestrator_in_question_dialog(output),
+            "MCP question dialog with '# Questions' and '(no answer)' should be detected"
+        );
+    }
+
+    #[test]
+    fn orchestrator_question_dialog_no_answer_only() {
+        let output = "\
+Processing...
+Selection required (no answer)";
+        assert!(
+            is_orchestrator_in_question_dialog(output),
+            "'(no answer)' alone should trigger suppression"
+        );
+    }
+
+    #[test]
+    fn orchestrator_question_dialog_radio_buttons() {
+        let output = "\
+Question: What model to use?
+● claude-opus-4-6
+○ claude-sonnet-4-6
+○ claude-haiku-4-5";
+        assert!(
+            is_orchestrator_in_question_dialog(output),
+            "radio buttons with question text should trigger suppression"
+        );
+    }
+
+    #[test]
+    fn orchestrator_no_question_dialog() {
+        let output = "\
+[HEARTBEAT]
+Workers: 3 active
+All workers healthy.
+> ";
+        assert!(
+            !is_orchestrator_in_question_dialog(output),
+            "normal orchestrator output should NOT trigger suppression"
+        );
+    }
+
+    #[test]
+    fn orchestrator_busy_output_no_dialog() {
+        let output = "\
+⠹ Processing worker output...
+Reading pane %3...
+Worker %3 status: working";
+        assert!(
+            !is_orchestrator_in_question_dialog(output),
+            "orchestrator busy output should NOT trigger suppression"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. worker_needs_attention — combined detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn worker_needs_attention_permission_prompt() {
+        let output = "\
+Running tool...
+Allow bash: git push origin main (Y/n)";
+        assert!(
+            worker_needs_attention(output),
+            "permission prompt should trigger needs_attention"
+        );
+    }
+
+    #[test]
+    fn worker_needs_attention_question_prompt() {
+        let output = "\
+# Questions
+
+Where should the config file be stored?";
+        assert!(
+            worker_needs_attention(output),
+            "question prompt should trigger needs_attention"
+        );
+    }
+
+    #[test]
+    fn worker_needs_attention_normal_output() {
+        let output = "\
+Compiling superharness v0.1.0
+Building [=====     ] 50%
+Finished dev profile";
+        assert!(
+            !worker_needs_attention(output),
+            "normal build output should NOT trigger needs_attention"
+        );
+    }
+
+    #[test]
+    fn worker_needs_attention_empty_output() {
+        assert!(
+            !worker_needs_attention(""),
+            "empty output should NOT trigger needs_attention"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. Stale detection constants sanity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stale_constants_reasonable() {
+        assert_eq!(
+            SCANNER_INTERVAL_SECS, 5,
+            "scanner should run every 5 seconds"
+        );
+        assert_eq!(
+            STALE_SCAN_THRESHOLD, 3,
+            "stale threshold should be 3 consecutive unchanged scans"
+        );
+        // Total stale detection time = 5 * 3 = 15 seconds
+        assert_eq!(
+            SCANNER_INTERVAL_SECS * STALE_SCAN_THRESHOLD as u64,
+            15,
+            "stale detection should trigger after ~15 seconds"
         );
     }
 }
