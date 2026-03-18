@@ -5,7 +5,34 @@ use crate::harness;
 use crate::heartbeat;
 use crate::util;
 
-use super::{tmux_ok, SESSION};
+use super::{set_orchestrator_pane_id, tmux, tmux_ok, SESSION};
+
+/// Detect whether we are running inside an existing tmux session.
+/// Returns `true` when the `$TMUX` environment variable is set and non-empty.
+fn inside_tmux() -> bool {
+    std::env::var("TMUX")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// When running inside tmux, query the current session name so we can switch
+/// back to it on exit.  Returns `None` outside tmux or on any error.
+fn current_session_name() -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#{session_name}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    } else {
+        None
+    }
+}
 
 pub(super) fn has_session() -> bool {
     Command::new("tmux")
@@ -515,9 +542,36 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec {opencode_cmd}"
     );
 
+    // ── Detect whether we are inside an existing tmux session ──────────────
+    let embedded = inside_tmux();
+    let original_session = if embedded {
+        current_session_name()
+    } else {
+        None
+    };
+
     tmux_ok(&["new-session", "-d", "-s", SESSION, "-c", &dir_str])?;
     tmux_ok(&["rename-window", "-t", SESSION, "superharness"])?;
-    tmux_ok(&["select-pane", "-t", "%0", "-T", "superharness"])?;
+
+    // When embedded, the new session's first pane may get a different ID than %0.
+    // Query the actual pane ID of the orchestrator pane we just created.
+    let orch_pane = tmux(&[
+        "list-panes",
+        "-t",
+        &format!("{SESSION}:0"),
+        "-F",
+        "#{pane_id}",
+    ])
+    .unwrap_or_else(|_| "%0".to_string())
+    .lines()
+    .next()
+    .unwrap_or("%0")
+    .to_string();
+
+    // Store the orchestrator pane ID so all subcommands can find it.
+    set_orchestrator_pane_id(&orch_pane)?;
+
+    tmux_ok(&["select-pane", "-t", &orch_pane, "-T", "superharness"])?;
     configure_session(bin_path)?;
     export_env_to_session()?;
 
@@ -531,18 +585,53 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     // sourced, ensuring PATH and credential env vars are fully initialised.
     tmux_ok(&["respawn-pane", "-t", SESSION, "-k", "bash", "-lc", &splash])?;
 
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", SESSION])
-        .status()
-        .context("failed to attach to tmux session")?;
+    if embedded {
+        // ── Embedded mode (inside existing tmux) ────────────────────────────
+        // Switch the current tmux client to the superharness session instead
+        // of trying to attach (which would create a broken nested session).
+        let status = Command::new("tmux")
+            .args(["switch-client", "-t", SESSION])
+            .status()
+            .context("failed to switch tmux client to superharness session")?;
 
-    // Clean up when we return (user detached or opencode exited)
-    if has_session() {
-        let _ = tmux_ok(&["kill-session", "-t", SESSION]);
-    }
+        if !status.success() {
+            // Cleanup on switch failure
+            if has_session() {
+                let _ = tmux_ok(&["kill-session", "-t", SESSION]);
+            }
+            bail!("tmux switch-client failed");
+        }
 
-    if !status.success() {
-        bail!("tmux attach failed");
+        // Block until the superharness session is gone (the user switched away
+        // or the orchestrator exited). Poll every second.
+        loop {
+            if !has_session() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        // Switch back to the original session if it still exists.
+        if let Some(ref orig) = original_session {
+            let _ = Command::new("tmux")
+                .args(["switch-client", "-t", orig])
+                .status();
+        }
+    } else {
+        // ── Standalone mode (not inside tmux) ───────────────────────────────
+        let status = Command::new("tmux")
+            .args(["attach-session", "-t", SESSION])
+            .status()
+            .context("failed to attach to tmux session")?;
+
+        // Clean up when we return (user detached or opencode exited)
+        if has_session() {
+            let _ = tmux_ok(&["kill-session", "-t", SESSION]);
+        }
+
+        if !status.success() {
+            bail!("tmux attach failed");
+        }
     }
 
     Ok(())

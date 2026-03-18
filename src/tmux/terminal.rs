@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::process::Command;
 
-use super::SESSION;
+use super::{orchestrator_pane_id, SESSION};
 
 /// Information returned by the `terminal-size` subcommand.
 #[derive(Serialize)]
@@ -25,7 +25,8 @@ pub struct TerminalSizeInfo {
 pub fn terminal_size_info() -> TerminalSizeInfo {
     let (width, height) = get_terminal_size();
 
-    // Count non-%0 panes in window 0.
+    // Count non-orchestrator panes in window 0.
+    let orch_id = orchestrator_pane_id();
     let workers_visible: usize = Command::new("tmux")
         .args([
             "list-panes",
@@ -39,7 +40,7 @@ pub fn terminal_size_info() -> TerminalSizeInfo {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| {
             s.lines()
-                .filter(|l| !l.trim().is_empty() && *l != "%0")
+                .filter(|l| !l.trim().is_empty() && l.trim() != orch_id)
                 .count()
         })
         .unwrap_or(0);

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::layout;
 
-use super::{tmux, tmux_ok, SESSION};
+use super::{orchestrator_pane_id, tmux, tmux_ok, SESSION};
 
 // ---------------------------------------------------------------------------
 // Smart layout helpers
@@ -11,6 +11,7 @@ use super::{tmux, tmux_ok, SESSION};
 /// Build a [`layout::PaneLayout`] list from the panes currently visible in
 /// the main window (window 0), with no pane flagged as needing attention.
 fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
+    let orch_id = orchestrator_pane_id();
     let output = match tmux(&[
         "list-panes",
         "-t",
@@ -27,7 +28,7 @@ fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
         .filter(|l| !l.is_empty())
         .map(|line| {
             let id = line.splitn(2, '\t').next().unwrap_or("").to_string();
-            let is_orch = id == "%0";
+            let is_orch = id == orch_id;
             layout::PaneLayout {
                 is_orchestrator: is_orch,
                 needs_attention: false,
@@ -82,9 +83,11 @@ pub fn smart_layout_with_attention(attention_pane: Option<&str>) -> Result<()> {
 }
 
 /// Auto-compact the main window: if more than 4 worker panes are visible,
-/// move excess panes (highest pane_index, never %0) to background tabs.
+/// move excess panes (highest pane_index, never the orchestrator) to background tabs.
 /// Called automatically after each `spawn`.
 pub fn auto_compact() -> Result<()> {
+    let orch_id = orchestrator_pane_id();
+
     // List panes in main window (window 0) with their indices and titles
     let output = match tmux(&[
         "list-panes",
@@ -112,9 +115,11 @@ pub fn auto_compact() -> Result<()> {
         panes.push((id, index, title));
     }
 
-    // Exclude %0 (orchestrator), sort remaining by pane_index ascending
-    let mut workers: Vec<(String, u32, String)> =
-        panes.into_iter().filter(|(id, _, _)| id != "%0").collect();
+    // Exclude orchestrator, sort remaining by pane_index ascending
+    let mut workers: Vec<(String, u32, String)> = panes
+        .into_iter()
+        .filter(|(id, _, _)| *id != orch_id)
+        .collect();
     workers.sort_by_key(|(_, idx, _)| *idx);
 
     // Dynamic threshold based on terminal width
@@ -143,10 +148,11 @@ pub fn auto_compact() -> Result<()> {
     Ok(())
 }
 
-/// Compact the main window: move any pane (except %0) that is too small
+/// Compact the main window: move any pane (except orchestrator) that is too small
 /// (width < term_w/3 or height < term_h/3) to a background tab.
 /// Returns (moved_count, remaining_visible_count).
 pub fn compact_panes() -> Result<(usize, usize)> {
+    let orch_id = orchestrator_pane_id();
     let (term_w, term_h) = super::get_terminal_size();
 
     // List all panes across all windows with dimensions and window index
@@ -179,8 +185,8 @@ pub fn compact_panes() -> Result<(usize, usize)> {
         let window_index: u32 = parts[3].parse().unwrap_or(999);
         let title = parts[4];
 
-        // Only process panes in the main window (window 0), skip orchestrator %0
-        if window_index != 0 || id == "%0" {
+        // Only process panes in the main window (window 0), skip orchestrator
+        if window_index != 0 || id == orch_id {
             continue;
         }
 
