@@ -351,11 +351,6 @@ enum Command {
 
     /// Toggle heartbeat on/off. Called by clicking the heartbeat icon in the status bar.
     HeartbeatToggle,
-
-    /// Internal: called every 1s by the hidden heartbeat daemon loop.
-    /// Not intended for direct use — hidden from help output.
-    #[command(hide = true)]
-    HeartbeatDaemonTick,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -514,9 +509,6 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::HeartbeatStatus) => {
             handlers::handle_heartbeat_status()?;
-        }
-        Some(Command::HeartbeatDaemonTick) => {
-            handlers::handle_heartbeat_daemon_tick()?;
         }
     }
 

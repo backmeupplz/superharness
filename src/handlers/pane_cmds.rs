@@ -1,4 +1,4 @@
-use crate::{events, heartbeat, output_cleaner, tmux};
+use crate::{events, output_cleaner, tmux};
 use anyhow::Result;
 
 /// Handle `Command::List`.
@@ -38,8 +38,6 @@ pub fn handle_kill(pane: String) -> Result<()> {
         Some(&pane),
         "worker killed",
     );
-    // Trigger a heartbeat so the orchestrator wakes up immediately.
-    let _ = heartbeat::heartbeat(); // returns Result<()>
     let out = serde_json::json!({ "pane": pane, "killed": true });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

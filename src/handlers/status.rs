@@ -4,10 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::util::{BOLD, BRIGHT_RED, CYAN, DIM, GREEN, RED, RESET, UNDERLINE, YELLOW};
 use crate::{health, heartbeat, monitor, project, tmux};
 
-/// Filter predicate: exclude %0 (orchestrator) and the heartbeat-daemon pane
-/// so only real worker panes are shown / counted.
+/// Filter predicate: exclude %0 (orchestrator) so only real worker panes
+/// are shown / counted.
 fn is_worker_pane(p: &tmux::PaneInfo) -> bool {
-    p.id != "%0" && !heartbeat::is_daemon_pane(p)
+    p.id != "%0"
 }
 
 /// Handle `Command::StatusHuman` — human-readable mode + worker health display.

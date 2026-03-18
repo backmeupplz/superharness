@@ -1,12 +1,11 @@
 use anyhow::{bail, Context, Result};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::harness;
 use crate::heartbeat;
 use crate::util;
 
-use super::{tmux, tmux_ok, SESSION};
+use super::{tmux_ok, SESSION};
 
 pub(super) fn has_session() -> bool {
     Command::new("tmux")
@@ -499,67 +498,10 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     configure_session(bin_path)?;
     export_env_to_session()?;
 
-    // ── Heartbeat daemon ─────────────────────────────────────────────────────
-    // Spawn a hidden background window that runs the daemon loop.
-    // The window is named "heartbeat-daemon" so it is filtered out of all
-    // worker counts and listings.  It is never visible to the user.
-
-    // Clean up any orphaned daemon windows from previous/crashed processes
-    // before creating a fresh one. This prevents index collisions and
-    // duplicate daemon windows accumulating across sessions.
-    heartbeat::clean_dangling_daemons();
-
-    let daemon_cmd =
-        format!("while true; do {bin_path} heartbeat-daemon-tick 2>/dev/null; sleep 1; done");
-    let _ = tmux_ok(&[
-        "new-window",
-        "-t",
-        &format!("{}:99", SESSION),
-        "-d", // don't switch focus to this window
-        "-n",
-        heartbeat::DAEMON_WINDOW,
-        "bash",
-        "-c",
-        &daemon_cmd,
-    ]);
-    // Set the pane title as well (belt-and-suspenders filter).
-    // Guard: verify the returned pane ID is NOT %0 before setting the title.
-    // display-message can fall through to the current pane (%0) when the
-    // daemon window lookup fails, which would rename the orchestrator pane.
-    if let Ok(pane_id) = tmux(&[
-        "display-message",
-        "-t",
-        &format!("{SESSION}:{}", heartbeat::DAEMON_WINDOW),
-        "-p",
-        "#{pane_id}",
-    ]) {
-        let pane_id = pane_id.trim();
-        if !pane_id.is_empty() && pane_id != "%0" {
-            let _ = tmux_ok(&["select-pane", "-t", pane_id, "-T", heartbeat::DAEMON_WINDOW]);
-        }
-    }
-
-    // ── Initialize heartbeat state ───────────────────────────────────────────
-    // Write a clean state file so the daemon has something to work with
-    // immediately.  Preserve `disabled` from any previous session state.
-    {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let prev = heartbeat::read_heartbeat_state();
-        let interval = if prev.interval_secs > 0 {
-            prev.interval_secs
-        } else {
-            heartbeat::get_interval()
-        };
-        heartbeat::write_heartbeat_state(&heartbeat::HeartbeatState {
-            disabled: prev.disabled,
-            interval_secs: interval,
-            next_beat_ts: now + interval,
-            last_beat_ts: 0,
-        });
-    }
+    // ── Heartbeat background thread ─────────────────────────────────────────
+    // Spawn an in-process background thread instead of a separate tmux window.
+    // The thread manages countdown, trigger files, and state persistence.
+    heartbeat::start_thread();
 
     // Replace default shell with splash+opencode.
     // Use bash -lc (login shell) so that ~/.profile and ~/.bash_profile are

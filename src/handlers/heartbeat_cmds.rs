@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::heartbeat;
+use crate::project;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -10,55 +11,28 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Handle `Command::HeartbeatDaemonTick`.
-///
-/// Called every 1s by the hidden daemon loop:
-///   `while true; do superharness heartbeat-daemon-tick 2>/dev/null; sleep 1; done`
-///
-/// Silent — no stdout output. All logic lives in `heartbeat::daemon_tick()`.
-pub fn handle_heartbeat_daemon_tick() -> Result<()> {
-    heartbeat::daemon_tick()
-}
-
 /// Handle `Command::Heartbeat`.
 ///
 /// Two modes:
 ///
 /// **No args** (`superharness heartbeat`, called by workers):
-///   Send [HEARTBEAT] to %0 immediately, bypassing all countdown/busy checks.
-///   Reset `next_beat_ts` to `now + interval` so the daemon's countdown restarts.
+///   Write a trigger file so the background thread fires a beat immediately.
 ///
 /// **`--snooze N`** (`superharness heartbeat --snooze N`, called by orchestrator):
-///   Add N seconds to `next_beat_ts` (additive snooze). No heartbeat is sent.
+///   Write N to the snooze file so the background thread adds N to its countdown.
 pub fn handle_heartbeat(snooze: Option<u64>) -> Result<()> {
-    let now = now_secs();
+    let state_dir = project::get_project_state_dir()?;
 
     if let Some(secs) = snooze {
-        // Snooze: shift the next beat forward by N seconds (additive).
-        let mut state = heartbeat::read_heartbeat_state();
-        state.next_beat_ts = state.next_beat_ts.saturating_add(secs);
-        heartbeat::write_heartbeat_state(&state);
-        eprintln!(
-            "[heartbeat] snoozed {secs}s — next beat at unix {}",
-            state.next_beat_ts
-        );
+        // Snooze: write N to the snooze file for the background thread to pick up.
+        let snooze_path = state_dir.join("heartbeat_snooze");
+        std::fs::write(&snooze_path, secs.to_string())?;
+        eprintln!("[heartbeat] snooze {secs}s requested via file");
     } else {
-        // Worker-triggered immediate beat: bypass all checks and send now.
-        match heartbeat::heartbeat() {
-            Ok(()) => eprintln!("[heartbeat] sent [HEARTBEAT] to %0"),
-            Err(e) => eprintln!("[heartbeat] error: {e}"),
-        }
-
-        // Reset the daemon countdown so it doesn't fire again immediately.
-        let mut state = heartbeat::read_heartbeat_state();
-        let interval = if state.interval_secs == 0 {
-            heartbeat::get_interval()
-        } else {
-            state.interval_secs
-        };
-        state.last_beat_ts = now;
-        state.next_beat_ts = now + interval;
-        heartbeat::write_heartbeat_state(&state);
+        // Worker-triggered immediate beat: write trigger file.
+        let trigger_path = state_dir.join("heartbeat_trigger");
+        std::fs::write(&trigger_path, "1")?;
+        eprintln!("[heartbeat] trigger file written — background thread will fire beat");
     }
 
     Ok(())
@@ -66,31 +40,12 @@ pub fn handle_heartbeat(snooze: Option<u64>) -> Result<()> {
 
 /// Handle `Command::HeartbeatToggle`.
 ///
-/// Flips the `disabled` flag.
-/// When toggling **on**: also resets `next_beat_ts = now + interval` so the
-/// countdown starts fresh instead of immediately re-firing a stale beat.
+/// Write a toggle trigger file for the background thread to pick up.
 pub fn handle_heartbeat_toggle() -> Result<()> {
-    let now = now_secs();
-    let mut state = heartbeat::read_heartbeat_state();
-
-    if state.disabled {
-        // Currently disabled — re-enable and start a fresh countdown.
-        let interval = if state.interval_secs == 0 {
-            heartbeat::get_interval()
-        } else {
-            state.interval_secs
-        };
-        state.disabled = false;
-        state.next_beat_ts = now + interval;
-        heartbeat::write_heartbeat_state(&state);
-        eprintln!("[heartbeat] toggled on (resumed)");
-    } else {
-        // Currently enabled — disable permanently until toggled back.
-        state.disabled = true;
-        heartbeat::write_heartbeat_state(&state);
-        eprintln!("[heartbeat] toggled off (disabled)");
-    }
-
+    let state_dir = project::get_project_state_dir()?;
+    let toggle_path = state_dir.join("heartbeat_toggle_trigger");
+    std::fs::write(&toggle_path, "1")?;
+    eprintln!("[heartbeat] toggle trigger file written");
     Ok(())
 }
 
@@ -98,20 +53,12 @@ pub fn handle_heartbeat_toggle() -> Result<()> {
 ///
 /// Pure display: reads state file, prints kaomoji + countdown. Never fires anything.
 ///
-/// Also acts as a watchdog: calls [`heartbeat::ensure_daemon_running`] on every
-/// invocation. Because the tmux status bar runs this command every ~1 s
-/// (status-interval = 1), a crashed or missing daemon window will be detected
-/// and recreated within one second — without any additional polling loop.
-///
 /// Simplified faces:
 /// - Disabled: `(x_x)`
 /// - No scheduled beat (`next_beat_ts == 0`): `(^_^) --`
 /// - Normal countdown: `(^_^) Ns`
 /// - Just fired (within 3s): `(^o^) Ns`
 pub fn handle_heartbeat_status() -> Result<()> {
-    // Watchdog: silently recreate the daemon window if it disappeared.
-    heartbeat::ensure_daemon_running();
-
     let now = now_secs();
 
     let state = heartbeat::read_heartbeat_state();
