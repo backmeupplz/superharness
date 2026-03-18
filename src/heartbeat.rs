@@ -193,6 +193,40 @@ fn orchestrator_has_pending_input() -> bool {
         !trimmed.is_empty()
     }
 
+    // ── step 0: check whether a shell is the foreground process in %0 ────────
+    // When Claude Code (or any other program) is running, the foreground command
+    // is something like "claude", "node", or "opencode" — not a shell. In that
+    // case the cursor line almost always has content (tool results, status text),
+    // so the subsequent cursor checks return true and cause false positives.
+    // We skip straight to "no pending input" unless the foreground process is
+    // actually a shell where the user could be mid-typing.
+    let foreground_cmd_out = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            "%0",
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    {
+        let foreground_cmd = foreground_cmd_out.trim();
+        const SHELLS: &[&str] = &["bash", "zsh", "sh", "fish", "dash", "tcsh", "csh"];
+        if !SHELLS.contains(&foreground_cmd) {
+            return false;
+        }
+    }
+
     // ── step 1: get cursor position ──────────────────────────────────────────
 
     let pos_output = match std::process::Command::new("tmux")
@@ -413,20 +447,6 @@ pub fn daemon_tick() -> Result<()> {
             return Ok(());
         }
         TickAction::CountdownRunning => {
-            // Proactively check for pending input/busy when <= 2 s remain so the
-            // status bar never briefly shows 0s while the user is mid-typing.
-            let secs_remaining = state.next_beat_ts.saturating_sub(now);
-            if secs_remaining > 0 && secs_remaining <= 2 {
-                let has_pending = orchestrator_has_pending_input();
-                let is_busy = orchestrator_is_busy();
-                if has_pending || is_busy {
-                    eprintln!(
-                        "[heartbeat::daemon_tick] proactive reset — pending/busy with {secs_remaining}s remaining"
-                    );
-                    state.next_beat_ts = now + interval;
-                    write_heartbeat_state(&state);
-                }
-            }
             return Ok(());
         }
         // Fall through to the expiry handling below.
