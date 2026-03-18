@@ -152,29 +152,149 @@ pub fn write_config(dir: &str, bin: &str) -> Result<()> {
     let agents_path = base.join("AGENTS.md");
     if agents_path.exists() {
         let existing = fs::read_to_string(&agents_path)?;
-        if existing.contains("SuperHarness Orchestrator") {
-            // Strip existing superharness section and rewrite with current binary path
-            let before = existing
-                .split("# SuperHarness Orchestrator")
-                .next()
-                .unwrap_or("")
-                .trim_end();
-            if before.is_empty() {
-                fs::write(&agents_path, &content).context("failed to write AGENTS.md")?;
-            } else {
-                let combined = format!("{before}\n\n{content}");
-                fs::write(&agents_path, combined).context("failed to update AGENTS.md")?;
-            }
-            eprintln!("updated {}", agents_path.display());
-        } else {
-            let combined = format!("{existing}\n{content}");
-            fs::write(&agents_path, combined).context("failed to update AGENTS.md")?;
-            eprintln!("updated {}", agents_path.display());
-        }
+        let updated = merge_agents_content(&existing, &content);
+        fs::write(&agents_path, &updated).context("failed to update AGENTS.md")?;
+        eprintln!("updated {}", agents_path.display());
     } else {
         fs::write(&agents_path, &content).context("failed to write AGENTS.md")?;
         eprintln!("wrote {}", agents_path.display());
     }
 
     Ok(())
+}
+
+/// Merge a new superharness section into existing AGENTS.md content.
+///
+/// Three cases:
+/// 1. Existing file already has `# SuperHarness` → replace that section in-place.
+/// 2. Existing file has custom content but no superharness section → append with
+///    a `<!-- SUPERHARNESS INSTRUCTIONS BELOW -->` marker so the orchestrator can
+///    interactively merge on the next launch.
+/// 3. Existing file is empty → write the new section directly.
+pub fn merge_agents_content(existing: &str, new_section: &str) -> String {
+    if existing.contains("# SuperHarness") {
+        // Strip old superharness section and replace with the updated one.
+        let before = existing
+            .split("# SuperHarness")
+            .next()
+            .unwrap_or("")
+            .trim_end();
+        if before.is_empty() {
+            new_section.to_string()
+        } else {
+            format!("{before}\n\n{new_section}")
+        }
+    } else if existing.trim().is_empty() {
+        new_section.to_string()
+    } else {
+        // Custom content, no superharness section yet — append with marker.
+        format!("{existing}\n<!-- SUPERHARNESS INSTRUCTIONS BELOW -->\n{new_section}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FAKE_SECTION: &str = "# SuperHarness\n\n> You are superharness.\n\n$TASK\n";
+
+    // ── merge_agents_content ────────────────────────────────────────────────
+
+    #[test]
+    fn merge_fresh_file_returns_new_section() {
+        // No existing file content at all
+        let result = merge_agents_content("", FAKE_SECTION);
+        assert_eq!(result, FAKE_SECTION);
+    }
+
+    #[test]
+    fn merge_whitespace_only_returns_new_section() {
+        let result = merge_agents_content("   \n  \n", FAKE_SECTION);
+        assert_eq!(result, FAKE_SECTION);
+    }
+
+    #[test]
+    fn merge_existing_superharness_only_replaces_section() {
+        // File is purely a superharness section (no custom content before it)
+        let existing = "# SuperHarness\n\n> Old content.\n\n$TASK\n";
+        let result = merge_agents_content(existing, FAKE_SECTION);
+        assert_eq!(
+            result, FAKE_SECTION,
+            "should replace the old section exactly"
+        );
+        assert!(!result.contains("Old content"), "old content must be gone");
+    }
+
+    #[test]
+    fn merge_existing_superharness_preserves_custom_prefix() {
+        let existing = "# My Project\n\nSome docs.\n\n# SuperHarness\n\n> Old content.\n";
+        let result = merge_agents_content(existing, FAKE_SECTION);
+        assert!(
+            result.starts_with("# My Project"),
+            "custom prefix must be kept"
+        );
+        assert!(result.contains(FAKE_SECTION), "new section must be present");
+        assert!(
+            !result.contains("Old content"),
+            "old superharness content must be gone"
+        );
+        // Should not duplicate the section
+        assert_eq!(
+            result.matches("# SuperHarness").count(),
+            1,
+            "only one superharness section"
+        );
+    }
+
+    #[test]
+    fn merge_custom_content_no_superharness_appends_with_marker() {
+        let existing = "# My Project\n\nCustom instructions.\n";
+        let result = merge_agents_content(existing, FAKE_SECTION);
+        assert!(
+            result.contains("# My Project"),
+            "original content preserved"
+        );
+        assert!(
+            result.contains("<!-- SUPERHARNESS INSTRUCTIONS BELOW -->"),
+            "marker must be present"
+        );
+        assert!(result.contains(FAKE_SECTION), "new section appended");
+        // Marker comes before the superharness section
+        let marker_pos = result
+            .find("<!-- SUPERHARNESS INSTRUCTIONS BELOW -->")
+            .unwrap();
+        let section_pos = result.find("# SuperHarness").unwrap();
+        assert!(marker_pos < section_pos, "marker must precede the section");
+    }
+
+    #[test]
+    fn merge_idempotent_on_second_run() {
+        // Simulate: first run on a fresh project → write template.
+        // Second run → template is replaced in-place (no duplication).
+        let first = merge_agents_content("", FAKE_SECTION);
+        let second = merge_agents_content(&first, FAKE_SECTION);
+        assert_eq!(
+            second.matches("# SuperHarness").count(),
+            1,
+            "re-running must not duplicate the section"
+        );
+        assert_eq!(
+            second, FAKE_SECTION,
+            "content should be identical to a fresh write"
+        );
+    }
+
+    #[test]
+    fn merge_custom_content_idempotent_after_marker_and_section_written() {
+        // After the first append (with marker), a second run should recognise
+        // `# SuperHarness` in the file and replace — not append again.
+        let existing = "# My Project\n\nCustom instructions.\n";
+        let after_first = merge_agents_content(existing, FAKE_SECTION);
+        let after_second = merge_agents_content(&after_first, FAKE_SECTION);
+        assert_eq!(
+            after_second.matches("# SuperHarness").count(),
+            1,
+            "second run must not create a second superharness section"
+        );
+    }
 }

@@ -361,6 +361,29 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         String::new()
     };
 
+    // Detect whether an existing AGENTS.md had custom content and the superharness section
+    // was appended (rather than this being a clean write).  The marker is written by setup.rs
+    // when it encounters an AGENTS.md that doesn't already contain a superharness section.
+    let agents_path = std::path::PathBuf::from(&dir_str).join("AGENTS.md");
+    let agents_merge_note: String = if agents_path.exists() {
+        let agents_content = std::fs::read_to_string(&agents_path).unwrap_or_default();
+        if agents_content.contains("<!-- SUPERHARNESS INSTRUCTIONS BELOW -->") {
+            " NOTE: I found an existing AGENTS.md with custom project content. \
+            The superharness instructions have been appended at the bottom of that file \
+            (below the '<!-- SUPERHARNESS INSTRUCTIONS BELOW -->' marker). \
+            Please read AGENTS.md right now, then integrate the superharness instructions \
+            with the existing custom content so they work together coherently — \
+            restructure, merge, or annotate sections as needed, and remove the \
+            HTML marker comment once the merge is done. \
+            After integrating, tell the user what you changed."
+                .to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     let (initial_prompt, _auto_submit): (String, bool) = if !config_path.exists() {
         // First-run: ask model to set up preferences (auto-submit is fine here)
         let config_path_str = config_path.to_string_lossy().to_string();
@@ -375,7 +398,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
             as JSON with fields: default_model (string), default_harness (string, optional), \
             preferred_providers (array of strings), preferred_models (array of strings). \
             Create the directory if needed. After saving, \
-            confirm it's done and ask what they'd like to work on today."
+            confirm it's done and ask what they'd like to work on today.{agents_merge_note}"
         ),
             true,
         )
@@ -413,7 +436,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 4. Identify which tasks can run in parallel and which depend on each other. \
                 5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed). \
                 6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
-                Be conversational — this is a planning chat, not a form to fill out."
+                Be conversational — this is a planning chat, not a form to fill out.{agents_merge_note}"
             ), false)
         } else {
             // Resume mode: inject previous context and auto-submit.
@@ -430,7 +453,7 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 "[SUPERHARNESS CONTEXT] Resuming session. Previous state: {}. \
                 Tasks file: {} — please read this file to see current tasks. \
                 Decisions pending: {}. \
-                Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.",
+                Please acknowledge this state and continue from where you left off, or ask the user what they want to work on.{agents_merge_note}",
                 state_content,
                 tasks_file_path,
                 decisions_content,
