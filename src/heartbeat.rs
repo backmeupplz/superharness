@@ -269,19 +269,16 @@ pub fn write_heartbeat_state(state: &HeartbeatState) {
 
     let json = match serde_json::to_string_pretty(state) {
         Ok(j) => j,
-        Err(e) => {
-            eprintln!("[heartbeat] serialise error: {e}");
+        Err(_e) => {
             return;
         }
     };
 
-    if let Err(e) = std::fs::write(&tmp_path, &json) {
-        eprintln!("[heartbeat] write error ({}): {e}", tmp_path.display());
+    if let Err(_e) = std::fs::write(&tmp_path, &json) {
         return;
     }
 
-    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        eprintln!("[heartbeat] rename error: {e}");
+    if let Err(_e) = std::fs::rename(&tmp_path, &path) {
         // Best-effort cleanup of the orphaned tmp file.
         let _ = std::fs::remove_file(&tmp_path);
     }
@@ -366,7 +363,6 @@ pub fn start_thread() {
                     // Re-enabling: reset countdown
                     countdown = interval;
                 }
-                eprintln!("[heartbeat::thread] toggle — disabled={}", disabled);
             }
 
             if !disabled {
@@ -387,7 +383,6 @@ pub fn start_thread() {
                     beat();
                     last_beat_ts = now;
                     countdown = interval;
-                    eprintln!("[heartbeat::thread] trigger file detected — fired beat");
                 }
 
                 // Check for snooze file
@@ -396,9 +391,6 @@ pub fn start_thread() {
                     if let Ok(content) = std::fs::read_to_string(&snz) {
                         if let Ok(n) = content.trim().parse::<u64>() {
                             countdown = countdown.saturating_add(n);
-                            eprintln!(
-                                "[heartbeat::thread] snooze +{n}s — countdown now {countdown}"
-                            );
                         }
                     }
                     let _ = std::fs::remove_file(&snz);
