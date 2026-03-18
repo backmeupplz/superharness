@@ -108,7 +108,8 @@ fn line_has_content(raw: &str) -> bool {
 ///
 /// Strategy:
 /// 1. Get cursor position via tmux display-message
-/// 2. If cursor_x == 0, return false
+/// 2. If cursor_x == 0, check up to 3 lines above cursor for content
+///    (handles multi-line input where Enter moved cursor to a blank line)
 /// 3. Capture cursor line via tmux capture-pane
 /// 4. Strip ANSI, strip prompt chars, check for remaining content
 /// 5. If content exists, return true
@@ -148,7 +149,39 @@ pub fn main_pane_has_input() -> bool {
     };
 
     // ── step 2: cursor_x guard ───────────────────────────────────────────────
+    // When cursor_x == 0 the user might be on a blank new line after pressing
+    // Enter in a multi-line prompt.  Before concluding "no input", peek at up
+    // to 3 lines above cursor_y — if any contains user content the prompt is
+    // still active.
     if cursor_x == 0 {
+        let look_back: i64 = 3;
+        let start = (cursor_y - look_back).max(0);
+        if start < cursor_y {
+            let above_output = std::process::Command::new("tmux")
+                .args([
+                    "capture-pane",
+                    "-t",
+                    "%0",
+                    "-p",
+                    "-S",
+                    &start.to_string(),
+                    "-E",
+                    &(cursor_y - 1).to_string(),
+                ])
+                .output();
+
+            if let Ok(o) = above_output {
+                if o.status.success() {
+                    if let Ok(text) = std::str::from_utf8(&o.stdout) {
+                        for line in text.lines() {
+                            if line_has_content(line) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         return false;
     }
 
@@ -942,5 +975,28 @@ mod tests {
         assert!(line_has_content("> hello"));
         assert!(line_has_content("$ ls -la"));
         assert!(line_has_content("❯ cargo build"));
+    }
+
+    /// When the user is typing a multi-line input and presses Enter, the
+    /// cursor moves to a new blank line (cursor_x == 0).  The lines *above*
+    /// the cursor still contain user content.  `main_pane_has_input()` now
+    /// checks up to 3 lines above cursor_y via `line_has_content()`.
+    ///
+    /// This test verifies the helper correctly identifies content in lines
+    /// that would appear above the cursor in a multi-line prompt scenario.
+    #[test]
+    fn line_has_content_multiline_above_cursor() {
+        // Simulates lines above cursor in a multi-line prompt input:
+        // line N-2: "> some long command \"  (has content)
+        // line N-1: "  --flag value"        (has content)
+        // line N:   ""                      (blank — cursor is here with cursor_x==0)
+        //
+        // main_pane_has_input() captures lines N-3..N-1 and checks each
+        // with line_has_content().  If any returns true, input is detected.
+        assert!(line_has_content("> some long command \\"));
+        assert!(line_has_content("  --flag value"));
+        assert!(!line_has_content("")); // blank cursor line
+        assert!(!line_has_content("   ")); // whitespace-only
+        assert!(line_has_content("hello")); // bare content (no prompt char)
     }
 }
