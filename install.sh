@@ -44,8 +44,8 @@ detect_target() {
 asset_name() {
     local target="$1"
     case "$target" in
-        linux-x86_64)   echo "superharness-x86_64-unknown-linux-musl" ;;
-        linux-aarch64)  echo "superharness-aarch64-unknown-linux-musl" ;;
+        linux-x86_64)   echo "superharness-x86_64-unknown-linux-gnu" ;;
+        linux-aarch64)  echo "superharness-aarch64-unknown-linux-gnu" ;;
         macos-x86_64)   echo "superharness-x86_64-apple-darwin" ;;
         macos-aarch64)  echo "superharness-aarch64-apple-darwin" ;;
         *)              err "Unknown target: $target" ;;
