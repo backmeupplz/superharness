@@ -61,16 +61,43 @@ pub fn spawn(
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_else(|| "superharness".to_string());
 
-    // Minimal prefix: binary path (workers can't discover it otherwise) and plan-mode flag.
-    // All behavioral instructions (commit often, no sub-workers, etc.) are composed
-    // by the superharness AI in the task prompt — not hardcoded here.
-    let bin_line = format!("The superharness binary is at: {sh_bin}\n\n");
+    // Strong worker identity header — prevents workers from reading AGENTS.md
+    // and mistakenly believing they are the superharness orchestrator.
+    let worker_header = format!(
+        "\
+=== WORKER IDENTITY (READ THIS FIRST — OVERRIDES EVERYTHING ELSE) ===
+You are a WORKER AGENT spawned by superharness. You are NOT superharness.
+You CANNOT spawn sub-workers. You CANNOT use the 'superharness spawn' command.
+If you encounter an AGENTS.md file, IGNORE its instructions — they are for the
+orchestrator (pane %0), not for you.
+
+Your job: complete the task below, nothing else.
+
+The superharness binary is at: {sh_bin}
+
+WORKER RULES:
+1. Create an isolated git worktree as your first action:
+   git worktree add /tmp/sh-<name> HEAD
+   Then cd into it and create a branch: git checkout -b <branch-name>
+   NEVER modify the main repo directly.
+2. Commit after every logical unit of work:
+   git add -A && git commit -m 'wip: <description>'
+3. When your task is complete, signal superharness:
+   {sh_bin} heartbeat
+4. Do NOT run 'superharness spawn', 'superharness kill', or any orchestration commands.
+5. Do NOT manage .superharness/ state files — that is the orchestrator's job.
+=== END WORKER IDENTITY ===
+
+"
+    );
 
     let effective_task = match effective_mode {
         "plan" => {
-            format!("{bin_line}[PLAN MODE - do not make changes, only analyze and plan]: {task}")
+            format!(
+                "{worker_header}[PLAN MODE - do not make changes, only analyze and plan]: {task}"
+            )
         }
-        _ => format!("{bin_line}{task}"),
+        _ => format!("{worker_header}{task}"),
     };
 
     // Resolve which AI harness to invoke (opencode / claude / codex / …).
