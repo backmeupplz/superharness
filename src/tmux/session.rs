@@ -533,10 +533,11 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Launch the harness with --prompt / --print / positional arg to pre-fill and submit
-    // the initial message.  build_harness_cmd handles per-harness flag differences.
+    // Launch the orchestrator interactively — it must stay alive for the human
+    // to communicate with it.  build_orchestrator_cmd omits flags like --print
+    // that would cause the harness to exit after the first response.
     let opencode_cmd =
-        harness::build_harness_cmd(&orch_harness, default_model.as_deref(), &initial_prompt);
+        harness::build_orchestrator_cmd(&orch_harness, default_model.as_deref(), &initial_prompt);
 
     let splash = format!(
         "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec {opencode_cmd}"

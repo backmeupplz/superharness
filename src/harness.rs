@@ -155,7 +155,7 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
     Ok(installed[0].binary.clone())
 }
 
-/// Build the complete shell command string for the selected harness.
+/// Build the shell command for a **worker** pane (non-interactive, exits when done).
 ///
 /// CLI conventions per harness:
 ///   - opencode: `opencode [--model <m>] --prompt <task>`
@@ -180,7 +180,33 @@ pub fn build_harness_cmd(harness: &str, model: Option<&str>, prompt: &str) -> St
             let model_flag = model_flag(model);
             format!("codex exec --dangerously-bypass-approvals-and-sandbox{model_flag} {escaped}")
         }
-        // Default (opencode or any unknown harness): opencode-style interface
+        _ => {
+            let model_flag = model_flag(model);
+            format!("opencode{model_flag} --prompt {escaped}")
+        }
+    }
+}
+
+/// Build the shell command for the **orchestrator** pane (interactive, stays alive).
+///
+/// Unlike workers, the orchestrator must remain interactive so the human can
+/// communicate with it.  Per-harness differences:
+///   - opencode: same as worker (`--prompt` keeps the TUI alive)
+///   - claude:   launches interactively with the prompt as a positional argument
+///               (NOT `--print`, which would exit after the first response)
+///   - codex:    launches without `exec` subcommand to keep the TUI alive
+pub fn build_orchestrator_cmd(harness: &str, model: Option<&str>, prompt: &str) -> String {
+    let escaped = shell_escape(prompt);
+
+    match harness {
+        "claude" => {
+            let model_flag = model_flag(model);
+            format!("claude{model_flag} --dangerously-skip-permissions {escaped}")
+        }
+        "codex" => {
+            let model_flag = model_flag(model);
+            format!("codex{model_flag} {escaped}")
+        }
         _ => {
             let model_flag = model_flag(model);
             format!("opencode{model_flag} --prompt {escaped}")
