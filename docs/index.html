@@ -665,7 +665,7 @@
         <div class="install-cmd">
           <span class="prompt">$</span>
           <span id="install-cmd-1">curl -fsSL https://superharness.dev/install.sh | sh</span>
-          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-1')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-1', this)" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
@@ -689,7 +689,7 @@
         <div class="install-cmd">
           <span class="prompt">$</span>
           <span id="install-cmd-3">yay -S superharness</span>
-          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-3')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-3', this)" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
@@ -702,7 +702,7 @@
         <div class="install-cmd">
           <span class="prompt">$</span>
           <span id="install-cmd-4">brew install backmeupplz/superharness/superharness</span>
-          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-4')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-4', this)" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
@@ -715,7 +715,7 @@
         <div class="install-cmd">
           <span class="prompt">$</span>
           <span id="install-cmd-2">cargo install superharness</span>
-          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-2')" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
+          <button class="copy-btn" onclick="copyInstallCmd('install-cmd-2', this)" title="Copy" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .15s;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
@@ -762,12 +762,33 @@
 </footer>
 
 <script>
-  function copyInstallCmd(elementId) {
+  function copyInstallCmd(elementId, btn) {
     const cmd = document.getElementById(elementId).textContent;
+    const originalHTML = btn.innerHTML;
+    
+    // Check if clipboard API is available
+    if (!navigator.clipboard) {
+      // Fallback: select text for manual copy
+      const range = document.createRange();
+      range.selectNode(document.getElementById(elementId));
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+      }, 2000);
+      return;
+    }
+    
     navigator.clipboard.writeText(cmd).then(() => {
-      const btn = event.target.closest('.copy-btn');
-      const originalHTML = btn.innerHTML;
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+      // Show checkmark icon
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+      }, 2000);
+    }).catch(() => {
+      // Show error state
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
       setTimeout(() => {
         btn.innerHTML = originalHTML;
       }, 2000);
