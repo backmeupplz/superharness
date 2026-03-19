@@ -158,7 +158,7 @@ fn restart_orchestrator_with_new_harness(new_harness: &str) -> Result<()> {
 
     // Build the new harness command with a resume prompt
     let config_dir = util::superharness_config_dir();
-    let default_model = harness::get_default_model(&config_dir);
+    let default_model = harness::get_model_for_harness(&config_dir, new_harness);
 
     // Create a resume prompt that tells the user the harness was switched
     let resume_prompt = format!(
@@ -168,7 +168,7 @@ fn restart_orchestrator_with_new_harness(new_harness: &str) -> Result<()> {
     );
 
     let harness_cmd =
-        harness::build_harness_cmd(new_harness, default_model.as_deref(), &resume_prompt);
+        harness::build_harness_cmd(new_harness, default_model.as_deref(), &resume_prompt, true);
 
     // Respawn the orchestrator pane with the new harness
     // Use -k to kill any existing process in the pane

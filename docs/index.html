@@ -762,36 +762,37 @@
 </footer>
 
 <script>
-  function copyInstallCmd(elementId, btn) {
-    const cmd = document.getElementById(elementId).textContent;
-    const originalHTML = btn.innerHTML;
-    
-    // Check if clipboard API is available
-    if (!navigator.clipboard) {
-      // Fallback: select text for manual copy
-      const range = document.createRange();
-      range.selectNode(document.getElementById(elementId));
-      window.getSelection().removeAllRanges();
-      window.getSelection().addRange(range);
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
-      setTimeout(() => {
-        btn.innerHTML = originalHTML;
-      }, 2000);
-      return;
+  function copyToClipboard(text) {
+    // Try modern clipboard API first
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
     }
-    
-    navigator.clipboard.writeText(cmd).then(() => {
-      // Show checkmark icon
+    // Fallback: hidden textarea + execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      return Promise.resolve();
+    } catch (e) {
+      document.body.removeChild(ta);
+      return Promise.reject(e);
+    }
+  }
+
+  function copyInstallCmd(elementId, btn) {
+    const cmd = document.getElementById(elementId).textContent.trim();
+    const originalHTML = btn.innerHTML;
+    copyToClipboard(cmd).then(() => {
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
-      setTimeout(() => {
-        btn.innerHTML = originalHTML;
-      }, 2000);
+      setTimeout(() => { btn.innerHTML = originalHTML; }, 2000);
     }).catch(() => {
-      // Show error state
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-      setTimeout(() => {
-        btn.innerHTML = originalHTML;
-      }, 2000);
+      setTimeout(() => { btn.innerHTML = originalHTML; }, 2000);
     });
   }
 </script>

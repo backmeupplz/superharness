@@ -341,13 +341,11 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         }
     }
 
-    // Read default_model from config so the orchestrator uses the user's preferred model.
+    // Resolve harness first, then read the model for that specific harness.
     let (default_model, orch_harness): (Option<String>, String) = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-        let model = v["default_model"].as_str().map(String::from);
         let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
         let h = harness::resolve_harness(config_dir).unwrap_or_else(|_| "opencode".to_string());
+        let model = harness::get_model_for_harness(config_dir, &h);
         (model, h)
     } else {
         // No config yet: detect what's available for the first-run harness list
@@ -533,10 +531,10 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Launch the harness with --prompt / --print / positional arg to pre-fill and submit
-    // the initial message.  build_harness_cmd handles per-harness flag differences.
+    // Launch the harness in interactive mode so it stays alive for heartbeat
+    // messages sent via tmux send-keys.
     let opencode_cmd =
-        harness::build_harness_cmd(&orch_harness, default_model.as_deref(), &initial_prompt);
+        harness::build_harness_cmd(&orch_harness, default_model.as_deref(), &initial_prompt, true);
 
     let splash = format!(
         "printf '\\033[2J\\033[H\\033[?25l{top_nl}\\033[38;5;214m{logo_text}\\n\\n\\033[38;5;245m{mp}{msg}\\033[0m'; exec {opencode_cmd}"

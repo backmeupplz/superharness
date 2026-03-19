@@ -108,7 +108,17 @@ WORKER RULES:
     };
 
     // Build the harness command string (handles per-harness flag differences).
-    let opencode_cmd = harness::build_harness_cmd(&active_harness, model, &effective_task);
+    // Workers are one-shot: process the task and exit.
+    // If no explicit model was passed, resolve the per-harness default.
+    let effective_model: Option<String> = model.map(String::from).or_else(|| {
+        harness::get_model_for_harness(&config_dir, &active_harness)
+    });
+    let opencode_cmd = harness::build_harness_cmd(
+        &active_harness,
+        effective_model.as_deref(),
+        &effective_task,
+        false,
+    );
 
     // Wrap harness so that when it exits the pane auto-kills itself.
     // Export SUPERHARNESS_BIN so scripts/tools in the worker shell can find it too.

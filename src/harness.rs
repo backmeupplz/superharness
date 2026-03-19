@@ -1,6 +1,13 @@
 //! Harness detection and selection.
 //!
 //! Supported harnesses and their CLI interfaces:
+//!
+//! Interactive (orchestrator — stays alive for follow-up messages):
+//!   - opencode:  opencode [--model <m>] --prompt <task>
+//!   - claude:    claude [--model <m>] <task>
+//!   - codex:     codex [--model <m>] <task>
+//!
+//! One-shot (workers — process once and exit):
 //!   - opencode:  opencode [--model <m>] --prompt <task>
 //!   - claude:    claude -p [--model <m>] <task>
 //!   - codex:     codex exec [--model <m>] <task>
@@ -157,25 +164,58 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
 
 /// Build the complete shell command string for the selected harness.
 ///
+/// When `interactive` is true (orchestrator), the harness stays alive for
+/// follow-up messages sent via tmux send-keys.  When false (workers), the
+/// harness processes the prompt once and exits.
+///
 /// CLI conventions per harness:
+///
+/// Interactive (orchestrator):
+///   - opencode: `opencode [--model <m>] --prompt <task>`
+///   - claude:   `claude [--model <m>] <task>`
+///   - codex:    `codex [--model <m>] <task>`
+///
+/// One-shot (workers):
 ///   - opencode: `opencode [--model <m>] --prompt <task>`
 ///   - claude:   `claude -p [--model <m>] <task>`
 ///   - codex:    `codex exec [--model <m>] <task>`
-///
-/// The `codex exec` subcommand runs codex non-interactively (without the TUI).
-pub fn build_harness_cmd(harness: &str, model: Option<&str>, prompt: &str) -> String {
+pub fn build_harness_cmd(
+    harness: &str,
+    model: Option<&str>,
+    prompt: &str,
+    interactive: bool,
+) -> String {
     let escaped = shell_escape(prompt);
 
     match harness {
         "claude" => {
-            let model_flag = model_flag(model);
-            format!("claude -p{model_flag} {escaped}")
+            // Skip OpenRouter-format models (contain '/') — Claude Code uses
+            // its own native model names (e.g. "claude-sonnet-4-6").
+            let native_model = model.filter(|m| !m.contains('/'));
+            let model_flag = model_flag(native_model);
+            if interactive {
+                // Interactive: stays alive, receives heartbeats via tmux send-keys.
+                format!("claude{model_flag} {escaped}")
+            } else {
+                // One-shot: -p (print mode) processes prompt and exits.
+                format!("claude -p{model_flag} {escaped}")
+            }
         }
         "codex" => {
-            let model_flag = model_flag(model);
-            format!("codex exec{model_flag} {escaped}")
+            // Skip OpenRouter-format models (contain '/') — Codex uses its own
+            // native model names (e.g. "o3", "gpt-4o").
+            let native_model = model.filter(|m| !m.contains('/'));
+            let model_flag = model_flag(native_model);
+            if interactive {
+                // Interactive TUI: stays alive, busy-state detected via TUI patterns.
+                format!("codex{model_flag} {escaped}")
+            } else {
+                // Non-interactive: exec processes prompt and exits.
+                format!("codex exec{model_flag} {escaped}")
+            }
         }
-        // Default (opencode or any unknown harness): opencode-style interface
+        // Default (opencode or any unknown harness): opencode-style interface.
+        // opencode --prompt pre-fills and submits but stays interactive.
         _ => {
             let model_flag = model_flag(model);
             format!("opencode{model_flag} --prompt {escaped}")
@@ -232,6 +272,31 @@ pub fn get_default_model(config_dir: &Path) -> Option<String> {
     }
     let content = std::fs::read_to_string(&config_path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    v["default_model"].as_str().map(String::from)
+}
+
+/// Read the model for a specific harness from `<config_dir>/config.json`.
+///
+/// Priority:
+///   1. `models.<harness>` — per-harness override
+///   2. `default_model` — global fallback
+///   3. `None` — let the harness use its own default
+pub fn get_model_for_harness(config_dir: &Path, harness: &str) -> Option<String> {
+    let config_path = config_dir.join("config.json");
+    if !config_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // Check per-harness override first
+    if let Some(m) = v["models"][harness].as_str() {
+        if !m.is_empty() {
+            return Some(m.to_string());
+        }
+    }
+
+    // Fall back to global default_model
     v["default_model"].as_str().map(String::from)
 }
 
