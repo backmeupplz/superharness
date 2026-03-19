@@ -744,6 +744,60 @@ fn toggle_trigger_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-heartbeat-toggle-trigger"))
 }
 
+/// Path to the harness restart signal file.
+///
+/// The F2 settings picker writes the new harness name here when the user
+/// switches harnesses. The heartbeat thread picks it up and performs the
+/// actual `respawn-pane` from the main process (avoiding popup-context
+/// issues with tmux commands).
+pub fn harness_restart_path() -> std::path::PathBuf {
+    project::get_project_state_dir()
+        .map(|d| d.join("harness_restart"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/superharness-harness-restart"))
+}
+
+// ---------------------------------------------------------------------------
+// Harness restart (called from heartbeat thread)
+// ---------------------------------------------------------------------------
+
+/// Respawn the orchestrator pane with a new harness.
+///
+/// Called from the heartbeat thread (main process) so tmux commands
+/// execute reliably — unlike from inside a `display-popup` overlay.
+fn apply_harness_restart(new_harness: &str) {
+    use crate::harness;
+
+    let config_dir = util::superharness_config_dir();
+    let model = harness::get_model_for_harness(&config_dir, new_harness);
+
+    let resume_prompt = format!(
+        "[SUPERHARNESS] Harness switched to: {new_harness}. The orchestrator has been restarted \
+         with the new harness. Please acknowledge and continue from where you left off, or ask \
+         what you'd like to work on."
+    );
+
+    let harness_cmd =
+        harness::build_harness_cmd(new_harness, model.as_deref(), &resume_prompt, true);
+
+    let orch_pane = tmux::orchestrator_pane_id();
+    let splash = format!(
+        "printf '\\033[2J\\033[H\\033[?25l\\033[38;5;214mRestarting orchestrator with \
+         {new_harness}...\\033[0m'; exec {harness_cmd}"
+    );
+
+    if let Err(e) = tmux::tmux_ok(&[
+        "respawn-pane",
+        "-t",
+        &orch_pane,
+        "-k",
+        "bash",
+        "-lc",
+        &splash,
+    ]) {
+        eprintln!("[heartbeat] failed to restart orchestrator with {new_harness}: {e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Background heartbeat thread
 // ---------------------------------------------------------------------------
@@ -796,6 +850,20 @@ pub fn start_thread() {
                 if !disabled {
                     // Re-enabling: reset countdown
                     countdown = interval;
+                }
+            }
+
+            // Check for harness restart signal (written by F2 settings picker)
+            let restart_path = harness_restart_path();
+            if restart_path.exists() {
+                if let Ok(new_harness) = std::fs::read_to_string(&restart_path) {
+                    let new_harness = new_harness.trim().to_string();
+                    let _ = std::fs::remove_file(&restart_path);
+                    if !new_harness.is_empty() {
+                        apply_harness_restart(&new_harness);
+                    }
+                } else {
+                    let _ = std::fs::remove_file(&restart_path);
                 }
             }
 

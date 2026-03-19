@@ -1,4 +1,4 @@
-use crate::{harness, tmux, util};
+use crate::{harness, heartbeat, tmux, util};
 use anyhow::Result;
 use std::io::{self, Write};
 
@@ -105,11 +105,16 @@ pub fn handle_harness_settings() -> Result<()> {
                         "  \x1b[1;32m\u{2713}\x1b[0m Default harness set to: \x1b[1m{chosen}\x1b[0m"
                     );
 
-                    // Restart orchestrator if harness changed and we're in a superharness session
+                    // Signal the heartbeat thread to restart the orchestrator
+                    // with the new harness. We write a signal file instead of
+                    // calling respawn-pane directly because tmux commands from
+                    // inside a display-popup don't reliably affect the session.
                     if harness_changed {
-                        if let Err(e) = restart_orchestrator_with_new_harness(&chosen) {
-                            eprintln!("  \x1b[1;33m!\x1b[0m Could not restart orchestrator: {e}");
-                            eprintln!("  New harness will take effect for future workers.");
+                        let restart_path = heartbeat::harness_restart_path();
+                        if let Err(e) = std::fs::write(&restart_path, &chosen) {
+                            eprintln!("  \x1b[1;33m!\x1b[0m Could not signal restart: {e}");
+                        } else {
+                            println!("  \x1b[1;32m\u{2713}\x1b[0m Orchestrator will restart with \x1b[1m{chosen}\x1b[0m");
                         }
                     }
                 }
@@ -128,65 +133,3 @@ pub fn handle_harness_settings() -> Result<()> {
     Ok(())
 }
 
-/// Restart the orchestrator pane (%0) with the new harness.
-/// This kills the current orchestrator and respawns it with the new harness.
-fn restart_orchestrator_with_new_harness(new_harness: &str) -> Result<()> {
-    // Check if we're inside a tmux session
-    let in_tmux = std::env::var("TMUX")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    if !in_tmux {
-        // Not in tmux, nothing to restart
-        return Ok(());
-    }
-
-    // Check if superharness session exists
-    let has_session = std::process::Command::new("tmux")
-        .args(["has-session", "-t", tmux::SESSION])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if !has_session {
-        // No superharness session running, nothing to restart
-        return Ok(());
-    }
-
-    let orch_pane = tmux::orchestrator_pane_id();
-
-    // Build the new harness command with a resume prompt
-    let config_dir = util::superharness_config_dir();
-    let default_model = harness::get_model_for_harness(&config_dir, new_harness);
-
-    // Create a resume prompt that tells the user the harness was switched
-    let resume_prompt = format!(
-        "[SUPERHARNESS] Harness switched to: {}. The orchestrator has been restarted with the new harness. \
-         Please acknowledge and continue from where you left off, or ask what you'd like to work on.",
-        new_harness
-    );
-
-    let harness_cmd =
-        harness::build_harness_cmd(new_harness, default_model.as_deref(), &resume_prompt, true);
-
-    // Respawn the orchestrator pane with the new harness
-    // Use -k to kill any existing process in the pane
-    let splash = format!(
-        "printf '\033[2J\033[H\033[?25l\033[38;5;214mRestarting orchestrator with {new_harness}...\033[0m'; exec {harness_cmd}"
-    );
-
-    tmux::tmux_ok(&[
-        "respawn-pane",
-        "-t",
-        &orch_pane,
-        "-k",
-        "bash",
-        "-lc",
-        &splash,
-    ])?;
-
-    println!("  \x1b[1;32m\u{2713}\x1b[0m Orchestrator restarted with \x1b[1m{new_harness}\x1b[0m");
-
-    Ok(())
-}

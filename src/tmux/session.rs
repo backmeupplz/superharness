@@ -130,9 +130,9 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "-t",
         SESSION,
         "status-left",
-        "#[range=window|1]#[bg=colour214,fg=colour232,bold] SUPERHARNESS #[range=default]",
+        "#[range=window|1]#[bg=colour214,fg=colour232,bold] SH #[range=default]",
     ])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "22"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "6"])?;
     // Fallback mouse binding: clicking anywhere in status-left area goes to window 1.
     let _ = tmux_ok(&[
         "bind-key",
@@ -167,13 +167,18 @@ fn configure_session(bin_path: &str) -> Result<()> {
     let worker_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '0')");
 
     let status_right = format!(
-        "#[fg=colour240]│ #[fg=colour214]MODE:{mode_snippet} \
+        "#[fg=colour240]│ {mode_snippet} \
          #[fg=colour240]│ {heartbeat_snippet} \
-         #[fg=colour240]│ #[fg=colour110] F1:toggle-away #[fg=colour240] │ #[fg=colour110] F2:settings #[fg=colour240] │ #[fg=colour110] F3:status #[fg=colour240] │ #[fg=colour110] F4:workers ({worker_count_snippet}) #[fg=colour240] │ #[fg=colour110] F5:tasks #[fg=colour240] │ #[fg=colour110] F6:events  #[default]"
+         #[fg=colour240]│#[fg=colour110] F1#[fg=colour240]:away \
+         │#[fg=colour110] F2#[fg=colour240]:set \
+         │#[fg=colour110] F3#[fg=colour240]:info \
+         │#[fg=colour110] F4#[fg=colour240]:wrk({worker_count_snippet}) \
+         │#[fg=colour110] F5#[fg=colour240]:tasks \
+         │#[fg=colour110] F6#[fg=colour240]:log #[default]"
     );
 
     tmux_ok(&["set-option", "-t", SESSION, "status-right", &status_right])?;
-    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "180"])?;
+    tmux_ok(&["set-option", "-t", SESSION, "status-right-length", "120"])?;
 
     // Window status (centre): hide window index/name entirely for a clean bar.
     tmux_ok(&["set-option", "-t", SESSION, "window-status-format", ""])?;
