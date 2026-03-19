@@ -161,32 +161,14 @@ Workers cannot spawn sub-workers (enforced). Break large tasks into scoped units
 
 ## Worker Failure Recovery
 
-Crashed/stuck: `/home/borodutch/code/superharness/target/debug/superharness respawn --pane %ID --task "..." --dir /path --model anthropic/claude-opus-4-6`
+Crashed/stuck: `/home/borodutch/code/superharness/target/debug/superharness respawn --pane %ID --task "..." --dir /path --model anthropic/claude-sonnet-4-6`
 Needs nudge: `/home/borodutch/code/superharness/target/debug/superharness send --pane %ID --text "..."`
-
-## Model Preferences
-
-The user has configured model preferences. Follow these when spawning workers unless the task genuinely requires something different (e.g. a vision-specific model).
-
-**Default model:** `anthropic/claude-opus-4-6`
-
-**Provider routing rule:** For anthropic/* models always use the 'anthropic' provider (Max subscription, not API key). For kimi-k2.5 always use fireworks-ai provider.
-
-**Preferred providers** (prefer these over others for equivalent models):
-- anthropic
-- fireworks-ai
-
-**Preferred models** (use these by default):
-- `anthropic/claude-opus-4-6`
-- `anthropic/claude-sonnet-4-6`
-- `anthropic/claude-haiku-4-5`
-- `fireworks-ai/accounts/fireworks/models/kimi-k2p5`
 
 
 
 ## Model Selection
 
-Match model to task complexity — do not always default to `anthropic/claude-opus-4-6`.
+Match model to task complexity — do not always default to `anthropic/claude-sonnet-4-6`.
 
 | Task type | Model |
 |---|---|
