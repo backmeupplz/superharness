@@ -2,8 +2,8 @@
 //!
 //! Supported harnesses and their CLI interfaces:
 //!   - opencode:  opencode [--model <m>] --prompt <task>
-//!   - claude:    claude -p [--model <m>] --dangerously-skip-permissions <task>
-//!   - codex:     codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>
+//!   - claude:    claude -p [--model <m>] <task>
+//!   - codex:     codex exec [--model <m>] <task>
 
 use anyhow::{bail, Result};
 use std::path::Path;
@@ -159,26 +159,21 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
 ///
 /// CLI conventions per harness:
 ///   - opencode: `opencode [--model <m>] --prompt <task>`
-///   - claude:   `claude -p [--model <m>] --dangerously-skip-permissions <task>`
-///   - codex:    `codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>`
-///
-/// The `--dangerously-skip-permissions` flag for claude bypasses per-tool-call approval
-/// prompts, enabling fully non-interactive agentic work inside isolated git worktrees.
+///   - claude:   `claude -p [--model <m>] <task>`
+///   - codex:    `codex exec [--model <m>] <task>`
 ///
 /// The `codex exec` subcommand runs codex non-interactively (without the TUI).
-/// `--dangerously-bypass-approvals-and-sandbox` skips confirmation prompts; intended for
-/// externally-sandboxed environments such as git worktrees.
 pub fn build_harness_cmd(harness: &str, model: Option<&str>, prompt: &str) -> String {
     let escaped = shell_escape(prompt);
 
     match harness {
         "claude" => {
             let model_flag = model_flag(model);
-            format!("claude -p{model_flag} --dangerously-skip-permissions {escaped}")
+            format!("claude -p{model_flag} {escaped}")
         }
         "codex" => {
             let model_flag = model_flag(model);
-            format!("codex exec --dangerously-bypass-approvals-and-sandbox{model_flag} {escaped}")
+            format!("codex exec{model_flag} {escaped}")
         }
         // Default (opencode or any unknown harness): opencode-style interface
         _ => {
