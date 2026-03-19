@@ -2,7 +2,7 @@
 //!
 //! Supported harnesses and their CLI interfaces:
 //!   - opencode:  opencode [--model <m>] --prompt <task>
-//!   - claude:    claude [--model <m>] --dangerously-skip-permissions --print <task>
+//!   - claude:    claude -p [--model <m>] --dangerously-skip-permissions <task>
 //!   - codex:     codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>
 
 use anyhow::{bail, Result};
@@ -159,7 +159,7 @@ pub fn resolve_harness(config_dir: &Path) -> Result<String> {
 ///
 /// CLI conventions per harness:
 ///   - opencode: `opencode [--model <m>] --prompt <task>`
-///   - claude:   `claude [--model <m>] --dangerously-skip-permissions --print <task>`
+///   - claude:   `claude -p [--model <m>] --dangerously-skip-permissions <task>`
 ///   - codex:    `codex exec --dangerously-bypass-approvals-and-sandbox [--model <m>] <task>`
 ///
 /// The `--dangerously-skip-permissions` flag for claude bypasses per-tool-call approval
@@ -174,7 +174,7 @@ pub fn build_harness_cmd(harness: &str, model: Option<&str>, prompt: &str) -> St
     match harness {
         "claude" => {
             let model_flag = model_flag(model);
-            format!("claude{model_flag} --dangerously-skip-permissions --print {escaped}")
+            format!("claude -p{model_flag} --dangerously-skip-permissions {escaped}")
         }
         "codex" => {
             let model_flag = model_flag(model);

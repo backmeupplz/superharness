@@ -70,7 +70,7 @@ fn tmux(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn tmux_ok(args: &[&str]) -> Result<()> {
+pub fn tmux_ok(args: &[&str]) -> Result<()> {
     tmux(args)?;
     Ok(())
 }
