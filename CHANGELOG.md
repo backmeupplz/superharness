@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Workers now launch their harness interactively instead of in headless
+  one-shot mode (`claude -p` / `codex exec`). Headless mode started a process
+  with no TUI, so the worker pane sat in `bash` with the agent invisible and
+  unmonitorable — the worker appeared to hang in bash forever and never run
+  claude. Workers now match the orchestrator and opencode workers.
 - Permission bypass flags removed from Claude and Codex harnesses for security
 - Shell-only guard properly removed from `main_pane_has_input()`
 - Cursor position checks improved for multi-line input scenarios
