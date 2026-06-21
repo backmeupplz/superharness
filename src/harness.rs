@@ -465,3 +465,60 @@ pub fn run_interactive_picker(
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_interactive_omits_print_flag() {
+        let cmd = build_harness_cmd("claude", None, "task", true);
+        assert_eq!(cmd, "claude 'task'");
+        assert!(!cmd.contains("-p"), "interactive claude must not use -p: {cmd}");
+    }
+
+    #[test]
+    fn claude_oneshot_uses_print_flag() {
+        let cmd = build_harness_cmd("claude", None, "task", false);
+        assert_eq!(cmd, "claude -p 'task'");
+    }
+
+    #[test]
+    fn claude_skips_openrouter_style_model() {
+        // Models with a '/' are OpenRouter-format and not valid Claude Code
+        // native model names — they must be dropped, not passed through.
+        let cmd = build_harness_cmd("claude", Some("fireworks/kimi-k2.5"), "task", true);
+        assert_eq!(cmd, "claude 'task'");
+        let cmd = build_harness_cmd("claude", Some("claude-sonnet-4-6"), "task", true);
+        assert_eq!(cmd, "claude --model 'claude-sonnet-4-6' 'task'");
+    }
+
+    #[test]
+    fn codex_interactive_omits_exec() {
+        let cmd = build_harness_cmd("codex", None, "task", true);
+        assert_eq!(cmd, "codex 'task'");
+        assert!(!cmd.contains("exec"), "interactive codex must not use exec: {cmd}");
+    }
+
+    #[test]
+    fn codex_oneshot_uses_exec() {
+        let cmd = build_harness_cmd("codex", None, "task", false);
+        assert_eq!(cmd, "codex exec 'task'");
+    }
+
+    #[test]
+    fn opencode_always_interactive_prompt() {
+        // opencode ignores the interactive flag: it always uses --prompt, which
+        // pre-fills and submits but keeps the session alive.
+        let interactive = build_harness_cmd("opencode", None, "task", true);
+        let oneshot = build_harness_cmd("opencode", None, "task", false);
+        assert_eq!(interactive, "opencode --prompt 'task'");
+        assert_eq!(interactive, oneshot);
+    }
+
+    #[test]
+    fn unknown_harness_falls_back_to_opencode_shape() {
+        let cmd = build_harness_cmd("mystery", None, "task", true);
+        assert_eq!(cmd, "opencode --prompt 'task'");
+    }
+}

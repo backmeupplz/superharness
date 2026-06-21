@@ -22,6 +22,26 @@ fn build_worker_exit_cmd(sh_bin: &str, harness_cmd: &str) -> String {
     )
 }
 
+/// Build the harness invocation a worker pane runs.
+///
+/// Workers run the harness **interactively** — exactly like the orchestrator
+/// (`session.rs`) and like opencode workers already did. A live interactive TUI
+/// is the contract the rest of superharness relies on: the heartbeat scanner
+/// detects busy/idle by pattern-matching the TUI footer (`heartbeat.rs`), the
+/// orchestrator drives workers with `tmux send-keys`, and a worker announces it
+/// is finished by running `superharness heartbeat` (after which the orchestrator
+/// reaps its pane).
+///
+/// Running claude/codex one-shot (`claude -p` / `codex exec`) is what caused the
+/// "worker hangs in bash and never runs claude" bug: print/exec mode launches a
+/// *headless* process with no TUI, so `pane_current_command` stays `bash` for
+/// the worker's entire life and the agent is invisible and unmonitorable. The
+/// pane looked stuck in bash forever. Interactive mode makes the worker a real,
+/// visible claude/codex/opencode session, consistent across every harness.
+fn build_worker_harness_cmd(harness: &str, model: Option<&str>, task: &str) -> String {
+    harness::build_harness_cmd(harness, model, task, true)
+}
+
 /// Subtle RGB background tints for pane backgrounds.
 /// Each is a very dark colour with just enough hue to be faintly distinct (~5% tint on black).
 const PANE_COLOR_HEX: &[&str] = &[
@@ -124,16 +144,16 @@ WORKER RULES:
     };
 
     // Build the harness command string (handles per-harness flag differences).
-    // Workers are one-shot: process the task and exit.
+    // Workers run the harness interactively — see build_worker_harness_cmd for
+    // why a headless one-shot (`claude -p` / `codex exec`) is wrong here.
     // If no explicit model was passed, resolve the per-harness default.
     let effective_model: Option<String> = model.map(String::from).or_else(|| {
         harness::get_model_for_harness(&config_dir, &active_harness)
     });
-    let opencode_cmd = harness::build_harness_cmd(
+    let opencode_cmd = build_worker_harness_cmd(
         &active_harness,
         effective_model.as_deref(),
         &effective_task,
-        false,
     );
 
     // Wrap harness so that when it exits the pane auto-kills itself.
@@ -432,6 +452,42 @@ mod tests {
         assert!(
             cmd.contains("[ -n \"$TMUX_PANE\" ]"),
             "worker exit must guard against empty $TMUX_PANE: {cmd}"
+        );
+    }
+
+    // Regression: a worker must launch its harness INTERACTIVELY, never in a
+    // headless one-shot mode. `claude -p` / `codex exec` start a process with no
+    // TUI, so the worker pane sits in `bash` forever with the agent invisible
+    // and unmonitorable — the "worker hangs in bash and never runs claude" bug.
+    #[test]
+    fn worker_runs_harness_interactively_not_headless() {
+        // claude: must launch the interactive TUI, not `-p` print mode.
+        let cmd = build_worker_harness_cmd("claude", None, "do the task");
+        assert!(
+            cmd.starts_with("claude "),
+            "claude worker must invoke claude: {cmd}"
+        );
+        assert!(
+            !cmd.contains("claude -p"),
+            "claude worker must NOT run headless `-p` print mode: {cmd}"
+        );
+
+        // codex: must launch the interactive TUI, not `codex exec`.
+        let cmd = build_worker_harness_cmd("codex", None, "do the task");
+        assert!(
+            cmd.starts_with("codex "),
+            "codex worker must invoke codex: {cmd}"
+        );
+        assert!(
+            !cmd.contains("codex exec"),
+            "codex worker must NOT run headless `exec` mode: {cmd}"
+        );
+
+        // opencode: always interactive via --prompt (unchanged, but pinned).
+        let cmd = build_worker_harness_cmd("opencode", None, "do the task");
+        assert!(
+            cmd.starts_with("opencode ") && cmd.contains("--prompt"),
+            "opencode worker must invoke opencode --prompt: {cmd}"
         );
     }
 }
