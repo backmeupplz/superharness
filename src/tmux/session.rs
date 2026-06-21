@@ -449,9 +449,25 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         } else {
             String::new()
         };
+        // tasks.json may be either the canonical `{ "tasks": [ ... ] }` wrapper
+        // object or a legacy bare `[ ... ]` array. Treat both empty forms (and
+        // empty/missing/null content) as "no plan yet" so we open planning mode.
         let tasks_empty = {
             let trimmed = tasks_content_raw.trim();
-            trimmed.is_empty() || trimmed == "[]" || trimmed == "null"
+            if trimmed.is_empty() {
+                true
+            } else {
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(serde_json::Value::Array(a)) => a.is_empty(),
+                    Ok(serde_json::Value::Object(o)) => o
+                        .get("tasks")
+                        .and_then(|t| t.as_array())
+                        .map(|a| a.is_empty())
+                        .unwrap_or(true),
+                    Ok(serde_json::Value::Null) => true,
+                    _ => true,
+                }
+            }
         };
 
         let tasks_file_path = tasks_file.to_string_lossy().to_string();
@@ -464,7 +480,8 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 2. Ask clarifying questions to understand scope, constraints, and priorities. \
                 3. Break the goal down into concrete tasks. \
                 4. Identify which tasks can run in parallel and which depend on each other. \
-                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed). \
+                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed) \
+                as JSON of the form {{\"tasks\": [{{\"id\": \"task-001\", \"title\": \"...\", \"description\": \"...\", \"status\": \"pending\", \"priority\": \"high|medium|low\", \"worker_pane\": null}}]}}. \
                 6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
                 Be conversational — this is a planning chat, not a form to fill out.{agents_merge_note}"
             ), false)

@@ -79,12 +79,24 @@ pub fn handle_tasks_modal() -> Result<()> {
         worker_pane: Option<String>,
     }
 
+    // The orchestrator writes tasks.json freeform, so accept both supported
+    // top-level shapes: the canonical `{ "tasks": [ ... ] }` wrapper object and
+    // a legacy bare `[ ... ]` array. Anything else parses to an empty list.
+    #[derive(serde::Deserialize, Default)]
+    struct TasksFile {
+        #[serde(default)]
+        tasks: Vec<OrchestratorTask>,
+    }
+
     let state_dir = project::get_project_state_dir()?;
     let tasks_path = state_dir.join("tasks.json");
 
     let task_list: Vec<OrchestratorTask> = if tasks_path.exists() {
         let content = std::fs::read_to_string(&tasks_path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or_default()
+        serde_json::from_str::<TasksFile>(&content)
+            .map(|f| f.tasks)
+            .or_else(|_| serde_json::from_str::<Vec<OrchestratorTask>>(&content))
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
