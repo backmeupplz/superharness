@@ -80,6 +80,11 @@ case "$cmd" in
   *"claude '"*|*"claude --model"*) : ;;
   *) fail "claude worker does not invoke interactive claude: $cmd" ;;
 esac
+# --strict-mcp-config breaks interactive claude (pane never renders), so it must
+# NOT be injected. The MCP enable prompt is handled at the claude-config level.
+case "$cmd" in
+  *"--strict-mcp-config"*) fail "claude worker must not use --strict-mcp-config (breaks interactive claude): $cmd" ;;
+esac
 
 # ── codex ─────────────────────────────────────────────────────────────────────
 cmd="$(worker_start_cmd codex)"

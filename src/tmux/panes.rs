@@ -38,6 +38,16 @@ fn build_worker_exit_cmd(sh_bin: &str, harness_cmd: &str) -> String {
 /// the worker's entire life and the agent is invisible and unmonitorable. The
 /// pane looked stuck in bash forever. Interactive mode makes the worker a real,
 /// visible claude/codex/opencode session, consistent across every harness.
+///
+/// NOTE on the MCP enable prompt (claude): when claude launches in a directory
+/// whose project MCP servers (from `~/.mcp.json` / account-synced servers) are
+/// still undecided in `~/.claude.json` (`enabledMcpjsonServers` empty), it shows
+/// an interactive "enable these MCP servers?" prompt. A hidden worker cannot
+/// answer it and hangs (black pane). We do NOT try to suppress it with
+/// `--strict-mcp-config --mcp-config …` here: those flags were verified to break
+/// interactive claude (the pane starts empty and never renders). The prompt is
+/// resolved at the claude-config level instead — see the operator note / docs
+/// (`enableAllProjectMcpServers`, or pre-deciding the project's MCP servers).
 fn build_worker_harness_cmd(harness: &str, model: Option<&str>, task: &str) -> String {
     harness::build_harness_cmd(harness, model, task, true)
 }
@@ -469,6 +479,20 @@ fn capture_pane_log(pane: &str) {
 /// Kill a pane, auto-cleaning up any git worktree associated with its working
 /// directory when that directory is under /tmp/.
 pub fn kill(pane: &str) -> Result<()> {
+    // SAFETY NET: never kill the orchestrator pane. Killing it ends the session
+    // and takes the whole superharness process down with it. This is the crash
+    // we kept seeing — `kill --pane %0` (a confused orchestrator, a stuck
+    // plan-mode worker's cleanup, a legacy untargeted self-kill) destroying the
+    // orchestrator. The worker-kill command must only ever kill workers.
+    if super::is_orchestrator_pane(pane) {
+        anyhow::bail!(
+            "refusing to kill {pane}: it is the orchestrator pane. \
+             The kill command targets workers only — killing the orchestrator \
+             would end the session. (If you meant a worker, pass its pane id, \
+             e.g. from `superharness list`.)"
+        );
+    }
+
     // Persist the pane's output BEFORE anything destroys the pane or its
     // working directory — workers self-kill on completion, so this is the only
     // chance to keep their output reviewable.
@@ -558,6 +582,13 @@ mod tests {
         assert!(
             !cmd.contains("claude -p"),
             "claude worker must NOT run headless `-p` print mode: {cmd}"
+        );
+        // NOTE: we intentionally do NOT inject --strict-mcp-config/--mcp-config:
+        // those flags break interactive claude (pane never renders). The MCP
+        // enable prompt is handled at the claude-config level, not here.
+        assert!(
+            !cmd.contains("--strict-mcp-config"),
+            "claude worker must NOT use --strict-mcp-config (breaks interactive claude): {cmd}"
         );
 
         // codex: must launch the interactive TUI, not `codex exec`.
