@@ -915,9 +915,15 @@ pub fn start_thread() {
                         // Collect live pane IDs so we can prune stale entries later
                         let mut live_ids: Vec<String> = Vec::new();
 
+                        // `tmux::list()` already returns only superharness worker
+                        // panes (it filters by the @sh_worker tag), so user-created
+                        // windows are never scanned. We still guard against the
+                        // orchestrator pane explicitly in case it is ever tagged.
+                        let orch_id = tmux::orchestrator_pane_id();
+
                         for pane in &panes {
                             // Skip the orchestrator pane
-                            if pane.id == "%0" {
+                            if pane.id == orch_id {
                                 continue;
                             }
                             live_ids.push(pane.id.clone());
@@ -965,7 +971,7 @@ pub fn start_thread() {
                         // If any worker needs attention, trigger an early beat
                         // UNLESS the orchestrator is in a question dialog.
                         if !attention_panes.is_empty() {
-                            let suppress = match tmux::read("%0", 25) {
+                            let suppress = match tmux::read(&orch_id, 25) {
                                 Ok(orch_out) => is_orchestrator_in_question_dialog(&orch_out),
                                 Err(_) => false,
                             };

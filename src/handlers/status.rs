@@ -233,15 +233,12 @@ pub fn handle_toggle_mode() -> Result<()> {
         "present".to_string()
     };
 
-    // Find the main orchestrator pane
-    let orch_id = tmux::orchestrator_pane_id();
-    let panes = tmux::list().unwrap_or_default();
-    let target_pane = panes
-        .iter()
-        .find(|p| p.id == orch_id)
-        .or_else(|| panes.first())
-        .map(|p| p.id.clone())
-        .unwrap_or(orch_id);
+    // Send the mode-switch message straight to the orchestrator pane. We must
+    // NOT look it up via tmux::list(): that returns only `@sh_worker`-tagged
+    // worker panes, so the orchestrator is never in it — the old lookup either
+    // mis-targeted a worker or fell back to a bogus `%0` (which fails with
+    // "can't find pane: %0" under base-index / embedded sessions).
+    let target_pane = tmux::orchestrator_pane_id();
 
     let (message, new_mode) = if current_mode == "away" {
         (

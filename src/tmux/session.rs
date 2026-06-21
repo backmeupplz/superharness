@@ -5,7 +5,9 @@ use crate::harness;
 use crate::heartbeat;
 use crate::util;
 
-use super::{set_orchestrator_pane_id, tmux, tmux_ok, SESSION};
+use super::{
+    orchestrator_window_id, set_orchestrator_pane_id, tag_orchestrator_pane, tmux, tmux_ok, SESSION,
+};
 
 /// Detect whether we are running inside an existing tmux session.
 /// Returns `true` when the `$TMUX` environment variable is set and non-empty.
@@ -133,14 +135,17 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "#[range=window|1]#[bg=colour214,fg=colour232,bold] SH #[range=default]",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "6"])?;
-    // Fallback mouse binding: clicking anywhere in status-left area goes to window 1.
+    // Fallback mouse binding: clicking anywhere in status-left area goes to the
+    // orchestrator window. Target its stable window ID rather than a hardcoded
+    // index so it is correct under any `base-index`.
+    let orch_window = orchestrator_window_id();
     let _ = tmux_ok(&[
         "bind-key",
         "-n",
         "MouseDown1StatusLeft",
         "select-window",
         "-t",
-        ":1",
+        &orch_window,
     ]);
     // Clicking anywhere on the right side of the status bar toggles the heartbeat on/off.
     let _ = tmux_ok(&[
@@ -200,7 +205,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // ── F-key shortcuts (no prefix required) ────────────────────────────────
     // display-popup is a tmux command, not a shell command — use bind-key directly (NOT run-shell).
 
-    // F1 → toggle-mode: sends a mode-switch message directly to the main orchestrator pane (%0)
+    // F1 → toggle-mode: sends a mode-switch message directly to the orchestrator pane
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -574,22 +579,19 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     tmux_ok(&["rename-window", "-t", SESSION, "superharness"])?;
 
     // When embedded, the new session's first pane may get a different ID than %0.
-    // Query the actual pane ID of the orchestrator pane we just created.
-    let orch_pane = tmux(&[
-        "list-panes",
-        "-t",
-        &format!("{SESSION}:0"),
-        "-F",
-        "#{pane_id}",
-    ])
-    .unwrap_or_else(|_| "%0".to_string())
-    .lines()
-    .next()
-    .unwrap_or("%0")
-    .to_string();
+    // Query the actual pane ID of the orchestrator pane we just created. We target
+    // the session (not `:0`) so this works regardless of the user's `base-index`.
+    let orch_pane = tmux(&["display-message", "-p", "-t", SESSION, "#{pane_id}"])
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "%0".to_string());
 
-    // Store the orchestrator pane ID so all subcommands can find it.
+    // Store the orchestrator pane ID so all subcommands can find it, and tag the
+    // pane itself — the tag is the robust, layout-independent way to locate the
+    // orchestrator (the env var is a fast path / backward-compat fallback).
     set_orchestrator_pane_id(&orch_pane)?;
+    tag_orchestrator_pane(&orch_pane)?;
 
     tmux_ok(&["select-pane", "-t", &orch_pane, "-T", "superharness"])?;
     configure_session(bin_path)?;

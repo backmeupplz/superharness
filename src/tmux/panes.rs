@@ -6,6 +6,22 @@ use crate::util;
 
 use super::{tmux, tmux_ok, SESSION};
 
+/// Build the wrapped shell command a worker pane runs: export env, run the
+/// harness, then kill its OWN pane on exit.
+///
+/// The pane id is taken from `$TMUX_PANE`, which tmux sets per-pane to the
+/// worker's own pane. We must NOT use `tmux display-message -p '#{pane_id}'`
+/// here: with no `-t` target that resolves to the session's *active* pane
+/// (the orchestrator), so a worker exiting would run `kill --pane %0` and
+/// take the orchestrator down with it, crashing the whole session. The
+/// `[ -n ... ]` guard ensures an (impossible-in-practice) empty value never
+/// falls back to killing the active pane.
+fn build_worker_exit_cmd(sh_bin: &str, harness_cmd: &str) -> String {
+    format!(
+        "export SUPERHARNESS_WORKER=1 SUPERHARNESS_BIN='{sh_bin}'; {harness_cmd} ; [ -n \"$TMUX_PANE\" ] && {sh_bin} kill --pane \"$TMUX_PANE\""
+    )
+}
+
 /// Subtle RGB background tints for pane backgrounds.
 /// Each is a very dark colour with just enough hue to be faintly distinct (~5% tint on black).
 const PANE_COLOR_HEX: &[&str] = &[
@@ -121,10 +137,7 @@ WORKER RULES:
     );
 
     // Wrap harness so that when it exits the pane auto-kills itself.
-    // Export SUPERHARNESS_BIN so scripts/tools in the worker shell can find it too.
-    let cmd = format!(
-        "export SUPERHARNESS_WORKER=1 SUPERHARNESS_BIN='{sh_bin}'; {opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')"
-    );
+    let cmd = build_worker_exit_cmd(&sh_bin, &opencode_cmd);
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
@@ -159,6 +172,13 @@ WORKER RULES:
     let color_hex = PANE_COLOR_HEX[pane_index % PANE_COLOR_HEX.len()];
     let style = format!("bg={color_hex}");
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
+
+    // Tag this pane as a superharness-managed worker. The scanner, auto-compact,
+    // and layout code only ever touch tagged panes, so panes the user creates in
+    // their own tmux windows are left completely alone. The option is pane-scoped
+    // (`-p`) and survives break-pane/join-pane, so the tag persists as the worker
+    // is hidden to a background window and surfaced back.
+    let _ = tmux_ok(&["set-option", "-p", "-t", &pane_id, "@sh_worker", "1"]);
 
     if no_hide {
         // --no-hide: keep the worker visible in the main orchestrator window.
@@ -215,27 +235,37 @@ pub fn list() -> Result<Vec<PaneInfo>> {
         return Ok(vec![]);
     }
 
+    // The `@sh_worker` flag is placed right after the pane id (and before the
+    // title, which may contain arbitrary characters) so parsing stays robust.
     let output = tmux(&[
         "list-panes",
         "-t",
         SESSION,
         "-a",
         "-F",
-        "#{pane_id}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+        "#{pane_id}\t#{@sh_worker}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
     ])?;
 
+    // Only return superharness-managed worker panes. The orchestrator pane and
+    // any panes the user created in their own windows are untagged and excluded,
+    // so callers (the heartbeat scanner, status counts, list/workers commands)
+    // never act on panes superharness does not own.
     let panes = output
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|line| {
-            let parts: Vec<&str> = line.splitn(5, '\t').collect();
-            PaneInfo {
-                id: parts.first().unwrap_or(&"").to_string(),
-                window: parts.get(1).unwrap_or(&"").to_string(),
-                command: parts.get(2).unwrap_or(&"").to_string(),
-                path: parts.get(3).unwrap_or(&"").to_string(),
-                title: parts.get(4).unwrap_or(&"").to_string(),
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '\t').collect();
+            let is_worker = parts.get(1).map(|s| *s == "1").unwrap_or(false);
+            if !is_worker {
+                return None;
             }
+            Some(PaneInfo {
+                id: parts.first().unwrap_or(&"").to_string(),
+                window: parts.get(2).unwrap_or(&"").to_string(),
+                command: parts.get(3).unwrap_or(&"").to_string(),
+                path: parts.get(4).unwrap_or(&"").to_string(),
+                title: parts.get(5).unwrap_or(&"").to_string(),
+            })
         })
         .collect();
 
@@ -359,7 +389,10 @@ pub fn hide(pane: &str, name: Option<&str>) -> Result<()> {
 /// Surface a background pane back into the main window.
 pub fn show(pane: &str, split: &str) -> Result<()> {
     let flag = if split.starts_with('v') { "-v" } else { "-h" };
-    let target = format!("{SESSION}:0");
+    // Target the orchestrator window by its stable ID rather than index 0 —
+    // index 0 does not exist under `base-index 1` and breaks if the user moves
+    // windows around.
+    let target = super::orchestrator_window_id();
     tmux_ok(&["join-pane", "-s", pane, "-t", &target, flag, "-d"])?;
     let _ = super::smart_layout();
     Ok(())
@@ -369,4 +402,36 @@ pub fn show(pane: &str, split: &str) -> Result<()> {
 /// Equivalent to `show(pane, "h")`.
 pub fn surface(pane: &str) -> Result<()> {
     show(pane, "h")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: a worker exiting must kill its OWN pane, never the active
+    // pane. The previous form (`tmux display-message -p '#{pane_id}'` with no
+    // -t) resolved to the active pane and killed the orchestrator, crashing the
+    // whole session. The worker-exit command must use $TMUX_PANE instead.
+    #[test]
+    fn worker_exit_cmd_kills_own_pane_not_active() {
+        let cmd = build_worker_exit_cmd("/path/superharness", "claude --foo");
+
+        // Must target the worker's own pane via the per-pane env var.
+        assert!(
+            cmd.contains("kill --pane \"$TMUX_PANE\""),
+            "worker exit must kill its own pane via $TMUX_PANE: {cmd}"
+        );
+        // Must NOT resolve the pane via an untargeted display-message, which
+        // returns the active (orchestrator) pane.
+        assert!(
+            !cmd.contains("display-message"),
+            "worker exit must not resolve pane via untargeted display-message: {cmd}"
+        );
+        assert!(!cmd.contains("%0"), "worker exit must never hardcode %0: {cmd}");
+        // Guard against an empty $TMUX_PANE falling through to the active pane.
+        assert!(
+            cmd.contains("[ -n \"$TMUX_PANE\" ]"),
+            "worker exit must guard against empty $TMUX_PANE: {cmd}"
+        );
+    }
 }
