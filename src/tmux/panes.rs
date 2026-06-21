@@ -185,6 +185,12 @@ WORKER RULES:
     };
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &title]);
 
+    // Persist the superharness-assigned label as a pane option. The live
+    // pane_title is unreliable for naming worker-output logs because the running
+    // harness (claude in particular) overwrites it with its own dynamic title;
+    // this tag is stable for the life of the pane. See capture_pane_log.
+    let _ = tmux_ok(&["set-option", "-p", "-t", &pane_id, "@sh_label", &title]);
+
     // Apply a subtle background tint from the palette based on pane index
     let pane_index_str =
         tmux(&["display-message", "-t", &pane_id, "-p", "#{pane_index}"]).unwrap_or_default();
@@ -383,9 +389,91 @@ fn cleanup_worktree(path: &str) {
     }
 }
 
+/// Build the log filename for a worker pane's captured output.
+///
+/// Combines a sanitized pane title with the pane id — which is unique for the
+/// life of the tmux server — so concurrent workers with identical titles never
+/// clobber one another's logs. Falls back to "worker" when the title is empty.
+fn worker_log_filename(title: &str, pane: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_underscore = false;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+            slug.push(c);
+            prev_underscore = false;
+        } else if !prev_underscore {
+            // Collapse any run of disallowed characters into a single '_'.
+            slug.push('_');
+            prev_underscore = true;
+        }
+    }
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "worker" } else { slug };
+    let pane_id = pane.trim_start_matches('%');
+    format!("{slug}-{pane_id}.log")
+}
+
+/// Capture a pane's full scrollback to a durable log file *before* the pane is
+/// destroyed, so a finished worker's output stays reviewable even though its
+/// pane self-cleans on exit (the `; superharness kill --pane` wrapper).
+///
+/// Logs land in `{project}/.superharness/worker-logs/<title>-<paneid>.log`.
+/// This is entirely best-effort: every failure is reported as a warning and
+/// never blocks the kill that follows.
+fn capture_pane_log(pane: &str) {
+    // Capture the entire scrollback (from the start of history through the
+    // bottom of the screen), joining wrapped lines.
+    let content = match tmux(&["capture-pane", "-t", pane, "-p", "-J", "-S", "-"]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[kill] WARNING: could not capture output of pane {pane}: {e}");
+            return;
+        }
+    };
+    // Nothing worth persisting (e.g. a pane that never produced output).
+    if content.trim().is_empty() {
+        return;
+    }
+
+    let log_dir = match crate::project::get_project_state_dir() {
+        Ok(dir) => dir.join("worker-logs"),
+        Err(e) => {
+            eprintln!("[kill] WARNING: could not resolve state dir for worker log: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "[kill] WARNING: could not create {}: {e}",
+            log_dir.display()
+        );
+        return;
+    }
+
+    // Prefer the stable @sh_label tag set at spawn; fall back to the live
+    // pane_title only when it is absent (panes created before this tag existed,
+    // or non-worker panes). The harness overwrites pane_title with its own.
+    let label = tmux(&["display-message", "-t", pane, "-p", "#{@sh_label}"]).unwrap_or_default();
+    let label = if label.trim().is_empty() {
+        tmux(&["display-message", "-t", pane, "-p", "#{pane_title}"]).unwrap_or_default()
+    } else {
+        label
+    };
+    let path = log_dir.join(worker_log_filename(label.trim(), pane));
+    match std::fs::write(&path, content.as_bytes()) {
+        Ok(()) => eprintln!("[kill] saved worker output to {}", path.display()),
+        Err(e) => eprintln!("[kill] WARNING: could not write {}: {e}", path.display()),
+    }
+}
+
 /// Kill a pane, auto-cleaning up any git worktree associated with its working
 /// directory when that directory is under /tmp/.
 pub fn kill(pane: &str) -> Result<()> {
+    // Persist the pane's output BEFORE anything destroys the pane or its
+    // working directory — workers self-kill on completion, so this is the only
+    // chance to keep their output reviewable.
+    capture_pane_log(pane);
+
     // Query the pane's current working directory BEFORE killing it.
     // If we can determine it, attempt worktree cleanup.
     if let Ok(raw) = tmux(&["display-message", "-t", pane, "-p", "#{pane_current_path}"]) {
@@ -489,5 +577,21 @@ mod tests {
             cmd.starts_with("opencode ") && cmd.contains("--prompt"),
             "opencode worker must invoke opencode --prompt: {cmd}"
         );
+    }
+
+    #[test]
+    fn worker_log_filename_sanitizes_and_disambiguates() {
+        // Title chrome and spaces collapse to single underscores; the pane id
+        // (without '%') disambiguates same-titled workers.
+        assert_eq!(
+            worker_log_filename("[build] predis plan", "%5"),
+            "build_predis_plan-5.log"
+        );
+        // Slashes and other punctuation are not allowed in the slug.
+        assert_eq!(worker_log_filename("[plan] a/b:c", "%12"), "plan_a_b_c-12.log");
+        // Empty title falls back to "worker".
+        assert_eq!(worker_log_filename("", "%3"), "worker-3.log");
+        // Dots and dashes are preserved (valid filename chars).
+        assert_eq!(worker_log_filename("fix-bug.v2", "%7"), "fix-bug.v2-7.log");
     }
 }
