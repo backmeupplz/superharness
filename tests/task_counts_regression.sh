@@ -75,6 +75,15 @@ expect bare_array "1/2" '[
   {"id":"2","title":"b","status":"pending"}
 ]'
 
+# Status-vocabulary drift: workers write "completed" (not "done") and
+# "in_progress" (underscore). Both must be recognized — this is the real bug
+# where 7 "completed" tasks counted as 0 done.
+expect completed_synonym "2/3" '{"tasks":[
+  {"id":"1","title":"a","status":"completed"},
+  {"id":"2","title":"b","status":"done"},
+  {"id":"3","title":"c","status":"in_progress"}
+]}'
+
 # Large totals render fine
 expect big "1/666" "$(python3 -c '
 import json

@@ -251,8 +251,13 @@ fn read_task_counts() -> (usize, usize) {
         .or_else(|_| serde_json::from_str::<Vec<OrchestratorTask>>(&content))
         .unwrap_or_default();
 
+    // Normalize status so a worker writing "completed" (or other synonyms) is
+    // still counted as done — see crate::tasks::TaskStatus.
     let total = tasks.len();
-    let completed = tasks.iter().filter(|t| t.status == "done").count();
+    let completed = tasks
+        .iter()
+        .filter(|t| crate::tasks::TaskStatus::from_raw(&t.status).is_completed())
+        .count();
     (completed, total)
 }
 

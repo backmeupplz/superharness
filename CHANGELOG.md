@@ -66,6 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tasks with an unrecognized status no longer vanish from the F5 task modal.
+  The orchestrator writes `tasks.json` freeform, so statuses drift (`completed`
+  vs `done`, `in_progress` vs `in-progress`); previously such tasks counted
+  toward the total but appeared in no status group and no tally (e.g. `Tasks: 7`
+  with every count `0` and no task bodies). Status is now normalized through a
+  shared `TaskStatus` (synonyms folded), the modal has an `OTHER` group that
+  always surfaces genuinely-unknown statuses with their raw text, and the F5
+  `tasks(done/total)` count uses the same normalization (so `completed` counts).
 - Worker output is now preserved before a pane self-destructs. Workers append
   `; superharness kill --pane` and tear down their own pane on completion, which
   also wiped the pane scrollback and made the output unreviewable. Every kill
