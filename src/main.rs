@@ -11,6 +11,7 @@ mod output_cleaner;
 mod pending_tasks;
 mod project;
 mod setup;
+mod tasks;
 mod tmux;
 mod util;
 
