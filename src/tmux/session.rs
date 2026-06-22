@@ -170,6 +170,8 @@ fn configure_session(bin_path: &str) -> Result<()> {
 
     // Worker count for F4 button label: total worker pane count.
     let worker_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '0')");
+    // Task count for F5 button label: "completed/total" (or "0" when no tasks).
+    let task_count_snippet = format!("#({bin_path} task-counts 2>/dev/null || echo '0')");
 
     let status_right = format!(
         "#[fg=colour240]│ {mode_snippet} \
@@ -178,7 +180,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
          │#[fg=colour110] F2#[fg=colour240]:set \
          │#[fg=colour110] F3#[fg=colour240]:info \
          │#[fg=colour110] F4#[fg=colour240]:wrk({worker_count_snippet}) \
-         │#[fg=colour110] F5#[fg=colour240]:tasks \
+         │#[fg=colour110] F5#[fg=colour240]:tasks({task_count_snippet}) \
          │#[fg=colour110] F6#[fg=colour240]:log #[default]"
     );
 

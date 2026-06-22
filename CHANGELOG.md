@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **F4 status bar** — Compact status display showing current harness, connected workers, and pending tasks
 
+- **F5 task count in the status bar** — the `F5:tasks` label now shows
+  `tasks(<completed>/<total>)` (e.g. `tasks(2/4)`), counting `done` tasks vs all
+  tasks in `.superharness/tasks.json`, or `tasks(0)` when there are none. Backed
+  by a new `task-counts` command.
+
 ### Changed
 
 - **AGENTS.md improvements**:
