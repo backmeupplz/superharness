@@ -27,6 +27,6 @@ pub use pane_cmds::{
 pub use pending_cmds::{handle_run_pending, handle_tasks};
 pub use spawn::handle_spawn;
 pub use status::{
-    handle_status_counts, handle_status_human, handle_terminal_size, handle_toggle_mode,
-    handle_workers,
+    handle_status_counts, handle_status_human, handle_task_counts, handle_terminal_size,
+    handle_toggle_mode, handle_workers,
 };

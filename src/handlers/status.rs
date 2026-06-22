@@ -205,6 +205,93 @@ pub fn handle_status_counts() -> Result<()> {
     Ok(())
 }
 
+/// Format the F5 task-count label from (completed, total).
+///
+/// - `total == 0` (no tasks) → `"0"` — a bare zero, per the spec.
+/// - otherwise → `"<completed>/<total>"`, e.g. `"2/4"`, `"0/4"`, `"1/666"`.
+///
+/// "Completed" is the count of tasks with status `done`; "total" is every task
+/// in `tasks.json` regardless of status. Pure for testability.
+pub fn format_task_counts(completed: usize, total: usize) -> String {
+    if total == 0 {
+        "0".to_string()
+    } else {
+        format!("{completed}/{total}")
+    }
+}
+
+/// Read `.superharness/tasks.json` and return `(completed, total)` where
+/// `completed` is the number of `done` tasks and `total` is the task count.
+///
+/// Accepts both supported shapes — the canonical `{ "tasks": [ ... ] }` wrapper
+/// and a legacy bare `[ ... ]` array (matching `handle_tasks_modal`). Any read
+/// or parse failure yields `(0, 0)` so the status bar degrades to `"0"` rather
+/// than erroring.
+fn read_task_counts() -> (usize, usize) {
+    #[derive(serde::Deserialize)]
+    struct OrchestratorTask {
+        status: String,
+    }
+    #[derive(serde::Deserialize, Default)]
+    struct TasksFile {
+        #[serde(default)]
+        tasks: Vec<OrchestratorTask>,
+    }
+
+    let tasks_path = match project::get_project_state_dir() {
+        Ok(dir) => dir.join("tasks.json"),
+        Err(_) => return (0, 0),
+    };
+    if !tasks_path.exists() {
+        return (0, 0);
+    }
+    let content = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+    let tasks: Vec<OrchestratorTask> = serde_json::from_str::<TasksFile>(&content)
+        .map(|f| f.tasks)
+        .or_else(|_| serde_json::from_str::<Vec<OrchestratorTask>>(&content))
+        .unwrap_or_default();
+
+    let total = tasks.len();
+    let completed = tasks.iter().filter(|t| t.status == "done").count();
+    (completed, total)
+}
+
+/// Handle `Command::TaskCounts` — completed/total task count for the F5 status
+/// bar label (`tasks(2/4)`, or `tasks(0)` when there are no tasks).
+pub fn handle_task_counts() -> Result<()> {
+    let (completed, total) = read_task_counts();
+    println!("{}", format_task_counts(completed, total));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_task_counts;
+
+    #[test]
+    fn task_counts_no_tasks_is_bare_zero() {
+        // Both zero → a single "0" in the (brackets added by the status bar).
+        assert_eq!(format_task_counts(0, 0), "0");
+    }
+
+    #[test]
+    fn task_counts_some_done() {
+        assert_eq!(format_task_counts(2, 4), "2/4");
+        assert_eq!(format_task_counts(1, 666), "1/666");
+    }
+
+    #[test]
+    fn task_counts_none_done_but_tasks_exist() {
+        // Tasks exist but none done → "0/N", NOT the bare-zero form.
+        assert_eq!(format_task_counts(0, 4), "0/4");
+    }
+
+    #[test]
+    fn task_counts_all_done() {
+        assert_eq!(format_task_counts(4, 4), "4/4");
+    }
+}
+
 /// Handle `Command::TerminalSize` — terminal dimensions and layout recommendation.
 pub fn handle_terminal_size() -> Result<()> {
     let info = tmux::terminal_size_info();
