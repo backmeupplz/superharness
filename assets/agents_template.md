@@ -107,6 +107,14 @@ After worker finishes: `git merge <branch>` from main repo, then `$BIN kill --pa
 - **DENY** destructive ops (`rm -rf`, `git push --force`, outside worktree): `$BIN send --pane %ID --text "n"`
 - **ASK USER** when uncertain.
 
+**Startup gates (auto-surfaced).** A fresh worker may stop on an interactive
+startup menu it can't clear itself — claude's *"trust the files in this
+folder?"* dialog or *"N new MCP servers found — enable?"* multi-select (`Space
+to select · Enter to confirm`). The scanner now detects these and surfaces the
+worker. They are NOT `y/n` prompts — answer with a bare Enter (confirm/accept)
+via `$BIN send --pane %ID --text ""`, or `Escape` to reject. Until answered the
+worker does nothing, so clear it as soon as it appears.
+
 ## Events & Heartbeats
 
 **Never use `sleep`.** Workers run `$BIN heartbeat` when done → `[HEARTBEAT]` in the orchestrator pane. `$BIN kill` also auto-triggers heartbeat. Use `$BIN heartbeat --snooze N` while busy processing.

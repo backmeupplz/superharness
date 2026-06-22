@@ -77,6 +77,41 @@ pub(crate) fn tag_orchestrator_pane(pane_id: &str) -> Result<()> {
     tmux_ok(&["set-option", "-p", "-t", pane_id, ORCH_TAG, "1"])
 }
 
+/// Return `true` if `pane` is the orchestrator pane and must never be killed by
+/// the worker-kill command.
+///
+/// This is the safety net behind the "a finishing/plan-mode worker tore the
+/// whole session down" crash: whatever issues `kill --pane <orchestrator>` (a
+/// confused orchestrator targeting `%0`, a legacy untargeted self-kill, etc.),
+/// killing the orchestrator pane ends the session and exits superharness. We
+/// refuse it outright — mirroring how `hide`/`compact` already refuse to
+/// background the orchestrator.
+///
+/// Two independent checks (either is sufficient), so it holds even in legacy
+/// sessions created before the tag existed:
+///   1. the pane carries the `@sh_orchestrator` tag, or
+///   2. the pane id equals the resolved orchestrator pane id.
+pub fn is_orchestrator_pane(pane: &str) -> bool {
+    // 1. Tag check — echo-back validated so a missing tag/pane can't false-positive.
+    if let Ok(out) = tmux(&["display-message", "-p", "-t", pane, "#{@sh_orchestrator}"]) {
+        if out.trim() == "1" {
+            return true;
+        }
+    }
+    // 2. Identity check against the resolved orchestrator pane. Normalize both
+    // sides through the same query so `%0` vs a stale form can't slip past.
+    let resolved = orchestrator_pane_id();
+    if pane == resolved {
+        return true;
+    }
+    if let Ok(out) = tmux(&["display-message", "-p", "-t", pane, "#{pane_id}"]) {
+        if out.trim() == resolved {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return the id of the pane tagged with [`ORCH_TAG`], if any.
 fn tagged_orchestrator_pane() -> Option<String> {
     let output = Command::new("tmux")

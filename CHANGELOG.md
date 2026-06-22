@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Worker output is now preserved before a pane self-destructs. Workers append
+  `; superharness kill --pane` and tear down their own pane on completion, which
+  also wiped the pane scrollback and made the output unreviewable. Every kill
+  path now captures the pane's full scrollback to
+  `{project}/.superharness/worker-logs/<title>-<paneid>.log` first.
 - Workers now launch their harness interactively instead of in headless
   one-shot mode (`claude -p` / `codex exec`). Headless mode started a process
   with no TUI, so the worker pane sat in `bash` with the agent invisible and
