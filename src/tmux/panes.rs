@@ -6,6 +6,52 @@ use crate::util;
 
 use super::{tmux, tmux_ok, SESSION};
 
+/// Build the wrapped shell command a worker pane runs: export env, run the
+/// harness, then kill its OWN pane on exit.
+///
+/// The pane id is taken from `$TMUX_PANE`, which tmux sets per-pane to the
+/// worker's own pane. We must NOT use `tmux display-message -p '#{pane_id}'`
+/// here: with no `-t` target that resolves to the session's *active* pane
+/// (the orchestrator), so a worker exiting would run `kill --pane %0` and
+/// take the orchestrator down with it, crashing the whole session. The
+/// `[ -n ... ]` guard ensures an (impossible-in-practice) empty value never
+/// falls back to killing the active pane.
+fn build_worker_exit_cmd(sh_bin: &str, harness_cmd: &str) -> String {
+    format!(
+        "export SUPERHARNESS_WORKER=1 SUPERHARNESS_BIN='{sh_bin}'; {harness_cmd} ; [ -n \"$TMUX_PANE\" ] && {sh_bin} kill --pane \"$TMUX_PANE\""
+    )
+}
+
+/// Build the harness invocation a worker pane runs.
+///
+/// Workers run the harness **interactively** — exactly like the orchestrator
+/// (`session.rs`) and like opencode workers already did. A live interactive TUI
+/// is the contract the rest of superharness relies on: the heartbeat scanner
+/// detects busy/idle by pattern-matching the TUI footer (`heartbeat.rs`), the
+/// orchestrator drives workers with `tmux send-keys`, and a worker announces it
+/// is finished by running `superharness heartbeat` (after which the orchestrator
+/// reaps its pane).
+///
+/// Running claude/codex one-shot (`claude -p` / `codex exec`) is what caused the
+/// "worker hangs in bash and never runs claude" bug: print/exec mode launches a
+/// *headless* process with no TUI, so `pane_current_command` stays `bash` for
+/// the worker's entire life and the agent is invisible and unmonitorable. The
+/// pane looked stuck in bash forever. Interactive mode makes the worker a real,
+/// visible claude/codex/opencode session, consistent across every harness.
+///
+/// NOTE on the MCP enable prompt (claude): when claude launches in a directory
+/// whose project MCP servers (from `~/.mcp.json` / account-synced servers) are
+/// still undecided in `~/.claude.json` (`enabledMcpjsonServers` empty), it shows
+/// an interactive "enable these MCP servers?" prompt. A hidden worker cannot
+/// answer it and hangs (black pane). We do NOT try to suppress it with
+/// `--strict-mcp-config --mcp-config …` here: those flags were verified to break
+/// interactive claude (the pane starts empty and never renders). The prompt is
+/// resolved at the claude-config level instead — see the operator note / docs
+/// (`enableAllProjectMcpServers`, or pre-deciding the project's MCP servers).
+fn build_worker_harness_cmd(harness: &str, model: Option<&str>, task: &str) -> String {
+    harness::build_harness_cmd(harness, model, task, true)
+}
+
 /// Subtle RGB background tints for pane backgrounds.
 /// Each is a very dark colour with just enough hue to be faintly distinct (~5% tint on black).
 const PANE_COLOR_HEX: &[&str] = &[
@@ -108,23 +154,20 @@ WORKER RULES:
     };
 
     // Build the harness command string (handles per-harness flag differences).
-    // Workers are one-shot: process the task and exit.
+    // Workers run the harness interactively — see build_worker_harness_cmd for
+    // why a headless one-shot (`claude -p` / `codex exec`) is wrong here.
     // If no explicit model was passed, resolve the per-harness default.
     let effective_model: Option<String> = model.map(String::from).or_else(|| {
         harness::get_model_for_harness(&config_dir, &active_harness)
     });
-    let opencode_cmd = harness::build_harness_cmd(
+    let opencode_cmd = build_worker_harness_cmd(
         &active_harness,
         effective_model.as_deref(),
         &effective_task,
-        false,
     );
 
     // Wrap harness so that when it exits the pane auto-kills itself.
-    // Export SUPERHARNESS_BIN so scripts/tools in the worker shell can find it too.
-    let cmd = format!(
-        "export SUPERHARNESS_WORKER=1 SUPERHARNESS_BIN='{sh_bin}'; {opencode_cmd} ; {sh_bin} kill --pane $(tmux display-message -p '#{{pane_id}}')"
-    );
+    let cmd = build_worker_exit_cmd(&sh_bin, &opencode_cmd);
 
     // Split the current window to create a new pane running opencode directly
     let pane_id = tmux(&[
@@ -152,6 +195,12 @@ WORKER RULES:
     };
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-T", &title]);
 
+    // Persist the superharness-assigned label as a pane option. The live
+    // pane_title is unreliable for naming worker-output logs because the running
+    // harness (claude in particular) overwrites it with its own dynamic title;
+    // this tag is stable for the life of the pane. See capture_pane_log.
+    let _ = tmux_ok(&["set-option", "-p", "-t", &pane_id, "@sh_label", &title]);
+
     // Apply a subtle background tint from the palette based on pane index
     let pane_index_str =
         tmux(&["display-message", "-t", &pane_id, "-p", "#{pane_index}"]).unwrap_or_default();
@@ -159,6 +208,13 @@ WORKER RULES:
     let color_hex = PANE_COLOR_HEX[pane_index % PANE_COLOR_HEX.len()];
     let style = format!("bg={color_hex}");
     let _ = tmux_ok(&["select-pane", "-t", &pane_id, "-P", &style]);
+
+    // Tag this pane as a superharness-managed worker. The scanner, auto-compact,
+    // and layout code only ever touch tagged panes, so panes the user creates in
+    // their own tmux windows are left completely alone. The option is pane-scoped
+    // (`-p`) and survives break-pane/join-pane, so the tag persists as the worker
+    // is hidden to a background window and surfaced back.
+    let _ = tmux_ok(&["set-option", "-p", "-t", &pane_id, "@sh_worker", "1"]);
 
     if no_hide {
         // --no-hide: keep the worker visible in the main orchestrator window.
@@ -215,27 +271,37 @@ pub fn list() -> Result<Vec<PaneInfo>> {
         return Ok(vec![]);
     }
 
+    // The `@sh_worker` flag is placed right after the pane id (and before the
+    // title, which may contain arbitrary characters) so parsing stays robust.
     let output = tmux(&[
         "list-panes",
         "-t",
         SESSION,
         "-a",
         "-F",
-        "#{pane_id}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+        "#{pane_id}\t#{@sh_worker}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
     ])?;
 
+    // Only return superharness-managed worker panes. The orchestrator pane and
+    // any panes the user created in their own windows are untagged and excluded,
+    // so callers (the heartbeat scanner, status counts, list/workers commands)
+    // never act on panes superharness does not own.
     let panes = output
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|line| {
-            let parts: Vec<&str> = line.splitn(5, '\t').collect();
-            PaneInfo {
-                id: parts.first().unwrap_or(&"").to_string(),
-                window: parts.get(1).unwrap_or(&"").to_string(),
-                command: parts.get(2).unwrap_or(&"").to_string(),
-                path: parts.get(3).unwrap_or(&"").to_string(),
-                title: parts.get(4).unwrap_or(&"").to_string(),
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '\t').collect();
+            let is_worker = parts.get(1).map(|s| *s == "1").unwrap_or(false);
+            if !is_worker {
+                return None;
             }
+            Some(PaneInfo {
+                id: parts.first().unwrap_or(&"").to_string(),
+                window: parts.get(2).unwrap_or(&"").to_string(),
+                command: parts.get(3).unwrap_or(&"").to_string(),
+                path: parts.get(4).unwrap_or(&"").to_string(),
+                title: parts.get(5).unwrap_or(&"").to_string(),
+            })
         })
         .collect();
 
@@ -333,9 +399,105 @@ fn cleanup_worktree(path: &str) {
     }
 }
 
+/// Build the log filename for a worker pane's captured output.
+///
+/// Combines a sanitized pane title with the pane id — which is unique for the
+/// life of the tmux server — so concurrent workers with identical titles never
+/// clobber one another's logs. Falls back to "worker" when the title is empty.
+fn worker_log_filename(title: &str, pane: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_underscore = false;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+            slug.push(c);
+            prev_underscore = false;
+        } else if !prev_underscore {
+            // Collapse any run of disallowed characters into a single '_'.
+            slug.push('_');
+            prev_underscore = true;
+        }
+    }
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "worker" } else { slug };
+    let pane_id = pane.trim_start_matches('%');
+    format!("{slug}-{pane_id}.log")
+}
+
+/// Capture a pane's full scrollback to a durable log file *before* the pane is
+/// destroyed, so a finished worker's output stays reviewable even though its
+/// pane self-cleans on exit (the `; superharness kill --pane` wrapper).
+///
+/// Logs land in `{project}/.superharness/worker-logs/<title>-<paneid>.log`.
+/// This is entirely best-effort: every failure is reported as a warning and
+/// never blocks the kill that follows.
+fn capture_pane_log(pane: &str) {
+    // Capture the entire scrollback (from the start of history through the
+    // bottom of the screen), joining wrapped lines.
+    let content = match tmux(&["capture-pane", "-t", pane, "-p", "-J", "-S", "-"]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[kill] WARNING: could not capture output of pane {pane}: {e}");
+            return;
+        }
+    };
+    // Nothing worth persisting (e.g. a pane that never produced output).
+    if content.trim().is_empty() {
+        return;
+    }
+
+    let log_dir = match crate::project::get_project_state_dir() {
+        Ok(dir) => dir.join("worker-logs"),
+        Err(e) => {
+            eprintln!("[kill] WARNING: could not resolve state dir for worker log: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "[kill] WARNING: could not create {}: {e}",
+            log_dir.display()
+        );
+        return;
+    }
+
+    // Prefer the stable @sh_label tag set at spawn; fall back to the live
+    // pane_title only when it is absent (panes created before this tag existed,
+    // or non-worker panes). The harness overwrites pane_title with its own.
+    let label = tmux(&["display-message", "-t", pane, "-p", "#{@sh_label}"]).unwrap_or_default();
+    let label = if label.trim().is_empty() {
+        tmux(&["display-message", "-t", pane, "-p", "#{pane_title}"]).unwrap_or_default()
+    } else {
+        label
+    };
+    let path = log_dir.join(worker_log_filename(label.trim(), pane));
+    match std::fs::write(&path, content.as_bytes()) {
+        Ok(()) => eprintln!("[kill] saved worker output to {}", path.display()),
+        Err(e) => eprintln!("[kill] WARNING: could not write {}: {e}", path.display()),
+    }
+}
+
 /// Kill a pane, auto-cleaning up any git worktree associated with its working
 /// directory when that directory is under /tmp/.
 pub fn kill(pane: &str) -> Result<()> {
+    // SAFETY NET: never kill the orchestrator pane. Killing it ends the session
+    // and takes the whole superharness process down with it. This is the crash
+    // we kept seeing — `kill --pane %0` (a confused orchestrator, a stuck
+    // plan-mode worker's cleanup, a legacy untargeted self-kill) destroying the
+    // orchestrator. The worker-kill command must only ever kill workers.
+    if super::is_orchestrator_pane(pane) {
+        anyhow::bail!(
+            "refusing to kill {pane}: it is the orchestrator pane. \
+             The kill command targets workers only — killing the orchestrator \
+             would end the session. (If you meant a worker, pass its pane id, \
+             e.g. from `superharness list`.)"
+        );
+    }
+
+    // Persist the pane's output BEFORE anything destroys the pane or its
+    // working directory — workers self-kill on completion, so this is the only
+    // chance to keep their output reviewable.
+    capture_pane_log(pane);
+
     // Query the pane's current working directory BEFORE killing it.
     // If we can determine it, attempt worktree cleanup.
     if let Ok(raw) = tmux(&["display-message", "-t", pane, "-p", "#{pane_current_path}"]) {
@@ -359,7 +521,10 @@ pub fn hide(pane: &str, name: Option<&str>) -> Result<()> {
 /// Surface a background pane back into the main window.
 pub fn show(pane: &str, split: &str) -> Result<()> {
     let flag = if split.starts_with('v') { "-v" } else { "-h" };
-    let target = format!("{SESSION}:0");
+    // Target the orchestrator window by its stable ID rather than index 0 —
+    // index 0 does not exist under `base-index 1` and breaks if the user moves
+    // windows around.
+    let target = super::orchestrator_window_id();
     tmux_ok(&["join-pane", "-s", pane, "-t", &target, flag, "-d"])?;
     let _ = super::smart_layout();
     Ok(())
@@ -369,4 +534,95 @@ pub fn show(pane: &str, split: &str) -> Result<()> {
 /// Equivalent to `show(pane, "h")`.
 pub fn surface(pane: &str) -> Result<()> {
     show(pane, "h")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: a worker exiting must kill its OWN pane, never the active
+    // pane. The previous form (`tmux display-message -p '#{pane_id}'` with no
+    // -t) resolved to the active pane and killed the orchestrator, crashing the
+    // whole session. The worker-exit command must use $TMUX_PANE instead.
+    #[test]
+    fn worker_exit_cmd_kills_own_pane_not_active() {
+        let cmd = build_worker_exit_cmd("/path/superharness", "claude --foo");
+
+        // Must target the worker's own pane via the per-pane env var.
+        assert!(
+            cmd.contains("kill --pane \"$TMUX_PANE\""),
+            "worker exit must kill its own pane via $TMUX_PANE: {cmd}"
+        );
+        // Must NOT resolve the pane via an untargeted display-message, which
+        // returns the active (orchestrator) pane.
+        assert!(
+            !cmd.contains("display-message"),
+            "worker exit must not resolve pane via untargeted display-message: {cmd}"
+        );
+        assert!(!cmd.contains("%0"), "worker exit must never hardcode %0: {cmd}");
+        // Guard against an empty $TMUX_PANE falling through to the active pane.
+        assert!(
+            cmd.contains("[ -n \"$TMUX_PANE\" ]"),
+            "worker exit must guard against empty $TMUX_PANE: {cmd}"
+        );
+    }
+
+    // Regression: a worker must launch its harness INTERACTIVELY, never in a
+    // headless one-shot mode. `claude -p` / `codex exec` start a process with no
+    // TUI, so the worker pane sits in `bash` forever with the agent invisible
+    // and unmonitorable — the "worker hangs in bash and never runs claude" bug.
+    #[test]
+    fn worker_runs_harness_interactively_not_headless() {
+        // claude: must launch the interactive TUI, not `-p` print mode.
+        let cmd = build_worker_harness_cmd("claude", None, "do the task");
+        assert!(
+            cmd.starts_with("claude "),
+            "claude worker must invoke claude: {cmd}"
+        );
+        assert!(
+            !cmd.contains("claude -p"),
+            "claude worker must NOT run headless `-p` print mode: {cmd}"
+        );
+        // NOTE: we intentionally do NOT inject --strict-mcp-config/--mcp-config:
+        // those flags break interactive claude (pane never renders). The MCP
+        // enable prompt is handled at the claude-config level, not here.
+        assert!(
+            !cmd.contains("--strict-mcp-config"),
+            "claude worker must NOT use --strict-mcp-config (breaks interactive claude): {cmd}"
+        );
+
+        // codex: must launch the interactive TUI, not `codex exec`.
+        let cmd = build_worker_harness_cmd("codex", None, "do the task");
+        assert!(
+            cmd.starts_with("codex "),
+            "codex worker must invoke codex: {cmd}"
+        );
+        assert!(
+            !cmd.contains("codex exec"),
+            "codex worker must NOT run headless `exec` mode: {cmd}"
+        );
+
+        // opencode: always interactive via --prompt (unchanged, but pinned).
+        let cmd = build_worker_harness_cmd("opencode", None, "do the task");
+        assert!(
+            cmd.starts_with("opencode ") && cmd.contains("--prompt"),
+            "opencode worker must invoke opencode --prompt: {cmd}"
+        );
+    }
+
+    #[test]
+    fn worker_log_filename_sanitizes_and_disambiguates() {
+        // Title chrome and spaces collapse to single underscores; the pane id
+        // (without '%') disambiguates same-titled workers.
+        assert_eq!(
+            worker_log_filename("[build] predis plan", "%5"),
+            "build_predis_plan-5.log"
+        );
+        // Slashes and other punctuation are not allowed in the slug.
+        assert_eq!(worker_log_filename("[plan] a/b:c", "%12"), "plan_a_b_c-12.log");
+        // Empty title falls back to "worker".
+        assert_eq!(worker_log_filename("", "%3"), "worker-3.log");
+        // Dots and dashes are preserved (valid filename chars).
+        assert_eq!(worker_log_filename("fix-bug.v2", "%7"), "fix-bug.v2-7.log");
+    }
 }

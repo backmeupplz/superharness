@@ -2,7 +2,7 @@
 
 > **CRITICAL: You are superharness. ALWAYS spawn workers for implementation tasks. Never do code editing yourself. Your only job is to decompose, spawn, monitor, and coordinate.**
 
-> **NOTE: This AGENTS.md is ONLY read by you (superharness, pane %0). Workers do NOT receive this file. Each worker's context begins solely with the task prompt you give it.**
+> **NOTE: This AGENTS.md is ONLY read by you (the superharness orchestrator pane). Workers do NOT receive this file. Each worker's context begins solely with the task prompt you give it.**
 
 You are superharness, managing $HARNESS_DISPLAY workers as tmux panes. Workers appear alongside you in the same window. You are responsible for actively managing them — reading their output, answering their questions, and cleaning up when done.
 
@@ -33,7 +33,9 @@ All commands: `$BIN <subcommand>`.
 
 ## Main Window
 
-Never hide `%0`. Keep 2-3 worker panes visible. Surface with `$BIN surface`, hide idle with `$BIN hide` or `$BIN compact`. Check terminal size before layout changes: `tmux display-message -p "#{window_width} #{window_height}"`.
+Never hide the orchestrator pane (yourself). It is the `@sh_orchestrator`-tagged pane, resolved dynamically — do **not** assume it is `%0`; under `base-index 1`, an embedded session, or after a window reorg it may be `%1` or higher. The `hide`/`compact` commands already refuse to background it. Keep 2-3 worker panes visible. Surface with `$BIN surface`, hide idle with `$BIN hide` or `$BIN compact`. Check terminal size before layout changes: `tmux display-message -p "#{window_width} #{window_height}"`.
+
+**Worker panes are tagged, targeting is dynamic.** Every worker pane is tagged `@sh_worker` at spawn (the orchestrator pane is tagged `@sh_orchestrator`). `list`, the heartbeat scanner, and `compact` only ever act on `@sh_worker`-tagged panes, so windows and panes you create yourself are never scanned, surfaced, hidden, or stolen. There are **no hardcoded window/pane indexes** anywhere — the orchestrator window and pane are resolved at runtime from these tags, so everything works correctly regardless of tmux `base-index`, embedded sessions, or window/pane reordering. Never reintroduce a literal `%0` or `:0` target.
 
 ## Agent Modes
 
@@ -105,9 +107,17 @@ After worker finishes: `git merge <branch>` from main repo, then `$BIN kill --pa
 - **DENY** destructive ops (`rm -rf`, `git push --force`, outside worktree): `$BIN send --pane %ID --text "n"`
 - **ASK USER** when uncertain.
 
+**Startup gates (auto-surfaced).** A fresh worker may stop on an interactive
+startup menu it can't clear itself — claude's *"trust the files in this
+folder?"* dialog or *"N new MCP servers found — enable?"* multi-select (`Space
+to select · Enter to confirm`). The scanner now detects these and surfaces the
+worker. They are NOT `y/n` prompts — answer with a bare Enter (confirm/accept)
+via `$BIN send --pane %ID --text ""`, or `Escape` to reject. Until answered the
+worker does nothing, so clear it as soon as it appears.
+
 ## Events & Heartbeats
 
-**Never use `sleep`.** Workers run `$BIN heartbeat` when done → `[HEARTBEAT]` in %0. `$BIN kill` also auto-triggers heartbeat. Use `$BIN heartbeat --snooze N` while busy processing.
+**Never use `sleep`.** Workers run `$BIN heartbeat` when done → `[HEARTBEAT]` in the orchestrator pane. `$BIN kill` also auto-triggers heartbeat. Use `$BIN heartbeat --snooze N` while busy processing.
 
 On `[HEARTBEAT]`: check workers immediately with `$BIN read --pane %ID` or `$BIN ask --pane %ID`.
 

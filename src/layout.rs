@@ -19,7 +19,7 @@
 
 use std::process::Command;
 
-use crate::tmux::{orchestrator_pane_id, SESSION};
+use crate::tmux::{orchestrator_pane_id, orchestrator_window_id, SESSION};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -128,7 +128,7 @@ pub fn apply_strategy(
     term_width: u32,
     term_height: u32,
 ) -> anyhow::Result<()> {
-    let session_win = format!("{SESSION}:0");
+    let session_win = orchestrator_window_id();
     let is_wide = term_width >= 120;
     let orch_id = orchestrator_pane_id();
 
@@ -254,8 +254,11 @@ pub const MIN_PANE_ROWS: u32 = 12;
 /// `tmux.rs` to ensure the main window never shows unreadably-small panes.
 pub fn enforce_min_pane_size() -> anyhow::Result<()> {
     let orch_id = orchestrator_pane_id();
+    let orch_window = orchestrator_window_id();
 
-    // List all panes across all windows with dimensions and window index.
+    // List all panes across all windows with dimensions, window id, and worker
+    // flag. `#{?@sh_worker,1,0}` always renders a non-empty token so the
+    // space-delimited parsing below keeps a stable field count.
     let output = Command::new("tmux")
         .args([
             "list-panes",
@@ -263,7 +266,7 @@ pub fn enforce_min_pane_size() -> anyhow::Result<()> {
             SESSION,
             "-a",
             "-F",
-            "#{pane_id} #{pane_width} #{pane_height} #{window_index} #{pane_title}",
+            "#{pane_id} #{pane_width} #{pane_height} #{window_id} #{?@sh_worker,1,0} #{pane_title}",
         ])
         .output();
 
@@ -276,21 +279,23 @@ pub fn enforce_min_pane_size() -> anyhow::Result<()> {
         if line.is_empty() {
             continue;
         }
-        // Split on spaces — title is the rest (may contain spaces) but we only
-        // need up to index 4 for title so use splitn(5, ' ').
-        let parts: Vec<&str> = line.splitn(5, ' ').collect();
-        if parts.len() < 4 {
+        // Split on spaces — title is the rest (may contain spaces) so use
+        // splitn(6, ' ') with title as the final field.
+        let parts: Vec<&str> = line.splitn(6, ' ').collect();
+        if parts.len() < 5 {
             continue;
         }
 
         let id = parts[0];
         let width: u32 = parts[1].parse().unwrap_or(0);
         let height: u32 = parts[2].parse().unwrap_or(0);
-        let window_index: u32 = parts[3].parse().unwrap_or(999);
-        let title = parts.get(4).copied().unwrap_or("worker");
+        let window_id = parts[3];
+        let is_worker = parts[4] == "1";
+        let title = parts.get(5).copied().unwrap_or("worker");
 
-        // Only enforce in the main window; never touch orchestrator or background panes.
-        if id == orch_id || window_index != 0 {
+        // Only enforce on superharness worker panes currently in the orchestrator
+        // window; never touch the orchestrator, user panes, or background panes.
+        if id == orch_id || window_id != orch_window || !is_worker {
             continue;
         }
 

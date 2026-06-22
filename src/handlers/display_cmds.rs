@@ -79,25 +79,38 @@ pub fn handle_tasks_modal() -> Result<()> {
         worker_pane: Option<String>,
     }
 
+    // The orchestrator writes tasks.json freeform, so accept both supported
+    // top-level shapes: the canonical `{ "tasks": [ ... ] }` wrapper object and
+    // a legacy bare `[ ... ]` array. Anything else parses to an empty list.
+    #[derive(serde::Deserialize, Default)]
+    struct TasksFile {
+        #[serde(default)]
+        tasks: Vec<OrchestratorTask>,
+    }
+
     let state_dir = project::get_project_state_dir()?;
     let tasks_path = state_dir.join("tasks.json");
 
     let task_list: Vec<OrchestratorTask> = if tasks_path.exists() {
         let content = std::fs::read_to_string(&tasks_path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or_default()
+        serde_json::from_str::<TasksFile>(&content)
+            .map(|f| f.tasks)
+            .or_else(|_| serde_json::from_str::<Vec<OrchestratorTask>>(&content))
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
 
-    // Count per status
-    let count_in_progress = task_list
-        .iter()
-        .filter(|t| t.status == "in-progress")
-        .count();
-    let count_pending = task_list.iter().filter(|t| t.status == "pending").count();
-    let count_blocked = task_list.iter().filter(|t| t.status == "blocked").count();
-    let count_done = task_list.iter().filter(|t| t.status == "done").count();
-    let count_cancelled = task_list.iter().filter(|t| t.status == "cancelled").count();
+    use crate::tasks::TaskStatus;
+
+    // Count per CANONICAL status, so synonyms like "completed" fold into Done
+    // and unrecognized statuses are surfaced under "other:" instead of vanishing.
+    let count = |st: TaskStatus| {
+        task_list
+            .iter()
+            .filter(|t| TaskStatus::from_raw(&t.status) == st)
+            .count()
+    };
 
     // Hint bar
     println!("  {DIM}q:close  ↑/↓ or PgUp/PgDn:scroll  /:search{RESET}");
@@ -105,13 +118,14 @@ pub fn handle_tasks_modal() -> Result<()> {
 
     println!();
     println!(
-        "  {BOLD}Tasks:{RESET} {}  {DIM}| in-progress:{} pending:{} blocked:{} done:{} cancelled:{}{RESET}",
+        "  {BOLD}Tasks:{RESET} {}  {DIM}| in-progress:{} pending:{} blocked:{} done:{} cancelled:{} other:{}{RESET}",
         task_list.len(),
-        count_in_progress,
-        count_pending,
-        count_blocked,
-        count_done,
-        count_cancelled,
+        count(TaskStatus::InProgress),
+        count(TaskStatus::Pending),
+        count(TaskStatus::Blocked),
+        count(TaskStatus::Done),
+        count(TaskStatus::Cancelled),
+        count(TaskStatus::Other),
     );
     println!("  {DIM}{}{RESET}", "─".repeat(72));
     println!();
@@ -120,28 +134,27 @@ pub fn handle_tasks_modal() -> Result<()> {
         println!("  {DIM}No tasks found in {}{RESET}", tasks_path.display());
         println!();
     } else {
-        // Order: in-progress, pending, blocked, done, cancelled
-        let status_order = ["in-progress", "pending", "blocked", "done", "cancelled"];
-
-        for status_key in &status_order {
+        // Group by canonical status in display order. `Other` is included so any
+        // unrecognized status is still shown (never silently dropped).
+        for status in TaskStatus::DISPLAY_ORDER {
             let group: Vec<&OrchestratorTask> = task_list
                 .iter()
-                .filter(|t| t.status == *status_key)
+                .filter(|t| TaskStatus::from_raw(&t.status) == status)
                 .collect();
             if group.is_empty() {
                 continue;
             }
 
-            let (color, label) = match *status_key {
-                "in-progress" => (GREEN, "IN-PROGRESS"),
-                "pending" => (YELLOW, "PENDING"),
-                "blocked" => (RED, "BLOCKED"),
-                "done" => (DIM, "DONE"),
-                "cancelled" => (DIM, "CANCELLED"),
-                _ => ("\x1b[0m", *status_key),
+            let color = match status {
+                TaskStatus::InProgress => GREEN,
+                TaskStatus::Pending => YELLOW,
+                TaskStatus::Blocked => RED,
+                TaskStatus::Done => DIM,
+                TaskStatus::Cancelled => DIM,
+                TaskStatus::Other => CYAN,
             };
 
-            println!("  {BOLD}{UNDERLINE}{color}{label}{RESET}");
+            println!("  {BOLD}{UNDERLINE}{color}{}{RESET}", status.label());
             println!();
 
             for task in &group {
@@ -165,8 +178,16 @@ pub fn handle_tasks_modal() -> Result<()> {
                     .map(|p| format!("  {DIM}pane:{p}{RESET}"))
                     .unwrap_or_default();
 
+                // For unrecognized statuses, show the RAW status string the
+                // orchestrator wrote so the user sees exactly what it is.
+                let badge = if status == TaskStatus::Other {
+                    format!("{color}[{}]{RESET}", task.status)
+                } else {
+                    format!("{color}[{}]{RESET}", status.label())
+                };
+
                 println!(
-                    "  {color}[{label}]{RESET} {priority_badge}{BOLD}{}{RESET}{pane_str}",
+                    "  {badge} {priority_badge}{BOLD}{}{RESET}{pane_str}",
                     task.title
                 );
                 if !desc_preview.is_empty() {

@@ -599,16 +599,64 @@ fn is_orchestrator_in_question_dialog(orch_output: &str) -> bool {
     has_question_header && has_radio_buttons
 }
 
+/// Return `true` if the pane is sitting on an interactive *startup gate* that a
+/// hidden worker can never clear on its own: claude's "trust the files in this
+/// folder?" dialog, or its "N new MCP servers found — enable?" multi-select.
+///
+/// These are arrow-key / Space / Enter selection menus, not `y/n` prompts, so
+/// [`has_permission_prompt`] misses them and the worker hangs invisibly in a
+/// background window forever (the "black/empty worker that never runs" bug, and
+/// the session eventually dies waiting). When the scanner detects one it
+/// surfaces the worker so a human (or the orchestrator) can answer it.
+fn has_blocking_startup_prompt(output: &str) -> bool {
+    // The MCP menu is several lines tall (header + notice + checkboxes + action
+    // bar), so look a little deeper than the y/n permission check does.
+    let tail: String = output
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
+
+    // claude "trust this folder" dialog.
+    if tail.contains("trust the files in this folder")
+        || tail.contains("trust this folder")
+        || tail.contains("do you trust")
+    {
+        return true;
+    }
+
+    // claude "new MCP servers found — enable?" multi-select. Match either the
+    // distinctive header or the selection action bar (so it holds even if the
+    // header has scrolled off the captured tail).
+    if tail.contains("new mcp servers found")
+        || tail.contains("wish to enable")
+        || (tail.contains("space to select") && tail.contains("enter to confirm"))
+    {
+        return true;
+    }
+
+    false
+}
+
 /// Determine whether a worker pane needs attention based on its output.
 ///
 /// Returns `true` if:
 /// - A permission prompt is detected
 /// - A question prompt is detected
+/// - A blocking startup gate (trust / MCP-enable) is detected
 ///
 /// This is a pure function for testability — it does NOT check stale state
 /// (that requires the scan-history HashMap maintained by the thread).
 fn worker_needs_attention(output: &str) -> bool {
-    has_permission_prompt(output) || has_question_prompt(output)
+    has_permission_prompt(output)
+        || has_question_prompt(output)
+        || has_blocking_startup_prompt(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -915,9 +963,15 @@ pub fn start_thread() {
                         // Collect live pane IDs so we can prune stale entries later
                         let mut live_ids: Vec<String> = Vec::new();
 
+                        // `tmux::list()` already returns only superharness worker
+                        // panes (it filters by the @sh_worker tag), so user-created
+                        // windows are never scanned. We still guard against the
+                        // orchestrator pane explicitly in case it is ever tagged.
+                        let orch_id = tmux::orchestrator_pane_id();
+
                         for pane in &panes {
                             // Skip the orchestrator pane
-                            if pane.id == "%0" {
+                            if pane.id == orch_id {
                                 continue;
                             }
                             live_ids.push(pane.id.clone());
@@ -965,7 +1019,7 @@ pub fn start_thread() {
                         // If any worker needs attention, trigger an early beat
                         // UNLESS the orchestrator is in a question dialog.
                         if !attention_panes.is_empty() {
-                            let suppress = match tmux::read("%0", 25) {
+                            let suppress = match tmux::read(&orch_id, 25) {
                                 Ok(orch_out) => is_orchestrator_in_question_dialog(&orch_out),
                                 Err(_) => false,
                             };
@@ -2168,6 +2222,63 @@ All tests passed.";
         assert!(
             !has_permission_prompt(output),
             "normal build output should NOT trigger permission detection"
+        );
+    }
+
+    // Blocking startup gates: claude's MCP-enable multi-select and trust dialog.
+    // A hidden worker can never answer these, so the scanner must flag them as
+    // needing attention (surface the worker) — they are NOT y/n prompts.
+    #[test]
+    fn blocking_startup_prompt_detects_mcp_enable() {
+        let output = "\
+────────────────────────────────────────
+ 2 new MCP servers found in this project
+ Select any you wish to enable.
+ MCP servers may execute code or access system resources. All tool calls require approval.
+ ❯ [✔] exa
+   [✔] context7
+ Space to select · Enter to confirm · Esc to reject all";
+        assert!(
+            has_blocking_startup_prompt(output),
+            "MCP-enable multi-select must be detected as a blocking startup gate"
+        );
+        assert!(
+            worker_needs_attention(output),
+            "worker on the MCP-enable prompt must need attention (be surfaced)"
+        );
+        // It is NOT a y/n permission prompt — proves we needed the new detector.
+        assert!(
+            !has_permission_prompt(output),
+            "MCP-enable prompt is not a y/n prompt; has_permission_prompt should miss it"
+        );
+    }
+
+    #[test]
+    fn blocking_startup_prompt_detects_trust_dialog() {
+        let output = "\
+ Do you trust the files in this folder?
+ /Users/me/Code/framework
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+ Enter to confirm · Esc to cancel";
+        assert!(
+            has_blocking_startup_prompt(output),
+            "trust-folder dialog must be detected as a blocking startup gate"
+        );
+        assert!(worker_needs_attention(output));
+    }
+
+    #[test]
+    fn blocking_startup_prompt_not_triggered_by_normal_output() {
+        let output = "\
+Analyzing the codebase...
+⏺ Here is the migration plan for predis:
+1. Bump composer constraint
+✻ Working…
+ esc to interrupt";
+        assert!(
+            !has_blocking_startup_prompt(output),
+            "normal working output must NOT look like a startup gate"
         );
     }
 

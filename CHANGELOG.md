@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **F4 status bar** — Compact status display showing current harness, connected workers, and pending tasks
 
+- **F5 task count in the status bar** — the `F5:tasks` label now shows
+  `tasks(<completed>/<total>)` (e.g. `tasks(2/4)`), counting `done` tasks vs all
+  tasks in `.superharness/tasks.json`, or `tasks(0)` when there are none. Backed
+  by a new `task-counts` command.
+
 ### Changed
 
 - **AGENTS.md improvements**:
@@ -61,6 +66,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tasks with an unrecognized status no longer vanish from the F5 task modal.
+  The orchestrator writes `tasks.json` freeform, so statuses drift (`completed`
+  vs `done`, `in_progress` vs `in-progress`); previously such tasks counted
+  toward the total but appeared in no status group and no tally (e.g. `Tasks: 7`
+  with every count `0` and no task bodies). Status is now normalized through a
+  shared `TaskStatus` (synonyms folded), the modal has an `OTHER` group that
+  always surfaces genuinely-unknown statuses with their raw text, and the F5
+  `tasks(done/total)` count uses the same normalization (so `completed` counts).
+- Worker output is now preserved before a pane self-destructs. Workers append
+  `; superharness kill --pane` and tear down their own pane on completion, which
+  also wiped the pane scrollback and made the output unreviewable. Every kill
+  path now captures the pane's full scrollback to
+  `{project}/.superharness/worker-logs/<title>-<paneid>.log` first.
+- Workers now launch their harness interactively instead of in headless
+  one-shot mode (`claude -p` / `codex exec`). Headless mode started a process
+  with no TUI, so the worker pane sat in `bash` with the agent invisible and
+  unmonitorable — the worker appeared to hang in bash forever and never run
+  claude. Workers now match the orchestrator and opencode workers.
 - Permission bypass flags removed from Claude and Codex harnesses for security
 - Shell-only guard properly removed from `main_pane_has_input()`
 - Cursor position checks improved for multi-line input scenarios

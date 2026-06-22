@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::layout;
 
-use super::{orchestrator_pane_id, tmux, tmux_ok, SESSION};
+use super::{orchestrator_pane_id, orchestrator_window_id, tmux, tmux_ok, SESSION};
 
 // ---------------------------------------------------------------------------
 // Smart layout helpers
@@ -12,10 +12,11 @@ use super::{orchestrator_pane_id, tmux, tmux_ok, SESSION};
 /// the main window (window 0), with no pane flagged as needing attention.
 fn main_window_pane_layouts() -> Vec<layout::PaneLayout> {
     let orch_id = orchestrator_pane_id();
+    let orch_window = orchestrator_window_id();
     let output = match tmux(&[
         "list-panes",
         "-t",
-        &format!("{SESSION}:0"),
+        &orch_window,
         "-F",
         "#{pane_id}",
     ]) {
@@ -87,38 +88,43 @@ pub fn smart_layout_with_attention(attention_pane: Option<&str>) -> Result<()> {
 /// Called automatically after each `spawn`.
 pub fn auto_compact() -> Result<()> {
     let orch_id = orchestrator_pane_id();
+    let orch_window = orchestrator_window_id();
 
-    // List panes in main window (window 0) with their indices and titles
+    // List panes in the orchestrator window with their indices, titles, and
+    // worker flag.
     let output = match tmux(&[
         "list-panes",
         "-t",
-        &format!("{SESSION}:0"),
+        &orch_window,
         "-F",
-        "#{pane_id}\t#{pane_index}\t#{pane_title}",
+        "#{pane_id}\t#{pane_index}\t#{@sh_worker}\t#{pane_title}",
     ]) {
         Ok(o) => o,
         Err(_) => return Ok(()), // Session or window not available yet
     };
 
-    let mut panes: Vec<(String, u32, String)> = Vec::new();
+    let mut panes: Vec<(String, u32, bool, String)> = Vec::new();
     for line in output.lines() {
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(3, '\t').collect();
-        if parts.len() < 3 {
+        let parts: Vec<&str> = line.splitn(4, '\t').collect();
+        if parts.len() < 4 {
             continue;
         }
         let id = parts[0].to_string();
         let index: u32 = parts[1].parse().unwrap_or(0);
-        let title = parts[2].to_string();
-        panes.push((id, index, title));
+        let is_worker = parts[2] == "1";
+        let title = parts[3].to_string();
+        panes.push((id, index, is_worker, title));
     }
 
-    // Exclude orchestrator, sort remaining by pane_index ascending
+    // Only consider superharness worker panes (never the orchestrator and never
+    // panes the user added), sorted by pane_index ascending.
     let mut workers: Vec<(String, u32, String)> = panes
         .into_iter()
-        .filter(|(id, _, _)| *id != orch_id)
+        .filter(|(id, _, is_worker, _)| *is_worker && *id != orch_id)
+        .map(|(id, index, _, title)| (id, index, title))
         .collect();
     workers.sort_by_key(|(_, idx, _)| *idx);
 
@@ -153,16 +159,18 @@ pub fn auto_compact() -> Result<()> {
 /// Returns (moved_count, remaining_visible_count).
 pub fn compact_panes() -> Result<(usize, usize)> {
     let orch_id = orchestrator_pane_id();
+    let orch_window = orchestrator_window_id();
     let (term_w, term_h) = super::get_terminal_size();
 
-    // List all panes across all windows with dimensions and window index
+    // List all panes across all windows with dimensions, window id, and worker
+    // flag.
     let output = match tmux(&[
         "list-panes",
         "-t",
         SESSION,
         "-a",
         "-F",
-        "#{pane_id}\t#{pane_width}\t#{pane_height}\t#{window_index}\t#{pane_title}",
+        "#{pane_id}\t#{pane_width}\t#{pane_height}\t#{window_id}\t#{@sh_worker}\t#{pane_title}",
     ]) {
         Ok(o) => o,
         Err(_) => return Ok((0, 0)),
@@ -175,18 +183,20 @@ pub fn compact_panes() -> Result<(usize, usize)> {
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(5, '\t').collect();
-        if parts.len() < 5 {
+        let parts: Vec<&str> = line.splitn(6, '\t').collect();
+        if parts.len() < 6 {
             continue;
         }
         let id = parts[0];
         let width: u32 = parts[1].parse().unwrap_or(0);
         let height: u32 = parts[2].parse().unwrap_or(0);
-        let window_index: u32 = parts[3].parse().unwrap_or(999);
-        let title = parts[4];
+        let window_id = parts[3];
+        let is_worker = parts[4] == "1";
+        let title = parts[5];
 
-        // Only process panes in the main window (window 0), skip orchestrator
-        if window_index != 0 || id == orch_id {
+        // Only process superharness worker panes that are currently visible in
+        // the orchestrator window; skip the orchestrator and any user panes.
+        if window_id != orch_window || !is_worker || id == orch_id {
             continue;
         }
 

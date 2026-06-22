@@ -11,6 +11,7 @@ mod output_cleaner;
 mod pending_tasks;
 mod project;
 mod setup;
+mod tasks;
 mod tmux;
 mod util;
 
@@ -330,6 +331,11 @@ enum Command {
     /// Total = all worker panes (excluding the orchestrator %0).
     StatusCounts,
 
+    /// Print completed/total task count for the F5 status-bar label (e.g. "2/4").
+    /// Completed = tasks with status "done" in .superharness/tasks.json; total =
+    /// all tasks. Prints a bare "0" when there are no tasks.
+    TaskCounts,
+
     /// Immediately trigger a heartbeat check (workers call this when they finish).
     ///
     /// If the orchestrator is idle, sends [HEARTBEAT] to %0 right away without
@@ -498,6 +504,9 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::StatusCounts) => {
             handlers::handle_status_counts()?;
+        }
+        Some(Command::TaskCounts) => {
+            handlers::handle_task_counts()?;
         }
 
         // ── Heartbeat commands ───────────────────────────────────────────────

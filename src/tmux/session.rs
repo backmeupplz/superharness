@@ -5,7 +5,9 @@ use crate::harness;
 use crate::heartbeat;
 use crate::util;
 
-use super::{set_orchestrator_pane_id, tmux, tmux_ok, SESSION};
+use super::{
+    orchestrator_window_id, set_orchestrator_pane_id, tag_orchestrator_pane, tmux, tmux_ok, SESSION,
+};
 
 /// Detect whether we are running inside an existing tmux session.
 /// Returns `true` when the `$TMUX` environment variable is set and non-empty.
@@ -133,14 +135,17 @@ fn configure_session(bin_path: &str) -> Result<()> {
         "#[range=window|1]#[bg=colour214,fg=colour232,bold] SH #[range=default]",
     ])?;
     tmux_ok(&["set-option", "-t", SESSION, "status-left-length", "6"])?;
-    // Fallback mouse binding: clicking anywhere in status-left area goes to window 1.
+    // Fallback mouse binding: clicking anywhere in status-left area goes to the
+    // orchestrator window. Target its stable window ID rather than a hardcoded
+    // index so it is correct under any `base-index`.
+    let orch_window = orchestrator_window_id();
     let _ = tmux_ok(&[
         "bind-key",
         "-n",
         "MouseDown1StatusLeft",
         "select-window",
         "-t",
-        ":1",
+        &orch_window,
     ]);
     // Clicking anywhere on the right side of the status bar toggles the heartbeat on/off.
     let _ = tmux_ok(&[
@@ -165,6 +170,8 @@ fn configure_session(bin_path: &str) -> Result<()> {
 
     // Worker count for F4 button label: total worker pane count.
     let worker_count_snippet = format!("#({bin_path} status-counts 2>/dev/null || echo '0')");
+    // Task count for F5 button label: "completed/total" (or "0" when no tasks).
+    let task_count_snippet = format!("#({bin_path} task-counts 2>/dev/null || echo '0')");
 
     let status_right = format!(
         "#[fg=colour240]│ {mode_snippet} \
@@ -173,7 +180,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
          │#[fg=colour110] F2#[fg=colour240]:set \
          │#[fg=colour110] F3#[fg=colour240]:info \
          │#[fg=colour110] F4#[fg=colour240]:wrk({worker_count_snippet}) \
-         │#[fg=colour110] F5#[fg=colour240]:tasks \
+         │#[fg=colour110] F5#[fg=colour240]:tasks({task_count_snippet}) \
          │#[fg=colour110] F6#[fg=colour240]:log #[default]"
     );
 
@@ -200,7 +207,7 @@ fn configure_session(bin_path: &str) -> Result<()> {
     // ── F-key shortcuts (no prefix required) ────────────────────────────────
     // display-popup is a tmux command, not a shell command — use bind-key directly (NOT run-shell).
 
-    // F1 → toggle-mode: sends a mode-switch message directly to the main orchestrator pane (%0)
+    // F1 → toggle-mode: sends a mode-switch message directly to the orchestrator pane
     tmux_ok(&[
         "bind-key",
         "-n",
@@ -449,9 +456,25 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
         } else {
             String::new()
         };
+        // tasks.json may be either the canonical `{ "tasks": [ ... ] }` wrapper
+        // object or a legacy bare `[ ... ]` array. Treat both empty forms (and
+        // empty/missing/null content) as "no plan yet" so we open planning mode.
         let tasks_empty = {
             let trimmed = tasks_content_raw.trim();
-            trimmed.is_empty() || trimmed == "[]" || trimmed == "null"
+            if trimmed.is_empty() {
+                true
+            } else {
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(serde_json::Value::Array(a)) => a.is_empty(),
+                    Ok(serde_json::Value::Object(o)) => o
+                        .get("tasks")
+                        .and_then(|t| t.as_array())
+                        .map(|a| a.is_empty())
+                        .unwrap_or(true),
+                    Ok(serde_json::Value::Null) => true,
+                    _ => true,
+                }
+            }
         };
 
         let tasks_file_path = tasks_file.to_string_lossy().to_string();
@@ -464,7 +487,8 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
                 2. Ask clarifying questions to understand scope, constraints, and priorities. \
                 3. Break the goal down into concrete tasks. \
                 4. Identify which tasks can run in parallel and which depend on each other. \
-                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed). \
+                5. Write the resulting tasks to {tasks_file_path} (create .superharness/ dir if needed) \
+                as JSON of the form {{\"tasks\": [{{\"id\": \"task-001\", \"title\": \"...\", \"description\": \"...\", \"status\": \"pending\", \"priority\": \"high|medium|low\", \"worker_pane\": null}}]}}. \
                 6. Once the plan is captured, confirm it with the user and ask if they want to start immediately. \
                 Be conversational — this is a planning chat, not a form to fill out.{agents_merge_note}"
             ), false)
@@ -557,22 +581,19 @@ pub fn init(dir: &str, bin_path: &str) -> Result<()> {
     tmux_ok(&["rename-window", "-t", SESSION, "superharness"])?;
 
     // When embedded, the new session's first pane may get a different ID than %0.
-    // Query the actual pane ID of the orchestrator pane we just created.
-    let orch_pane = tmux(&[
-        "list-panes",
-        "-t",
-        &format!("{SESSION}:0"),
-        "-F",
-        "#{pane_id}",
-    ])
-    .unwrap_or_else(|_| "%0".to_string())
-    .lines()
-    .next()
-    .unwrap_or("%0")
-    .to_string();
+    // Query the actual pane ID of the orchestrator pane we just created. We target
+    // the session (not `:0`) so this works regardless of the user's `base-index`.
+    let orch_pane = tmux(&["display-message", "-p", "-t", SESSION, "#{pane_id}"])
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "%0".to_string());
 
-    // Store the orchestrator pane ID so all subcommands can find it.
+    // Store the orchestrator pane ID so all subcommands can find it, and tag the
+    // pane itself — the tag is the robust, layout-independent way to locate the
+    // orchestrator (the env var is a fast path / backward-compat fallback).
     set_orchestrator_pane_id(&orch_pane)?;
+    tag_orchestrator_pane(&orch_pane)?;
 
     tmux_ok(&["select-pane", "-t", &orch_pane, "-T", "superharness"])?;
     configure_session(bin_path)?;
