@@ -46,11 +46,12 @@ done
 
 Paste the resulting hashes into the `sha256` lines in `superharness.rb`.
 
-## Automated updates via GitHub Actions
+## Automated updates via Forgejo Actions
 
-The `homebrew.yml` workflow in this repo automatically regenerates the formula and pushes it
-to `backmeupplz/homebrew-superharness` whenever a new release is published. It requires a
-`HOMEBREW_TAP_TOKEN` secret (a GitHub personal access token with `repo` scope on the tap repo).
+The `update-tap` job in `.forgejo/workflows/release.yml` regenerates the formula and pushes it
+to `backmeupplz/homebrew-superharness` on git.borodutch.com (mirrored to GitHub) after the release
+assets are on the GitHub Release. It uses the `FJ_PUSH_TOKEN` secret (a Forgejo token with
+`write:repository`). The formula URLs keep pointing at the GitHub Release.
 
 ## Local development / testing
 

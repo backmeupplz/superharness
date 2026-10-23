@@ -142,6 +142,16 @@ Full command reference for power users and scripting. You don't need any of thes
 | `resume` | Spawn a new worker from a checkpoint |
 | `memory` | Store or list key-value facts for a pane |
 
+## Releasing
+
+Publish a release on [git.borodutch.com](https://git.borodutch.com/backmeupplz/superharness):
+
+```bash
+tea release create --repo backmeupplz/superharness --tag vX.Y.Z --title vX.Y.Z
+```
+
+Forgejo Actions then builds the binaries and `.deb` files, publishes the GitHub Release ("superharness vX.Y.Z") with the same assets, attaches them to the Forgejo release, publishes the crate and updates the Homebrew tap (`release.yml`), and pushes the AUR package (`aur.yml`) and the PPA source packages (`ppa.yml`).
+
 ## License
 
 MIT — see [LICENSE](LICENSE)

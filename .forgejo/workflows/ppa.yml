@@ -21,6 +21,9 @@ jobs:
 
       - name: Install packaging tools
         run: sudo apt-get update && sudo apt-get install -y debhelper devscripts dput
+        env:
+          # GitHub's image sets this; without it debconf waits for input forever
+          DEBIAN_FRONTEND: noninteractive
 
       - name: Determine version
         id: version
