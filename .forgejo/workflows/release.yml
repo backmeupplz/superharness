@@ -3,6 +3,7 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch: # DRYRUN
 
 permissions:
   contents: write
@@ -109,6 +110,7 @@ jobs:
           # files must keep their usual 755/644 modes
           umask 022
           VERSION="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_EVENT_NAME" = release ] || VERSION=0.4.0 # DRYRUN
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)  DEB_ARCH="amd64" ;;
             aarch64-unknown-linux-gnu) DEB_ARCH="arm64" ;;
@@ -147,6 +149,7 @@ jobs:
 
   # ── GitHub Release (releases don't mirror; installers and Homebrew download from GitHub) ──
   publish:
+    if: github.event_name == 'release' # DRYRUN
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
@@ -183,6 +186,7 @@ jobs:
 
   # ── Publish to crates.io (after all builds succeed) ───────────────────────────
   publish-crates:
+    if: github.event_name == 'release' # DRYRUN
     name: Publish to crates.io
     needs: build
     runs-on: ubuntu-latest
@@ -200,6 +204,7 @@ jobs:
 
   # ── Homebrew tap (formerly homebrew.yml on workflow_run; chained with needs instead) ──
   update-tap:
+    if: github.event_name == 'release' # DRYRUN
     name: Update Homebrew tap
     needs: publish
     runs-on: ubuntu-latest
@@ -289,3 +294,18 @@ jobs:
           git add Formula/superharness.rb
           git commit -m "Update superharness to ${{ steps.version.outputs.version }}"
           git push
+
+  dryrun-check: # DRYRUN
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - working-directory: dist
+        run: |
+          for f in *.tar.xz; do [ -e "$f" ] && tar -xJf "$f" && rm "$f"; done
+          ls *.sha256 >/dev/null 2>&1 && sha256sum -c *.sha256
+          ls -la; file *; cat *.sha256 2>/dev/null || true
+          for d in *.deb; do [ -e "$d" ] && dpkg-deb -I "$d" && dpkg-deb -c "$d"; done; true
