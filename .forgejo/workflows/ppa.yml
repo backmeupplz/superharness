@@ -19,8 +19,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Unpacking the ~230 packages that devscripts' recommends (lintian and its Perl stack, man-db, ...) pulled in took
+      # 8 minutes on the runner's busy disk; debuild -S needs none of them (it skips lintian, whose findings were
+      # warnings only and never failed the upload).
       - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y debhelper devscripts dput
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y debhelper devscripts dput
         env:
           # GitHub's image sets this; without it debconf waits for input forever
           DEBIAN_FRONTEND: noninteractive
@@ -40,7 +43,8 @@ jobs:
         run: |
           cargo generate-lockfile
           cargo vendor debian/vendor
-          tar cJf debian/vendor.tar.xz -C debian vendor
+          # multi-threaded xz (same format and level); single-threaded it took 4 minutes
+          XZ_OPT=-T0 tar cJf debian/vendor.tar.xz -C debian vendor
           rm -rf debian/vendor
 
       - name: Create orig tarball

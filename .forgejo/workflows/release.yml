@@ -36,6 +36,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The macOS runners are a shared Mac: Homebrew's own `rust` puts a cargo/rustc without the
+      # x86_64 std in /opt/homebrew/bin ("can't find crate for core"), so put rustup's proxies
+      # first; and both jobs run as one user, so each target gets its own rustup home to keep
+      # concurrent toolchain installs from colliding. The Mac keeps its home between jobs, so
+      # each target also keeps its target dir and reuses the dependency builds of earlier releases.
+      - name: Use rustup's toolchain on the shared Mac
+        if: runner.os == 'macOS'
+        run: |
+          echo "$(dirname "$(realpath "$(command -v rustup)")")" >> "$GITHUB_PATH"
+          echo "RUSTUP_HOME=$HOME/.rustup-${{ matrix.target }}" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/release-target/superharness-${{ matrix.target }}" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,15 +69,12 @@ jobs:
             echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
           } >> "$GITHUB_ENV"
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Linux jobs start from a fresh container: restore the registry and dependency builds of the last
+      # release (actions/cache would upload from the Mac over its slow uplink; its home persists anyway)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.os == 'Linux'
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+          key: ${{ matrix.target }}
 
       - name: Build binary
         run: cargo build --release --target ${{ matrix.target }}
@@ -73,7 +82,7 @@ jobs:
       - name: Prepare release asset
         shell: bash
         run: |
-          BIN="target/${{ matrix.target }}/release/superharness"
+          BIN="${CARGO_TARGET_DIR:-target}/${{ matrix.target }}/release/superharness"
           ASSET="superharness-${{ matrix.target }}"
 
           cp "$BIN" "$ASSET"
@@ -86,10 +95,19 @@ jobs:
 
           echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
 
+          # The Mac's uplink is slow: xz cuts the upload by a third against the artifact zip; publish unpacks it
+          if [ "$RUNNER_OS" = macOS ]; then
+            COPYFILE_DISABLE=1 tar --options xz:compression-level=9 -cJf "$ASSET.tar.xz" "$ASSET" "$ASSET.sha256"
+            rm "$ASSET" "$ASSET.sha256"
+          fi
+
       - name: Build .deb package (Linux only)
         if: contains(matrix.target, 'linux')
         shell: bash
         run: |
+          # the job container runs with umask 000: dpkg-deb rejects a world-writable DEBIAN dir, and the package
+          # files must keep their usual 755/644 modes
+          umask 022
           VERSION="${GITHUB_REF_NAME#v}"
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)  DEB_ARCH="amd64" ;;
@@ -124,6 +142,7 @@ jobs:
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
+            ${{ env.ASSET }}.tar.xz
             *.deb
 
   # ── GitHub Release (releases don't mirror; installers and Homebrew download from GitHub) ──
@@ -148,6 +167,8 @@ jobs:
           NOTES: ${{ github.event.release.body }}
           RELEASE_ID: ${{ github.event.release.id }}
         run: |
+          for f in *.tar.xz; do tar -xJf "$f" && rm "$f"; done
+          sha256sum -c *.sha256
           # The tag reaches the GitHub mirror within seconds; wait for it rather than letting GitHub create one
           for i in $(seq 30); do gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1 && break; sleep 10; done
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
