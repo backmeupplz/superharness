@@ -1,5 +1,7 @@
 # ![superharness](docs/favicon.svg) superharness
 
+> **Retired.** superharness is no longer maintained or distributed: the site, Homebrew tap, AUR, PPA and crates.io packages are being withdrawn. This repository is archived.
+
 [![Crates.io](https://img.shields.io/crates/v/superharness)](https://crates.io/crates/superharness)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/backmeupplz/superharness)](https://github.com/backmeupplz/superharness)
