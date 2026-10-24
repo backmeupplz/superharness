@@ -53,6 +53,7 @@ jobs:
             .
 
       - name: Import GPG key
+        if: github.event_name == 'release' # DRYRUN
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
           echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
@@ -78,7 +79,7 @@ jobs:
           CHLOG
 
             dpkg-source -b .
-            debuild -S -sa -d -k"$GPG_KEY"
+            debuild -S -sa -d -us -uc # DRYRUN
 
-            dput ppa:borodutch/superharness "../superharness_${VERSION}-1${DISTRO}1_source.changes"
+            echo DRYRUN would dput ppa:borodutch/superharness "../superharness_${VERSION}-1${DISTRO}1_source.changes"
           done
